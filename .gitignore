@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+/tmp/
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Lock files (optional, uncomment if you want to track)
+bun.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+
+# Temporary files
+*.tmp
+*.temp

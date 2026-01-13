@@ -1,0 +1,56 @@
+{
+  "name": "opencode-mattermost-control",
+  "version": "0.1.12",
+  "description": "OpenCode plugin for remote control via Mattermost DMs",
+  "type": "module",
+  "main": ".opencode/plugin/mattermost-control/index.ts",
+  "exports": {
+    ".": "./.opencode/plugin/mattermost-control/index.ts",
+    "./plugin": "./.opencode/plugin/mattermost-control/index.ts"
+  },
+  "files": [
+    ".opencode",
+    "src",
+    "opencode.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "mattermost",
+    "remote-control",
+    "chat",
+    "ai",
+    "coding-assistant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shakudo-io/opencode-mattermost-plugin.git"
+  },
+  "homepage": "https://github.com/Shakudo-io/opencode-mattermost-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/Shakudo-io/opencode-mattermost-plugin/issues"
+  },
+  "author": "Shakudo",
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.1.17",
+    "axios": "^1.7.9",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13",
+    "bun-types": "^1.3.6",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
