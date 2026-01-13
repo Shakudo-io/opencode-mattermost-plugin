@@ -20,26 +20,127 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 - **Multi-user Support**: Handle multiple users with separate sessions
 - **Automatic Reconnection**: WebSocket auto-reconnects with exponential backoff
 
-## Prerequisites
+---
+
+## Quick Start for Humans
+
+### Prerequisites
 
 - [OpenCode](https://opencode.ai) installed and configured
 - A Mattermost instance with API access
 - A Mattermost bot account with appropriate permissions
 - [Bun](https://bun.sh) runtime (recommended) or Node.js 18+
 
-## Installation
-
-### Using npm/bun (Recommended)
+### Step 1: Install the Plugin
 
 ```bash
-# Install globally
+# Using bun (recommended)
+bun add -g opencode-mattermost-control
+
+# Or using npm
+npm install -g opencode-mattermost-control
+```
+
+### Step 2: Create a Mattermost Bot
+
+1. Go to your Mattermost **System Console** → **Integrations** → **Bot Accounts**
+2. Click **Add Bot Account**
+3. Give it a username (e.g., `opencode-bot`) and description
+4. Copy the generated **Access Token** - you'll need this!
+
+### Step 3: Set Environment Variables
+
+```bash
+export MATTERMOST_TOKEN="your-bot-access-token"
+export MATTERMOST_URL="https://your-mattermost-instance.com/api/v4"
+```
+
+### Step 4: Connect from OpenCode
+
+```bash
+# Start OpenCode in your project
+opencode
+
+# Then type or use the tool:
+mattermost_connect
+```
+
+You should see:
+```
+✓ Connected to Mattermost as @opencode-bot
+✓ Listening for DMs
+✓ Project: your-project-name
+```
+
+### Step 5: Send Prompts via DM
+
+Open Mattermost, find your bot user, and send it a direct message:
+```
+Create a hello world function in Python
+```
+
+The response will stream back in real-time!
+
+---
+
+## Quick Start for AI Agents
+
+If you're an AI agent setting up this plugin, follow these steps:
+
+### 1. Install
+
+```bash
+bun add -g opencode-mattermost-control
+```
+
+### 2. Configure Environment
+
+Set these environment variables before starting OpenCode:
+
+```bash
+export MATTERMOST_TOKEN="<bot-access-token>"
+export MATTERMOST_URL="https://<mattermost-host>/api/v4"
+```
+
+### 3. Connect
+
+Use the `mattermost_connect` tool to establish connection:
+
+```
+mattermost_connect
+```
+
+### 4. Verify Connection
+
+Use `mattermost_status` to confirm the connection is active.
+
+### 5. Available Tools
+
+| Tool | Purpose |
+|------|---------|
+| `mattermost_connect` | Establish connection to Mattermost |
+| `mattermost_disconnect` | Terminate connection |
+| `mattermost_status` | Check connection state |
+
+### 6. Handling DMs
+
+Once connected, any DM sent to the bot user will appear as a prompt in your session prefixed with `[Mattermost DM from @username]:`. Process these as normal user requests.
+
+---
+
+## Installation Options
+
+### Option A: Global Install (Recommended)
+
+```bash
+# Install globally with bun
 bun add -g opencode-mattermost-control
 
 # Or with npm
 npm install -g opencode-mattermost-control
 ```
 
-### From Source
+### Option B: From Source
 
 ```bash
 git clone https://github.com/Shakudo-io/opencode-mattermost-plugin.git
@@ -47,15 +148,22 @@ cd opencode-mattermost-plugin
 bun install
 ```
 
-## Configuration
+### Option C: Per-Project
 
-### 1. Create a Mattermost Bot
+Add to your project's `opencode.json`:
 
-1. Go to your Mattermost System Console → Integrations → Bot Accounts
-2. Create a new bot account
-3. Copy the generated access token
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-mattermost-control"]
+}
+```
 
-### 2. Set Environment Variables
+---
+
+## Configuration Reference
+
+### Environment Variables
 
 ```bash
 # Required
@@ -96,9 +204,9 @@ export OPENCODE_MM_NOTIFY_STATUS="true"
 export MM_PLUGIN_LOG_FILE="/tmp/opencode-mattermost-plugin.log"
 ```
 
-### 3. Add to OpenCode Configuration
+### OpenCode Configuration
 
-Add the plugin to your OpenCode configuration (`~/.config/opencode/opencode.json`):
+Add to global config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
@@ -106,71 +214,48 @@ Add the plugin to your OpenCode configuration (`~/.config/opencode/opencode.json
 }
 ```
 
-Or for per-project usage, create an `opencode.json` in your project root:
+Or per-project (`opencode.json` in project root):
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": {
-    "mattermost-control": {
-      "enabled": true
-    }
-  }
+  "plugins": ["opencode-mattermost-control"]
 }
 ```
 
-## Usage
+---
 
-### 1. Start OpenCode
+## Usage Examples
+
+### Basic Workflow
 
 ```bash
+# 1. Start OpenCode
 opencode
-```
 
-### 2. Connect to Mattermost
-
-Use the built-in tool or slash command:
-
-```
-mattermost_connect
-```
-
-You should see:
-```
+# 2. Connect to Mattermost
+> mattermost_connect
 ✓ Connected to Mattermost as @your-bot
 ✓ Listening for DMs
-✓ Project: your-project-name
+
+# 3. Check status anytime
+> mattermost_status
+
+# 4. Disconnect when done
+> mattermost_disconnect
 ```
 
-### 3. Send Prompts via DM
+### Emoji Commands
 
-Open Mattermost and send a direct message to your bot user:
+React to any bot message with these emojis:
 
-```
-Create a hello world function in Python
-```
-
-The prompt will be processed by your OpenCode session and the response will stream back to the DM.
-
-### 4. Check Status
-
-```
-mattermost_status
-```
-
-### 5. Disconnect
-
-```
-mattermost_disconnect
-```
-
-## Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `mattermost_connect` | Connect to Mattermost and start listening for DMs |
-| `mattermost_disconnect` | Disconnect from Mattermost |
-| `mattermost_status` | Show connection status and active sessions |
+| Emoji | Action |
+|-------|--------|
+| ✅ | Approve pending permission request |
+| ❌ | Deny pending permission request |
+| 🛑 | Cancel current operation |
+| 🔁 | Retry the last prompt |
+| 🗑️ | Clear session temporary files |
 
 ## Architecture
 
