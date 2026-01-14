@@ -95,11 +95,8 @@ function formatResponseWithThinking(response: string, thinking: string): string 
 }
 
 export const MattermostControlPlugin: Plugin = async ({ client, project, directory, $ }) => {
-  const config = loadConfig();
+  let config = loadConfig();
   projectName = (project as any)?.name || directory.split("/").pop() || "opencode";
-
-  mmClient = new MattermostClient(config.mattermost);
-  wsClient = new MattermostWebSocketClient(config.mattermost);
 
   log.info("Loaded (not connected - use /mattermost connect)");
 
@@ -108,8 +105,25 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       return `Already connected to Mattermost as @${botUser?.username}. Use /mattermost status for details.`;
     }
 
+    config = loadConfig();
+
+    if (!config.mattermost.token) {
+      return "✗ MATTERMOST_TOKEN environment variable is required. Set it before connecting.";
+    }
+
+    if (config.mattermost.baseUrl.includes("your-mattermost-instance.example.com")) {
+      return "✗ MATTERMOST_URL environment variable is required. Set it before connecting.";
+    }
+
     try {
-      await wsClient!.connect();
+      log.info("Creating Mattermost clients...");
+      log.debug(`Config mattermost: ${JSON.stringify(config?.mattermost || 'undefined')}`);
+      mmClient = new MattermostClient(config.mattermost);
+      wsClient = new MattermostWebSocketClient(config.mattermost);
+      log.info("Clients created, connecting WebSocket...");
+      
+      await wsClient.connect();
+      log.info("WebSocket connected, getting bot user...");
       botUser = await mmClient!.getCurrentUser();
 
       sessionManager = new SessionManager(mmClient!, config.sessions);
@@ -186,6 +200,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
 
       isConnected = false;
       mmClient = null;
+      wsClient = null;
       sessionManager = null;
       streamer = null;
       notifications = null;
@@ -261,12 +276,16 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     let userSession: UserSession;
     try {
       userSession = await sessionManager.getOrCreateSession(post.user_id);
+      log.info(`[DEBUG-A] Session obtained for ${userSession.mattermostUsername}`);
     } catch (error) {
       log.error("Failed to get/create session:", error);
       return;
     }
 
+    log.info(`[DEBUG-B] About to route message`);
+    log.info(`[ROUTING] Post message content: "${post.message}"`);
     const routeResult = messageRouter.route(post);
+    log.info(`[ROUTING] Route result: type=${routeResult.type}, command=${routeResult.command?.name || 'none'}`);
 
     if (routeResult.type === "command" && routeResult.command) {
       log.info(`Processing command: ${routeResult.command.name}`);
@@ -435,6 +454,48 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     },
   });
 
+  const mattermostCurrentSessionTool = tool({
+    description: "Show the currently targeted OpenCode session for a Mattermost user",
+    args: {
+      mattermostUserId: tool.schema.string().optional().describe("Mattermost user ID to check (optional, shows default if not specified)"),
+    },
+    async execute(args) {
+      if (!isConnected || !openCodeSessionRegistry || !sessionManager) {
+        return "Not connected to Mattermost. Use mattermost_connect first.";
+      }
+
+      if (args.mattermostUserId) {
+        const userSession = sessionManager.getSession(args.mattermostUserId);
+        if (!userSession) {
+          return `No active Mattermost session for user ${args.mattermostUserId}. User must DM the bot first.`;
+        }
+
+        const targetId = userSession.targetOpenCodeSessionId;
+        if (!targetId) {
+          const defaultSession = openCodeSessionRegistry.getDefault();
+          if (defaultSession) {
+            return `User @${userSession.mattermostUsername} has no explicit session selected.\nUsing default: ${defaultSession.projectName} (${defaultSession.shortId})\nDirectory: ${defaultSession.directory}`;
+          }
+          return `User @${userSession.mattermostUsername} has no session selected and no default is available.`;
+        }
+
+        const session = openCodeSessionRegistry.get(targetId);
+        if (!session || !session.isAvailable) {
+          return `User @${userSession.mattermostUsername}'s selected session is no longer available.`;
+        }
+
+        return `User @${userSession.mattermostUsername} is targeting:\nProject: ${session.projectName}\nID: ${session.shortId}\nDirectory: ${session.directory}\nLast updated: ${session.lastUpdated.toISOString()}`;
+      }
+
+      const defaultSession = openCodeSessionRegistry.getDefault();
+      if (!defaultSession) {
+        return "No default OpenCode session is set. Use mattermost_list_sessions to see available sessions.";
+      }
+
+      return `Default OpenCode session:\nProject: ${defaultSession.projectName}\nID: ${defaultSession.shortId}\nDirectory: ${defaultSession.directory}\nLast updated: ${defaultSession.lastUpdated.toISOString()}`;
+    },
+  });
+
   return {
     tool: {
       mattermost_connect: mattermostConnectTool,
@@ -442,6 +503,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       mattermost_status: mattermostStatusTool,
       mattermost_list_sessions: mattermostListSessionsTool,
       mattermost_select_session: mattermostSelectSessionTool,
+      mattermost_current_session: mattermostCurrentSessionTool,
     },
 
     event: async ({ event }) => {

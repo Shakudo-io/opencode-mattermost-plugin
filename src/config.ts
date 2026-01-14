@@ -5,7 +5,7 @@ import { log as fileLog } from "./logger.js";
 const MattermostConfigSchema = z.object({
   baseUrl: z.string().url(),
   wsUrl: z.string(),
-  token: z.string().min(1),
+  token: z.string().default(""), // Token validated at connect time, not load time
   botUsername: z.string().optional(),
   defaultTeam: z.string().optional(),
   debug: z.boolean().default(false),
@@ -92,13 +92,6 @@ export function loadConfig(): PluginConfig {
   }
 
   const token = process.env.MATTERMOST_TOKEN || DEFAULT_MATTERMOST_CONFIG.token;
-  
-  if (!token) {
-    throw new Error(
-      "MATTERMOST_TOKEN environment variable is required. " +
-      "Create a bot account in Mattermost and set the token."
-    );
-  }
 
   const config: PluginConfig = {
     mattermost: {

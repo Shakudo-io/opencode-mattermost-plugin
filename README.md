@@ -8,6 +8,7 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 ## Features
 
 - **Remote Control**: Send prompts to OpenCode via Mattermost DMs
+- **Multi-Session Management**: Switch between multiple OpenCode sessions from Mattermost
 - **Real-time Streaming**: Responses stream back in chunks with intelligent buffering
 - **File Attachments**: Send and receive files through Mattermost
 - **Emoji Commands**: React with emojis to control sessions
@@ -121,10 +122,21 @@ Use `mattermost_status` to confirm the connection is active.
 | `mattermost_connect` | Establish connection to Mattermost |
 | `mattermost_disconnect` | Terminate connection |
 | `mattermost_status` | Check connection state |
+| `mattermost_list_sessions` | List available OpenCode sessions |
+| `mattermost_select_session` | Select which session receives prompts |
+| `mattermost_current_session` | Show currently targeted session |
 
 ### 6. Handling DMs
 
 Once connected, any DM sent to the bot user will appear as a prompt in your session prefixed with `[Mattermost DM from @username]:`. Process these as normal user requests.
+
+### 7. Session Commands
+
+Users can send these commands via DM to manage sessions:
+- `!sessions` - List all available OpenCode sessions
+- `!use <id>` - Switch to a specific session
+- `!current` - Show currently selected session
+- `!help` - Show available commands
 
 ---
 
@@ -245,6 +257,32 @@ opencode
 > mattermost_disconnect
 ```
 
+### Session Management Commands
+
+When connected, you can manage multiple OpenCode sessions via DM commands:
+
+| Command | Description |
+|---------|-------------|
+| `!sessions` | List all available OpenCode sessions |
+| `!use <id>` | Switch to a specific session by ID or slug |
+| `!current` | Show the currently selected session |
+| `!help` | Display available commands |
+
+**Example workflow:**
+```
+You: !sessions
+Bot: 📋 Available Sessions (3)
+     1. [ses_44] business-automation - 5m ago
+     2. [ses_38] my-project - 2h ago  
+     3. [ses_21] another-repo - 1d ago
+
+You: !use ses_38
+Bot: ✓ Switched to session: my-project
+
+You: What files are in this project?
+Bot: [Response from ses_38 session...]
+```
+
 ### Emoji Commands
 
 React to any bot message with these emojis:
@@ -275,6 +313,8 @@ React to any bot message with these emojis:
 | `MattermostClient` | HTTP API client for posts, channels, files, reactions |
 | `WebSocketClient` | Real-time event streaming for instant message detection |
 | `SessionManager` | Per-user session tracking with timeout management |
+| `OpenCodeSessionRegistry` | Discovers and tracks all available OpenCode sessions |
+| `CommandHandler` | Processes `!commands` for session management |
 | `ResponseStreamer` | Chunked message delivery to Mattermost |
 | `NotificationService` | Completion, error, and status notifications |
 | `FileHandler` | Inbound/outbound file attachment processing |
@@ -296,11 +336,13 @@ opencode-mattermost-plugin/
     ├── clients/
     │   ├── mattermost-client.ts      # HTTP API client
     │   └── websocket-client.ts       # WebSocket client
+    ├── command-handler.ts            # !command processing
     ├── config.ts                     # Configuration loading
     ├── file-handler.ts               # File uploads/downloads
     ├── logger.ts                     # File-based logging
     ├── models/index.ts               # TypeScript types
     ├── notification-service.ts       # Status notifications
+    ├── opencode-session-registry.ts  # OpenCode session discovery
     ├── reaction-handler.ts           # Emoji reaction handling
     ├── response-streamer.ts          # Streams responses to MM
     └── session-manager.ts            # User session management

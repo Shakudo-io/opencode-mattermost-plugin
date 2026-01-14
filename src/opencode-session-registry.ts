@@ -14,11 +14,14 @@ export interface OpenCodeSessionInfo {
 }
 
 /**
- * OpenCode SDK Session type (based on investigation report)
+ * OpenCode SDK Session type (matches SDK types.gen.d.ts Session type)
  */
 export interface OpenCodeSession {
   id: string;
+  slug?: string;
+  projectID?: string;
   directory: string;
+  parentID?: string;
   title?: string;
   time: {
     created: number;
@@ -105,10 +108,14 @@ export class OpenCodeSessionRegistry {
       const currentIds = new Set<string>();
 
       for (const session of sessions) {
+        if (session.parentID) {
+          continue;
+        }
+        
         currentIds.add(session.id);
         
         const projectName = this.extractProjectName(session.directory);
-        const shortId = session.id.substring(0, 6);
+        const shortId = session.slug || session.id.substring(0, 8);
         
         const existing = this.sessions.get(session.id);
         
@@ -225,12 +232,13 @@ export class OpenCodeSessionRegistry {
     }
   }
 
-  /**
-   * Handle session.created event from OpenCode
-   */
   handleSessionCreated(session: OpenCodeSession): void {
+    if (session.parentID) {
+      return;
+    }
+    
     const projectName = this.extractProjectName(session.directory);
-    const shortId = session.id.substring(0, 6);
+    const shortId = session.slug || session.id.substring(0, 8);
     
     this.sessions.set(session.id, {
       id: session.id,

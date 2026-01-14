@@ -88,30 +88,50 @@ export class CommandHandler {
   }
 
   private formatSessionList(sessions: OpenCodeSessionInfo[], currentTargetId: string | null): string[] {
+    const defaultSession = sessions.find(s => s.id === currentTargetId);
+    
     const lines: string[] = [
       ":clipboard: **Available OpenCode Sessions:**",
       "",
-      "| # | Project | Directory | ID |",
-      "|---|---------|-----------|-----|",
     ];
 
     sessions.forEach((session, index) => {
       const isCurrent = session.id === currentTargetId;
       const marker = isCurrent ? " :white_check_mark:" : "";
-      const truncatedDir = this.truncateDirectory(session.directory, 30);
-      lines.push(
-        `| ${index + 1} | ${session.projectName} | \`${truncatedDir}\` | \`${session.shortId}\`${marker} |`
-      );
+      const truncatedTitle = this.truncateString(session.title, 50);
+      const relativeTime = this.formatRelativeTime(session.lastUpdated);
+      
+      lines.push(`**${index + 1}.** \`${session.shortId}\`${marker}`);
+      lines.push(`   ${truncatedTitle}`);
+      lines.push(`   _${session.projectName}_ • ${relativeTime}`);
+      lines.push("");
     });
 
+    if (defaultSession) {
+      lines.push(`:white_check_mark: = current target (\`${defaultSession.shortId}\`)`);
+    }
     lines.push("");
-    lines.push(`:white_check_mark: = your current target`);
-    lines.push("");
-    lines.push(`**Commands:**`);
-    lines.push(`• \`${this.commandPrefix}use <id>\` - switch to a session`);
-    lines.push(`• \`${this.commandPrefix}current\` - show current session`);
+    lines.push(`**Commands:** \`${this.commandPrefix}use <id>\` to switch, \`${this.commandPrefix}current\` for details`);
 
     return lines;
+  }
+
+  private truncateString(str: string, maxLen: number): string {
+    if (str.length <= maxLen) return str;
+    return str.slice(0, maxLen - 3) + "...";
+  }
+
+  private formatRelativeTime(date: Date): string {
+    const now = Date.now();
+    const diff = now - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    return `${days}d ago`;
   }
 
   private truncateDirectory(dir: string, maxLen: number): string {
