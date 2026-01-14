@@ -10,6 +10,7 @@ import { ReactionHandler } from "../../../src/reaction-handler.js";
 import { OpenCodeSessionRegistry } from "../../../src/opencode-session-registry.js";
 import { MessageRouter } from "../../../src/message-router.js";
 import { CommandHandler } from "../../../src/command-handler.js";
+import { MonitorService, handleMonitorAlert, type MonitoredSession } from "../../../src/monitor-service.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
 import type { User, Post, WebSocketEvent } from "../../../src/models/index.js";
@@ -496,6 +497,89 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     },
   });
 
+  const mattermostMonitorTool = tool({
+    description: "Monitor an OpenCode session for events (permission requests, idle, questions). Sends a one-time DM alert when the session needs attention.",
+    args: {
+      sessionId: tool.schema.string().optional().describe("Session ID to monitor. Defaults to current session if not specified."),
+      targetUser: tool.schema.string().optional().describe("Mattermost username to notify. Defaults to the user who invokes this command."),
+    },
+    async execute(args) {
+      const config = loadConfig();
+
+      if (!config.mattermost.token) {
+        return "✗ MATTERMOST_TOKEN environment variable is required.";
+      }
+
+      if (config.mattermost.baseUrl.includes("your-mattermost-instance.example.com")) {
+        return "✗ MATTERMOST_URL environment variable is required.";
+      }
+
+      let targetSessionId = args.sessionId;
+      let targetProjectName = projectName;
+      let targetDirectory = directory;
+
+      if (!targetSessionId) {
+        if (openCodeSessionRegistry) {
+          const defaultSession = openCodeSessionRegistry.getDefault();
+          if (defaultSession) {
+            targetSessionId = defaultSession.id;
+            targetProjectName = defaultSession.projectName;
+            targetDirectory = defaultSession.directory;
+          }
+        }
+      } else if (openCodeSessionRegistry) {
+        const session = openCodeSessionRegistry.get(targetSessionId);
+        if (session) {
+          targetSessionId = session.id;
+          targetProjectName = session.projectName;
+          targetDirectory = session.directory;
+        }
+      }
+
+      if (!targetSessionId) {
+        return "✗ No session ID provided and no default session available. Use mattermost_list_sessions to find available sessions.";
+      }
+
+      if (MonitorService.isMonitored(targetSessionId)) {
+        return `Session ${targetSessionId.slice(0, 6)} is already being monitored.`;
+      }
+
+      let mattermostUserId: string;
+      let mattermostUsername: string;
+
+      if (args.targetUser) {
+        try {
+          const tempClient = new MattermostClient(config.mattermost);
+          const user = await tempClient.getUserByUsername(args.targetUser.replace(/^@/, ""));
+          mattermostUserId = user.id;
+          mattermostUsername = user.username;
+        } catch (e) {
+          return `✗ Could not find Mattermost user: ${args.targetUser}`;
+        }
+      } else {
+        if (!botUser) {
+          return "✗ Not connected to Mattermost. Use mattermost_connect first to determine the invoking user.";
+        }
+        mattermostUserId = botUser.id;
+        mattermostUsername = botUser.username;
+      }
+
+      const monitoredSession: MonitoredSession = {
+        sessionId: targetSessionId,
+        shortId: targetSessionId.slice(0, 6),
+        mattermostUserId,
+        mattermostUsername,
+        projectName: targetProjectName,
+        directory: targetDirectory,
+        registeredAt: new Date(),
+      };
+
+      MonitorService.register(monitoredSession);
+
+      return `✓ Monitoring session ${monitoredSession.shortId} (${targetProjectName})\n✓ Will alert @${mattermostUsername} on permission request, idle, or question\n\n_This is a one-time alert. After notification, monitoring stops._`;
+    },
+  });
+
   return {
     tool: {
       mattermost_connect: mattermostConnectTool,
@@ -504,9 +588,23 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       mattermost_list_sessions: mattermostListSessionsTool,
       mattermost_select_session: mattermostSelectSessionTool,
       mattermost_current_session: mattermostCurrentSessionTool,
+      mattermost_monitor: mattermostMonitorTool,
     },
 
     event: async ({ event }) => {
+      const eventType = event.type as string;
+      const eventSessionId = (event as any).properties?.sessionID;
+      const connectedSessionId = pendingResponseContext?.opencodeSessionId;
+
+      if (eventType === "permission.asked") {
+        const description = (event as any).properties?.description || "Permission requested";
+        await handleMonitorAlert(eventSessionId, "permission.asked", description, connectedSessionId);
+      }
+
+      if (eventType === "session.idle" && eventSessionId) {
+        await handleMonitorAlert(eventSessionId, "session.idle", undefined, connectedSessionId);
+      }
+
       if (!isConnected) return;
 
       if (event.type === "message.part.updated" && pendingResponseContext && streamer) {
@@ -579,6 +677,14 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     },
 
     "tool.execute.after": async (input) => {
+      const toolSessionId = (input as any).sessionID || (input as any).session?.id;
+      const connectedSessionId = pendingResponseContext?.opencodeSessionId;
+
+      if (input.tool === "question" && toolSessionId) {
+        const questionText = (input as any).args?.questions?.[0]?.question || "Question awaiting answer";
+        await handleMonitorAlert(toolSessionId, "question", questionText, connectedSessionId);
+      }
+
       if (!isConnected || !pendingResponseContext) return;
       
       addToolCall(input.tool);
