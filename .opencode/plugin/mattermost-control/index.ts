@@ -97,7 +97,8 @@ function formatResponseWithThinking(response: string, thinking: string): string 
 
 export const MattermostControlPlugin: Plugin = async ({ client, project, directory, $ }) => {
   let config = loadConfig();
-  projectName = (project as any)?.name || directory.split("/").pop() || "opencode";
+  // Use directory name as project name - project.name is the projectID hash, not a friendly name
+  projectName = directory.split("/").pop() || "opencode";
 
   log.info("Loaded (not connected - use /mattermost connect)");
 
@@ -498,10 +499,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
   });
 
   const mattermostMonitorTool = tool({
-    description: "Monitor an OpenCode session for events (permission requests, idle, questions). Sends a one-time DM alert when the session needs attention.",
+    description: "Monitor an OpenCode session for events (permission requests, idle, questions). Sends DM alerts when the session needs attention.",
     args: {
       sessionId: tool.schema.string().optional().describe("Session ID to monitor. Defaults to current session if not specified."),
       targetUser: tool.schema.string().optional().describe("Mattermost username to notify (required if not connected to Mattermost)."),
+      persistent: tool.schema.boolean().optional().describe("Keep monitoring after each alert (default: true). Set to false for one-time alerts."),
     },
     async execute(args) {
       const config = loadConfig();
@@ -517,6 +519,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       let targetSessionId = args.sessionId;
       let targetProjectName = projectName;
       let targetDirectory = directory;
+      let targetSessionTitle: string | undefined;
 
       if (!targetSessionId) {
         if (openCodeSessionRegistry) {
@@ -530,15 +533,46 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         if (!targetSessionId) {
           try {
-            const sessions = await client.session.list();
-            if (sessions.data && sessions.data.length > 0) {
-              const currentSession = sessions.data.find((s: any) => s.directory === directory) || sessions.data[0];
-              targetSessionId = currentSession.id;
-              targetProjectName = (currentSession as any).project?.name || directory.split("/").pop() || "opencode";
-              targetDirectory = currentSession.directory;
+            // First try session.status() which returns currently active sessions
+            const statusResult = await client.session.status();
+            const statusMap = statusResult.data as Record<string, { type: string }> | undefined;
+            
+            if (statusMap && Object.keys(statusMap).length > 0) {
+              const activeSessionIds = Object.keys(statusMap);
+              log.debug(`[Monitor] session.status() returned ${activeSessionIds.length} active sessions: ${activeSessionIds.join(', ')}`);
+              
+              // Prefer a "busy" session, otherwise take the first active one
+              const busySessionId = activeSessionIds.find(id => statusMap[id]?.type === 'busy');
+              targetSessionId = busySessionId || activeSessionIds[0];
+              log.debug(`[Monitor] Using active session: ${targetSessionId} (status: ${statusMap[targetSessionId]?.type})`);
+            }
+            
+            // Fallback to session list if status didn't help
+            if (!targetSessionId) {
+              const sessions = await client.session.list();
+              log.debug(`[Monitor] client.session.list() returned ${sessions.data?.length || 0} sessions`);
+              if (sessions.data && sessions.data.length > 0) {
+                // Sort by time.updated (most recently active first)
+                const sortedSessions = [...sessions.data]
+                  .filter((s: any) => s.directory === directory)
+                  .sort((a: any, b: any) => {
+                    const timeA = a.time?.updated || a.time?.created || 0;
+                    const timeB = b.time?.updated || b.time?.created || 0;
+                    return timeB - timeA;
+                  });
+                
+                log.debug(`[Monitor] Found ${sortedSessions.length} sessions for directory, top 3: ${sortedSessions.slice(0, 3).map((s: any) => `${s.id}(updated:${s.time?.updated})`).join(', ')}`);
+                
+                const currentSession = sortedSessions[0] || sessions.data[0];
+                targetSessionId = currentSession.id;
+                
+                log.debug(`[Monitor] Using session ID: ${targetSessionId} (updated: ${currentSession.time?.updated})`);
+                targetProjectName = currentSession.directory.split("/").pop() || "opencode";
+                targetDirectory = currentSession.directory;
+              }
             }
           } catch (e) {
-            log.warn("Failed to list sessions:", e);
+            log.warn("Failed to get session:", e);
           }
         }
       } else if (openCodeSessionRegistry) {
@@ -554,8 +588,17 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         return "✗ No session ID provided and could not determine current session.";
       }
 
+      try {
+        const sessionDetails = await client.session.get({ path: { id: targetSessionId } });
+        if (sessionDetails.data) {
+          targetSessionTitle = (sessionDetails.data as any).title;
+        }
+      } catch (e) {
+        log.debug(`[Monitor] Could not fetch session details: ${e}`);
+      }
+
       if (MonitorService.isMonitored(targetSessionId)) {
-        return `Session ${targetSessionId.slice(0, 6)} is already being monitored.`;
+        return `Session ${targetSessionId.substring(0, 8)} is already being monitored.`;
       }
 
       let mattermostUserId: string;
@@ -577,19 +620,62 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         return "✗ targetUser is required when not connected to Mattermost. Specify the Mattermost username to notify.";
       }
 
+      const isPersistent = args.persistent !== false;
+      
       const monitoredSession: MonitoredSession = {
         sessionId: targetSessionId,
-        shortId: targetSessionId.slice(0, 6),
+        shortId: targetSessionId.substring(0, 8),
         mattermostUserId,
         mattermostUsername,
         projectName: targetProjectName,
+        sessionTitle: targetSessionTitle,
         directory: targetDirectory,
         registeredAt: new Date(),
+        persistent: isPersistent,
       };
 
       MonitorService.register(monitoredSession);
 
-      return `✓ Monitoring session ${monitoredSession.shortId} (${targetProjectName})\n✓ Will alert @${mattermostUsername} on permission request, idle, or question\n\n_This is a one-time alert. After notification, monitoring stops._`;
+      const modeText = isPersistent 
+        ? "_Persistent monitoring enabled. Use `mattermost_unmonitor` to stop._"
+        : "_One-time alert. After notification, monitoring stops._";
+      
+      return `✓ Monitoring session ${monitoredSession.shortId} (${targetProjectName})\n✓ Will alert @${mattermostUsername} on permission request, idle, or question\n\n${modeText}`;
+    },
+  });
+
+  const mattermostUnmonitorTool = tool({
+    description: "Stop monitoring an OpenCode session. Stops all alerts for the specified or current session.",
+    args: {
+      sessionId: tool.schema.string().optional().describe("Session ID to stop monitoring. Defaults to current session if not specified."),
+    },
+    async execute(args) {
+      let targetSessionId = args.sessionId;
+      
+      if (!targetSessionId) {
+        try {
+          const statusResult = await client.session.status();
+          const statusMap = statusResult.data as Record<string, { type: string }> | undefined;
+          if (statusMap && Object.keys(statusMap).length > 0) {
+            const activeSessionIds = Object.keys(statusMap);
+            const busySessionId = activeSessionIds.find(id => statusMap[id]?.type === 'busy');
+            targetSessionId = busySessionId || activeSessionIds[0];
+          }
+        } catch (e) {
+          log.warn("Failed to get session status:", e);
+        }
+      }
+      
+      if (!targetSessionId) {
+        return "✗ No session ID provided and could not determine current session.";
+      }
+      
+      if (!MonitorService.isMonitored(targetSessionId)) {
+        return `Session ${targetSessionId.substring(0, 8)} is not being monitored.`;
+      }
+      
+      MonitorService.unregister(targetSessionId);
+      return `✓ Stopped monitoring session ${targetSessionId.substring(0, 8)}`;
     },
   });
 
@@ -602,6 +688,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       mattermost_select_session: mattermostSelectSessionTool,
       mattermost_current_session: mattermostCurrentSessionTool,
       mattermost_monitor: mattermostMonitorTool,
+      mattermost_unmonitor: mattermostUnmonitorTool,
     },
 
     event: async ({ event }) => {
@@ -610,12 +697,16 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       const connectedSessionId = pendingResponseContext?.opencodeSessionId;
 
       if (eventType === "permission.asked") {
+        log.debug(`[Monitor] permission.asked event: sessionId=${eventSessionId}`);
         const description = (event as any).properties?.description || "Permission requested";
         await handleMonitorAlert(eventSessionId, "permission.asked", description, connectedSessionId);
       }
 
-      if (eventType === "session.idle" && eventSessionId) {
-        await handleMonitorAlert(eventSessionId, "session.idle", undefined, connectedSessionId);
+      if (eventType === "session.idle") {
+        log.debug(`[Monitor] session.idle event: sessionId=${eventSessionId}, monitored=${MonitorService.isMonitored(eventSessionId || "")}`);
+        if (eventSessionId) {
+          await handleMonitorAlert(eventSessionId, "session.idle", undefined, connectedSessionId);
+        }
       }
 
       if (!isConnected) return;

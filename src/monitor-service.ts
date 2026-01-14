@@ -9,24 +9,16 @@ import { MattermostClient } from "./clients/mattermost-client.js";
 import { loadConfig, type MattermostConfig } from "./config.js";
 import { log } from "./logger.js";
 
-/**
- * Information about a monitored session
- */
 export interface MonitoredSession {
-  /** Full OpenCode session ID */
   sessionId: string;
-  /** Short session ID (first 6 chars) */
   shortId: string;
-  /** Mattermost user ID to notify */
   mattermostUserId: string;
-  /** Mattermost username (for logging) */
   mattermostUsername: string;
-  /** Project name */
   projectName: string;
-  /** Working directory */
+  sessionTitle?: string;
   directory: string;
-  /** When monitoring was registered */
   registeredAt: Date;
+  persistent: boolean;
 }
 
 /**
@@ -56,7 +48,7 @@ class MonitorServiceImpl {
    */
   register(session: MonitoredSession): void {
     this.monitoredSessions.set(session.sessionId, session);
-    log.info(`[Monitor] Registered session ${session.shortId} (${session.projectName}) for user @${session.mattermostUsername}`);
+    log.info(`[Monitor] Registered session ${session.shortId} (${session.projectName}) for user @${session.mattermostUsername} [fullId=${session.sessionId}]`);
   }
 
   /**
@@ -119,7 +111,9 @@ export function formatAlertMessage(context: AlertContext): string {
 
   const header = `:bell: **OpenCode Session Alert**`;
   const projectLine = `**Project:** ${session.projectName}`;
-  const sessionLine = `**Session:** \`${session.shortId}\``;
+  const sessionLine = session.sessionTitle 
+    ? `**Session:** \`${session.shortId}\` - ${session.sessionTitle}`
+    : `**Session:** \`${session.shortId}\``;
   const directoryLine = `**Directory:** \`${session.directory}\``;
 
   let alertTypeText: string;
@@ -194,18 +188,6 @@ export async function sendEphemeralAlert(
   }
 }
 
-/**
- * Handle a monitor alert event.
- * Checks if the session is monitored, formats the message, sends the alert,
- * and unregisters the session (one-shot behavior).
- * 
- * @param sessionId - The OpenCode session ID that triggered the event
- * @param alertType - The type of alert
- * @param details - Optional details about the alert
- * @param connectedSessionId - If provided, skip alerting if this matches sessionId
- *                             (already connected via main MM flow)
- * @returns true if alert was sent, false otherwise
- */
 export async function handleMonitorAlert(
   sessionId: string,
   alertType: AlertType,
@@ -222,7 +204,7 @@ export async function handleMonitorAlert(
     return false;
   }
 
-  log.info(`[Monitor] Handling ${alertType} alert for session ${monitoredSession.shortId}`);
+  log.info(`[Monitor] Handling ${alertType} alert for session ${monitoredSession.shortId} (persistent: ${monitoredSession.persistent})`);
 
   const message = formatAlertMessage({
     type: alertType,
@@ -232,7 +214,7 @@ export async function handleMonitorAlert(
 
   const sent = await sendEphemeralAlert(monitoredSession.mattermostUserId, message);
 
-  if (sent) {
+  if (sent && !monitoredSession.persistent) {
     MonitorService.unregister(sessionId);
   }
 

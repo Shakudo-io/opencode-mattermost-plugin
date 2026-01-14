@@ -9,6 +9,7 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 - **Remote Control**: Send prompts to OpenCode via Mattermost DMs
 - **Multi-Session Management**: Switch between multiple OpenCode sessions from Mattermost
+- **Session Monitoring**: Get DM alerts when sessions need attention (permission requests, idle, questions)
 - **Real-time Streaming**: Responses stream back in chunks with intelligent buffering
 - **File Attachments**: Send and receive files through Mattermost
 - **Emoji Commands**: React with emojis to control sessions
@@ -125,6 +126,8 @@ Use `mattermost_status` to confirm the connection is active.
 | `mattermost_list_sessions` | List available OpenCode sessions |
 | `mattermost_select_session` | Select which session receives prompts |
 | `mattermost_current_session` | Show currently targeted session |
+| `mattermost_monitor` | Monitor session for events (permission, idle, question) |
+| `mattermost_unmonitor` | Stop monitoring a session |
 
 ### 6. Handling DMs
 
@@ -295,6 +298,44 @@ React to any bot message with these emojis:
 | 🔁 | Retry the last prompt |
 | 🗑️ | Clear session temporary files |
 
+### Session Monitoring
+
+Monitor OpenCode sessions and receive DM alerts when they need attention. Works without requiring an active Mattermost connection.
+
+```bash
+# Start monitoring the current session
+> /mattermost-monitor
+
+# Or use the tool directly
+> mattermost_monitor targetUser="your-username"
+
+# Stop monitoring
+> mattermost_unmonitor
+```
+
+**Alert types:**
+- **Permission requested** - Session is waiting for permission approval
+- **Session idle** - Session finished and is waiting for input
+- **Question asked** - Session is asking a clarifying question
+
+**Example alert:**
+```
+🔔 OpenCode Session Alert
+
+Project: business-automation
+Session: ses_4426 - Mattermost plugin codebase review
+Directory: /root/gitrepos/business-automation
+
+⏳ Alert: Session is idle (waiting for input)
+
+Use `!use ses_4426` in DM to connect to this session.
+```
+
+**Options:**
+- `sessionId` - Monitor a specific session (defaults to current)
+- `targetUser` - Mattermost username to notify (required if not connected)
+- `persistent` - Keep monitoring after each alert (default: true). Set to false for one-time alerts.
+
 ## Architecture
 
 ![Architecture Diagram](docs/architecture.png)
@@ -319,6 +360,7 @@ React to any bot message with these emojis:
 | `NotificationService` | Completion, error, and status notifications |
 | `FileHandler` | Inbound/outbound file attachment processing |
 | `ReactionHandler` | Emoji-based command execution |
+| `MonitorService` | Session event monitoring and DM alerts |
 
 ## Project Structure
 
@@ -341,6 +383,7 @@ opencode-mattermost-plugin/
     ├── file-handler.ts               # File uploads/downloads
     ├── logger.ts                     # File-based logging
     ├── models/index.ts               # TypeScript types
+    ├── monitor-service.ts            # Session monitoring and alerts
     ├── notification-service.ts       # Status notifications
     ├── opencode-session-registry.ts  # OpenCode session discovery
     ├── reaction-handler.ts           # Emoji reaction handling
