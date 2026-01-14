@@ -501,7 +501,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     description: "Monitor an OpenCode session for events (permission requests, idle, questions). Sends a one-time DM alert when the session needs attention.",
     args: {
       sessionId: tool.schema.string().optional().describe("Session ID to monitor. Defaults to current session if not specified."),
-      targetUser: tool.schema.string().optional().describe("Mattermost username to notify. Defaults to the user who invokes this command."),
+      targetUser: tool.schema.string().optional().describe("Mattermost username to notify (required if not connected to Mattermost)."),
     },
     async execute(args) {
       const config = loadConfig();
@@ -527,6 +527,20 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
             targetDirectory = defaultSession.directory;
           }
         }
+        
+        if (!targetSessionId) {
+          try {
+            const sessions = await client.session.list();
+            if (sessions.data && sessions.data.length > 0) {
+              const currentSession = sessions.data.find((s: any) => s.directory === directory) || sessions.data[0];
+              targetSessionId = currentSession.id;
+              targetProjectName = (currentSession as any).project?.name || directory.split("/").pop() || "opencode";
+              targetDirectory = currentSession.directory;
+            }
+          } catch (e) {
+            log.warn("Failed to list sessions:", e);
+          }
+        }
       } else if (openCodeSessionRegistry) {
         const session = openCodeSessionRegistry.get(targetSessionId);
         if (session) {
@@ -537,7 +551,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       }
 
       if (!targetSessionId) {
-        return "✗ No session ID provided and no default session available. Use mattermost_list_sessions to find available sessions.";
+        return "✗ No session ID provided and could not determine current session.";
       }
 
       if (MonitorService.isMonitored(targetSessionId)) {
@@ -556,12 +570,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         } catch (e) {
           return `✗ Could not find Mattermost user: ${args.targetUser}`;
         }
-      } else {
-        if (!botUser) {
-          return "✗ Not connected to Mattermost. Use mattermost_connect first to determine the invoking user.";
-        }
+      } else if (botUser) {
         mattermostUserId = botUser.id;
         mattermostUsername = botUser.username;
+      } else {
+        return "✗ targetUser is required when not connected to Mattermost. Specify the Mattermost username to notify.";
       }
 
       const monitoredSession: MonitoredSession = {
