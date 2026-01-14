@@ -28,9 +28,15 @@ const NotificationsConfigSchema = z.object({
 });
 
 const SessionsConfigSchema = z.object({
-  timeout: z.number().default(3600000), // 1 hour
+  timeout: z.number().default(3600000),
   maxSessions: z.number().default(50),
   allowedUsers: z.array(z.string()).default([]),
+});
+
+const SessionSelectionConfigSchema = z.object({
+  commandPrefix: z.string().default("!"),
+  autoSelectSingle: z.boolean().default(true),
+  refreshIntervalMs: z.number().default(60000),
 });
 
 const FilesConfigSchema = z.object({
@@ -45,6 +51,7 @@ const PluginConfigSchema = z.object({
   notifications: NotificationsConfigSchema,
   sessions: SessionsConfigSchema,
   files: FilesConfigSchema,
+  sessionSelection: SessionSelectionConfigSchema,
 });
 
 export type MattermostConfig = z.infer<typeof MattermostConfigSchema>;
@@ -52,6 +59,7 @@ export type StreamingConfig = z.infer<typeof StreamingConfigSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsConfigSchema>;
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 export type FilesConfig = z.infer<typeof FilesConfigSchema>;
+export type SessionSelectionConfig = z.infer<typeof SessionSelectionConfigSchema>;
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;
 
 // Default Mattermost configuration
@@ -129,6 +137,11 @@ export function loadConfig(): PluginConfig {
       maxFileSize: parseInt(process.env.OPENCODE_MM_MAX_FILE_SIZE || "") || 10485760,
       allowedExtensions:
         process.env.OPENCODE_MM_ALLOWED_EXTENSIONS?.split(",").filter(Boolean) || ["*"],
+    },
+    sessionSelection: {
+      commandPrefix: process.env.OPENCODE_MM_COMMAND_PREFIX || "!",
+      autoSelectSingle: process.env.OPENCODE_MM_AUTO_SELECT !== "false",
+      refreshIntervalMs: parseInt(process.env.OPENCODE_MM_SESSION_REFRESH_INTERVAL || "") || 60000,
     },
   };
 

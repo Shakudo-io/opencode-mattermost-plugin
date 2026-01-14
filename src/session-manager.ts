@@ -23,6 +23,7 @@ export interface UserSession {
   currentResponsePostId: string | null;
   pendingPermission: PermissionRequest | null;
   lastPrompt: Post | null;
+  targetOpenCodeSessionId: string | null;
 }
 
 export class SessionManager {
@@ -89,6 +90,7 @@ export class SessionManager {
       currentResponsePostId: null,
       pendingPermission: null,
       lastPrompt: null,
+      targetOpenCodeSessionId: null,
     };
 
     this.sessions.set(mattermostUserId, session);

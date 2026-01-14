@@ -1,17 +1,20 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { tool } from "@opencode-ai/plugin";
 import { MattermostClient } from "../../../src/clients/mattermost-client.js";
 import { MattermostWebSocketClient } from "../../../src/clients/websocket-client.js";
-import { SessionManager } from "../../../src/session-manager.js";
+import { SessionManager, type UserSession } from "../../../src/session-manager.js";
 import { ResponseStreamer } from "../../../src/response-streamer.js";
 import { NotificationService } from "../../../src/notification-service.js";
 import { FileHandler } from "../../../src/file-handler.js";
 import { ReactionHandler } from "../../../src/reaction-handler.js";
+import { OpenCodeSessionRegistry } from "../../../src/opencode-session-registry.js";
+import { MessageRouter } from "../../../src/message-router.js";
+import { CommandHandler } from "../../../src/command-handler.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
 import type { User, Post, WebSocketEvent } from "../../../src/models/index.js";
 
 let isConnected = false;
-let connectedOpenCodeSessionId: string | null = null;
 let mmClient: MattermostClient | null = null;
 let wsClient: MattermostWebSocketClient | null = null;
 let sessionManager: SessionManager | null = null;
@@ -19,6 +22,9 @@ let streamer: ResponseStreamer | null = null;
 let notifications: NotificationService | null = null;
 let fileHandler: FileHandler | null = null;
 let reactionHandler: ReactionHandler | null = null;
+let openCodeSessionRegistry: OpenCodeSessionRegistry | null = null;
+let messageRouter: MessageRouter | null = null;
+let commandHandler: CommandHandler | null = null;
 let botUser: User | null = null;
 let projectName: string = "";
 let pendingResponseContext: {
@@ -135,12 +141,17 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       });
       reactionHandler.setBotUserId(botUser.id);
 
-      const sessionsResult = await client.session.list();
-      const sessions = sessionsResult.data;
-      if (sessions && sessions.length > 0) {
-        const sortedSessions = sessions.sort((a, b) => b.time.updated - a.time.updated);
-        connectedOpenCodeSessionId = sortedSessions[0].id;
-        log.info(`Bound to OpenCode session: ${connectedOpenCodeSessionId}`);
+      openCodeSessionRegistry = new OpenCodeSessionRegistry(config.sessionSelection.refreshIntervalMs);
+      openCodeSessionRegistry.initialize(client.session);
+      await openCodeSessionRegistry.refresh();
+      openCodeSessionRegistry.startAutoRefresh();
+
+      messageRouter = new MessageRouter(config.sessionSelection.commandPrefix);
+      commandHandler = new CommandHandler(config.sessionSelection.commandPrefix);
+
+      const availableSessions = openCodeSessionRegistry.listAvailable();
+      if (availableSessions.length > 0) {
+        log.info(`Found ${availableSessions.length} OpenCode session(s)`);
       }
 
       setupEventListeners();
@@ -171,15 +182,18 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       wsClient!.disconnect();
       sessionManager?.shutdown();
       fileHandler?.cleanupTempFiles();
+      openCodeSessionRegistry?.clear();
 
       isConnected = false;
-      connectedOpenCodeSessionId = null;
       mmClient = null;
       sessionManager = null;
       streamer = null;
       notifications = null;
       fileHandler = null;
       reactionHandler = null;
+      openCodeSessionRegistry = null;
+      messageRouter = null;
+      commandHandler = null;
 
       log.info("Disconnected from Mattermost");
 
@@ -194,15 +208,20 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       return "Status: **Disconnected**\n\nUse `/mattermost connect` to enable remote control.";
     }
 
-    const sessions = sessionManager?.listSessions() || [];
+    const mmSessions = sessionManager?.listSessions() || [];
     const wsStatus = wsClient?.isConnected() ? "Connected" : "Reconnecting...";
+    const availableOpenCodeSessions = openCodeSessionRegistry?.countAvailable() || 0;
+    const defaultSession = openCodeSessionRegistry?.getDefault();
 
     return `Status: **Connected**
 Bot: @${botUser?.username}
 Project: ${projectName}
-OpenCode Session: ${connectedOpenCodeSessionId || 'none'}
-Active MM Sessions: ${sessions.length}
-WebSocket: ${wsStatus}`;
+OpenCode Sessions: ${availableOpenCodeSessions} available
+Default Session: ${defaultSession ? `${defaultSession.projectName} (${defaultSession.shortId})` : 'none'}
+Active MM Sessions: ${mmSessions.length}
+WebSocket: ${wsStatus}
+
+Use \`!sessions\` in DM to see and select OpenCode sessions.`;
   }
 
   function setupEventListeners(): void {
@@ -237,21 +256,34 @@ WebSocket: ${wsStatus}`;
   }
 
   async function handleUserMessage(post: Post): Promise<void> {
-    if (!sessionManager || !streamer || !notifications || !fileHandler) return;
+    if (!sessionManager || !streamer || !notifications || !fileHandler || !messageRouter || !commandHandler || !openCodeSessionRegistry || !mmClient) return;
 
-    let session;
+    let userSession: UserSession;
     try {
-      session = await sessionManager.getOrCreateSession(post.user_id);
+      userSession = await sessionManager.getOrCreateSession(post.user_id);
     } catch (error) {
       log.error("Failed to get/create session:", error);
       return;
     }
 
-    session.isProcessing = true;
-    session.currentPromptPostId = post.id;
-    session.lastPrompt = post;
+    const routeResult = messageRouter.route(post);
 
-    let promptText = post.message;
+    if (routeResult.type === "command" && routeResult.command) {
+      log.info(`Processing command: ${routeResult.command.name}`);
+      const result = await commandHandler.execute(routeResult.command, {
+        userSession,
+        registry: openCodeSessionRegistry,
+        mmClient,
+      });
+      await mmClient.createPost(userSession.dmChannelId, result.message);
+      return;
+    }
+
+    userSession.isProcessing = true;
+    userSession.currentPromptPostId = post.id;
+    userSession.lastPrompt = post;
+
+    let promptText = routeResult.promptText || post.message;
 
     try {
       if (post.file_ids?.length > 0) {
@@ -261,18 +293,19 @@ WebSocket: ${wsStatus}`;
         }
       }
 
-      const streamCtx = await streamer.startStream(session);
-      session.currentResponsePostId = streamCtx.postId;
+      const streamCtx = await streamer.startStream(userSession);
+      userSession.currentResponsePostId = streamCtx.postId;
 
-      if (!connectedOpenCodeSessionId) {
-        throw new Error("No OpenCode session bound - reconnect to Mattermost");
+      const targetSessionId = resolveTargetSession(userSession);
+      if (!targetSessionId) {
+        throw new Error("No OpenCode session available. Use `!sessions` to see options.");
       }
 
-      log.info(`Using bound OpenCode session: ${connectedOpenCodeSessionId}`);
+      log.info(`Using OpenCode session: ${targetSessionId}`);
 
       pendingResponseContext = {
         opencodeSessionId: "",
-        mmSession: session,
+        mmSession: userSession,
         streamCtx,
         responseBuffer: "",
         thinkingBuffer: "",
@@ -282,22 +315,37 @@ WebSocket: ${wsStatus}`;
       };
 
       await client.session.promptAsync({
-        path: { id: connectedOpenCodeSessionId },
+        path: { id: targetSessionId },
         body: {
-          parts: [{ type: "text", text: `[Mattermost DM from @${session.mattermostUsername}]: ${promptText}` }],
+          parts: [{ type: "text", text: `[Mattermost DM from @${userSession.mattermostUsername}]: ${promptText}` }],
         },
       });
 
-      log.info(`Successfully injected prompt into session ${connectedOpenCodeSessionId}`);
+      log.info(`Successfully injected prompt into session ${targetSessionId}`);
 
     } catch (error) {
       log.error("Error processing message:", error);
-      if (notifications && session) {
-        await notifications.notifyError(session, error as Error);
+      if (notifications && userSession) {
+        await notifications.notifyError(userSession, error as Error);
       }
-      session.isProcessing = false;
+      userSession.isProcessing = false;
       pendingResponseContext = null;
     }
+  }
+
+  function resolveTargetSession(userSession: UserSession): string | null {
+    if (!openCodeSessionRegistry) return null;
+
+    if (userSession.targetOpenCodeSessionId) {
+      const targetSession = openCodeSessionRegistry.get(userSession.targetOpenCodeSessionId);
+      if (targetSession?.isAvailable) {
+        return targetSession.id;
+      }
+      userSession.targetOpenCodeSessionId = null;
+    }
+
+    const defaultSession = openCodeSessionRegistry.getDefault();
+    return defaultSession?.id || null;
   }
 
   const mattermostConnectTool = {
@@ -324,11 +372,76 @@ WebSocket: ${wsStatus}`;
     },
   };
 
+  const mattermostListSessionsTool = {
+    description: "List available OpenCode sessions that can receive prompts from Mattermost",
+    args: {},
+    async execute() {
+      if (!isConnected || !openCodeSessionRegistry) {
+        return "Not connected to Mattermost. Use mattermost_connect first.";
+      }
+
+      try {
+        await openCodeSessionRegistry.refresh();
+      } catch (e) {
+        log.warn("Failed to refresh sessions:", e);
+      }
+
+      const sessions = openCodeSessionRegistry.listAvailable();
+      if (sessions.length === 0) {
+        return "No active OpenCode sessions found.";
+      }
+
+      const defaultSession = openCodeSessionRegistry.getDefault();
+      const lines = sessions.map((s, i) => {
+        const isDefault = s.id === defaultSession?.id;
+        return `${i + 1}. ${s.projectName} (${s.shortId})${isDefault ? " [default]" : ""}\n   Directory: ${s.directory}`;
+      });
+
+      return `Available OpenCode Sessions:\n\n${lines.join("\n\n")}`;
+    },
+  };
+
+  const mattermostSelectSessionTool = tool({
+    description: "Select which OpenCode session should receive prompts from a Mattermost user",
+    args: {
+      sessionId: tool.schema.string().describe("Session ID (full or short 6-char ID) or project name"),
+      mattermostUserId: tool.schema.string().optional().describe("Mattermost user ID to set session for (optional, defaults to all users)"),
+    },
+    async execute(args) {
+      if (!isConnected || !openCodeSessionRegistry || !sessionManager) {
+        return "Not connected to Mattermost. Use mattermost_connect first.";
+      }
+
+      const session = openCodeSessionRegistry.get(args.sessionId);
+      if (!session) {
+        return `Session not found: ${args.sessionId}. Use mattermost_list_sessions to see available sessions.`;
+      }
+
+      if (!session.isAvailable) {
+        return `Session ${session.shortId} (${session.projectName}) is not available.`;
+      }
+
+      if (args.mattermostUserId) {
+        const userSession = sessionManager.getSession(args.mattermostUserId);
+        if (userSession) {
+          userSession.targetOpenCodeSessionId = session.id;
+          return `Set session ${session.shortId} (${session.projectName}) as target for Mattermost user.`;
+        }
+        return `Mattermost user session not found. User must DM the bot first.`;
+      }
+
+      openCodeSessionRegistry.setDefault(session.id);
+      return `Set ${session.shortId} (${session.projectName}) as the default OpenCode session for all Mattermost users.`;
+    },
+  });
+
   return {
     tool: {
       mattermost_connect: mattermostConnectTool,
       mattermost_disconnect: mattermostDisconnectTool,
       mattermost_status: mattermostStatusTool,
+      mattermost_list_sessions: mattermostListSessionsTool,
+      mattermost_select_session: mattermostSelectSessionTool,
     },
 
     event: async ({ event }) => {
