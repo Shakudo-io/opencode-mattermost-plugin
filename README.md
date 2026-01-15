@@ -7,8 +7,9 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ## Features
 
+- **Thread-Per-Session**: Each OpenCode session automatically gets its own dedicated Mattermost thread for clean conversation isolation
 - **Remote Control**: Send prompts to OpenCode via Mattermost DMs
-- **Multi-Session Management**: Switch between multiple OpenCode sessions from Mattermost
+- **Multi-Session Management**: Control multiple OpenCode sessions in parallel via separate threads
 - **Session Monitoring**: Get DM alerts when sessions need attention (permission requests, idle, questions)
 - **Real-time Streaming**: Responses stream back in chunks with intelligent buffering
 - **File Attachments**: Send and receive files through Mattermost
@@ -260,30 +261,65 @@ opencode
 > mattermost_disconnect
 ```
 
+### Thread-Per-Session Workflow
+
+When the plugin connects, it automatically creates a dedicated Mattermost thread for each active OpenCode session. This provides clean conversation isolation and parallel session control.
+
+**How it works:**
+1. When a new OpenCode session starts, a thread is automatically created in your DM with the bot
+2. The thread root post shows session info (project, directory, session ID)
+3. Post in the thread to send prompts to that specific session
+4. Responses stream back to the same thread
+5. When the session ends, the thread is marked as ended
+
+**Example:**
+```
+Bot: 🚀 OpenCode Session Started
+
+     Project: my-awesome-app
+     Directory: /home/user/projects/my-awesome-app
+     Session: ses_abc1
+     Started: 2024-01-15T10:30:00.000Z
+
+     Reply in this thread to send prompts to this session.
+
+You (in thread): List all TypeScript files
+Bot (in thread): [Streaming response...]
+```
+
+**Main DM commands:**
+- `!sessions` - List all sessions with links to their threads
+- `!help` - Show available commands
+
+**Thread behavior:**
+- Prompts in main DM (outside threads) are rejected with guidance to use session threads
+- Each thread maps to exactly one OpenCode session
+- Thread posts are routed to the correct session automatically
+- Ended sessions show a completion message and reject new prompts
+
 ### Session Management Commands
 
 When connected, you can manage multiple OpenCode sessions via DM commands:
 
 | Command | Description |
 |---------|-------------|
-| `!sessions` | List all available OpenCode sessions |
-| `!use <id>` | Switch to a specific session by ID or slug |
-| `!current` | Show the currently selected session |
-| `!help` | Display available commands |
+| `!sessions` | List all available OpenCode sessions with thread links |
+| `!help` | Display available commands and thread workflow |
 
-**Example workflow:**
+**Example:**
 ```
 You: !sessions
-Bot: 📋 Available Sessions (3)
-     1. [ses_44] business-automation - 5m ago
-     2. [ses_38] my-project - 2h ago  
-     3. [ses_21] another-repo - 1d ago
+Bot: 📋 Available Sessions (2)
 
-You: !use ses_38
-Bot: ✓ Switched to session: my-project
+     1. 🟢 my-awesome-app (ses_abc1) - 5m ago
+        📁 /home/user/projects/my-awesome-app
+        🔗 Thread: [Click to open]
 
-You: What files are in this project?
-Bot: [Response from ses_38 session...]
+     2. 🟢 another-project (ses_def2) - 2h ago
+        📁 /home/user/projects/another-project
+        🔗 Thread: [Click to open]
+
+     Reply in a session thread to send prompts.
 ```
 
 ### Emoji Commands
@@ -355,8 +391,11 @@ Use `!use ses_4426` in DM to connect to this session.
 | `WebSocketClient` | Real-time event streaming for instant message detection |
 | `SessionManager` | Per-user session tracking with timeout management |
 | `OpenCodeSessionRegistry` | Discovers and tracks all available OpenCode sessions |
+| `ThreadManager` | Creates and manages session threads, handles lifecycle |
+| `ThreadMappingStore` | Persists thread-to-session mappings with indexes |
+| `MessageRouter` | Routes messages to correct sessions based on thread context |
 | `CommandHandler` | Processes `!commands` for session management |
-| `ResponseStreamer` | Chunked message delivery to Mattermost |
+| `ResponseStreamer` | Chunked message delivery to correct thread |
 | `NotificationService` | Completion, error, and status notifications |
 | `FileHandler` | Inbound/outbound file attachment processing |
 | `ReactionHandler` | Emoji-based command execution |
@@ -378,18 +417,108 @@ opencode-mattermost-plugin/
     ├── clients/
     │   ├── mattermost-client.ts      # HTTP API client
     │   └── websocket-client.ts       # WebSocket client
+    ├── persistence/
+    │   └── thread-mapping-store.ts   # Thread mapping persistence
+    ├── models/
+    │   ├── index.ts                  # TypeScript types
+    │   ├── thread-mapping.ts         # Thread mapping Zod schemas
+    │   └── routing.ts                # Message routing types
     ├── command-handler.ts            # !command processing
     ├── config.ts                     # Configuration loading
     ├── file-handler.ts               # File uploads/downloads
     ├── logger.ts                     # File-based logging
-    ├── models/index.ts               # TypeScript types
+    ├── message-router.ts             # Thread-aware message routing
     ├── monitor-service.ts            # Session monitoring and alerts
     ├── notification-service.ts       # Status notifications
     ├── opencode-session-registry.ts  # OpenCode session discovery
     ├── reaction-handler.ts           # Emoji reaction handling
     ├── response-streamer.ts          # Streams responses to MM
-    └── session-manager.ts            # User session management
+    ├── session-manager.ts            # User session management
+    └── thread-manager.ts             # Thread lifecycle management
 ```
+
+## Updating the Plugin
+
+OpenCode caches plugins in `~/.config/opencode/node_modules/`. Simply running `bun add -g` or `npm install -g` does **not** update the running plugin. Follow these steps:
+
+### Step 1: Update the Version Pin
+
+Edit `~/.config/opencode/package.json` and update the version:
+
+```json
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "1.1.21",
+    "opencode-mattermost-control": "0.2.19"  // <- Update this version
+  }
+}
+```
+
+### Step 2: Clear the Cache
+
+```bash
+# Remove cached package and lockfile
+rm -rf ~/.config/opencode/node_modules/opencode-mattermost-control
+rm -f ~/.config/opencode/bun.lock
+```
+
+### Step 3: Install the New Version
+
+```bash
+cd ~/.config/opencode
+bun install
+
+# If using a private registry (e.g., Verdaccio):
+bun install --registry http://your-registry-url:4873
+```
+
+### Step 4: Restart OpenCode
+
+**Critical**: You must completely restart OpenCode for the new plugin code to load. A `mattermost_disconnect` / `mattermost_connect` cycle only reconnects the WebSocket—it does **not** reload plugin code from disk.
+
+```bash
+# Exit OpenCode completely (Ctrl+C or close terminal)
+# Then start fresh:
+opencode
+```
+
+### Step 5: Verify
+
+After reconnecting, check the logs to confirm the new version is running:
+
+```bash
+tail -f /tmp/opencode-mattermost-plugin.log
+```
+
+### Quick Update Script
+
+```bash
+#!/bin/bash
+# update-mattermost-plugin.sh
+VERSION="${1:-latest}"
+
+echo "Updating opencode-mattermost-control to $VERSION..."
+
+# Update package.json
+if [ "$VERSION" = "latest" ]; then
+  # Fetch latest version from registry
+  VERSION=$(curl -s http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4873/opencode-mattermost-control | jq -r '.["dist-tags"].latest')
+fi
+
+# Update version in package.json
+cd ~/.config/opencode
+cat package.json | jq ".dependencies[\"opencode-mattermost-control\"] = \"$VERSION\"" > package.json.tmp
+mv package.json.tmp package.json
+
+# Clear cache and reinstall
+rm -rf node_modules/opencode-mattermost-control bun.lock
+bun install --registry http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4873
+
+echo "Updated to version $VERSION"
+echo "IMPORTANT: Restart OpenCode for changes to take effect!"
+```
+
+---
 
 ## Troubleshooting
 
@@ -415,6 +544,14 @@ Verify your bot token has the required permissions:
 ```bash
 tail -f /tmp/opencode-mattermost-plugin.log
 ```
+
+### Plugin not updating after install
+If you installed a new version but the old code is still running:
+
+1. OpenCode caches plugins in `~/.config/opencode/node_modules/`
+2. Check the cached version: `cat ~/.config/opencode/node_modules/opencode-mattermost-control/package.json | grep version`
+3. Follow the [Updating the Plugin](#updating-the-plugin) section above
+4. **You must restart OpenCode completely** - disconnect/reconnect only refreshes the WebSocket, not the plugin code
 
 ## Development
 
