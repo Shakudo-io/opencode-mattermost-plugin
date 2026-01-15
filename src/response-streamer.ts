@@ -6,6 +6,7 @@ import { log } from "./logger.js";
 export interface StreamContext {
   postId: string;
   channelId: string;
+  threadRootPostId?: string;
   buffer: string;
   lastUpdateTime: number;
   totalChunks: number;
@@ -22,13 +23,14 @@ export class ResponseStreamer {
     this.config = config;
   }
 
-  async startStream(session: UserSession, initialText: string = ""): Promise<StreamContext> {
+  async startStream(session: UserSession, threadRootPostId?: string, initialText: string = ""): Promise<StreamContext> {
     const displayText = initialText || "Thinking...";
-    const post = await this.mmClient.createPost(session.dmChannelId, displayText + " ...");
+    const post = await this.mmClient.createPost(session.dmChannelId, displayText + " ...", threadRootPostId);
 
     const ctx: StreamContext = {
       postId: post.id,
       channelId: session.dmChannelId,
+      threadRootPostId,
       buffer: initialText,
       lastUpdateTime: Date.now(),
       totalChunks: 0,
