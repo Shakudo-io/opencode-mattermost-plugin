@@ -387,15 +387,16 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       return;
     }
 
-    // Create threads for this user if they don't have any yet
+    // Create threads for any sessions that don't have mappings yet
+    // This handles sessions that existed before MM connection or in different project contexts
     if (threadManager && threadMappingStore) {
-      const userMappings = threadMappingStore.getByMattermostUserId(userSession.mattermostUserId);
-      if (userMappings.length === 0) {
-        const availableSessions = openCodeSessionRegistry.listAvailable();
-        for (const sessionInfo of availableSessions) {
+      const availableSessions = openCodeSessionRegistry.listAvailable();
+      for (const sessionInfo of availableSessions) {
+        const existingMapping = threadMappingStore.getBySessionId(sessionInfo.id);
+        if (!existingMapping) {
           try {
             await threadManager.createThread(sessionInfo, userSession.mattermostUserId, userSession.dmChannelId);
-            log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId} for new user ${userSession.mattermostUsername}`);
+            log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId} for user ${userSession.mattermostUsername}`);
           } catch (e) {
             log.error(`[AutoThread] Failed to create thread:`, e);
           }
@@ -527,14 +528,18 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       
       activeResponseContexts.set(targetSessionId, responseContext);
 
+      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]: ${promptText}`;
+      
+      log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 100)}..."`);
+      
       await client.session.promptAsync({
         path: { id: targetSessionId },
         body: {
-          parts: [{ type: "text", text: `[Mattermost DM from @${userSession.mattermostUsername}]: ${promptText}` }],
+          parts: [{ type: "text", text: promptMessage }],
         },
       });
 
-      log.info(`Successfully injected prompt into session ${targetSessionId}`);
+      log.info(`Prompt injected into session ${targetSessionId} from @${userSession.mattermostUsername}`);
 
     } catch (error) {
       log.error("Error processing message:", error);

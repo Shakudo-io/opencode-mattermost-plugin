@@ -372,6 +372,63 @@ Use `!use ses_4426` in DM to connect to this session.
 - `targetUser` - Mattermost username to notify (required if not connected)
 - `persistent` - Keep monitoring after each alert (default: true). Set to false for one-time alerts.
 
+### Multi-Session Setup (Shared Server)
+
+When controlling multiple OpenCode sessions via Mattermost, you need to run them on a **shared server** so that events (like incoming prompts) are visible across all TUIs.
+
+**Why?** By default, each `opencode` command starts its own isolated server. Messages sent to one session won't appear in another session's TUI because they don't share the same event bus.
+
+**Solution:** Use OpenCode's shared server mode:
+
+#### Option 1: Manual Setup
+
+```bash
+# Terminal 1 - Start the shared server
+opencode serve --port 4096
+
+# Terminal 2 - Attach first TUI (run mattermost_connect here)
+cd /path/to/project-a
+opencode attach http://localhost:4096
+
+# Terminal 3 - Attach second TUI
+cd /path/to/project-b
+opencode attach http://localhost:4096
+```
+
+#### Option 2: Using the Helper Script
+
+A convenience script `opencode-shared` is provided that automatically manages the shared server:
+
+```bash
+# First run - starts server in background, then attaches TUI
+./opencode-shared
+
+# Subsequent runs - attaches to existing server
+./opencode-shared
+
+# With optional password for security
+OPENCODE_SERVER_PASSWORD="your-secret" ./opencode-shared
+```
+
+The script:
+- Checks if a shared server is already running on port 4096
+- If not, starts one as a background process
+- Attaches a TUI to the shared server
+- Logs server output to `/tmp/opencode-server.log`
+
+#### Security Note
+
+For production use, set `OPENCODE_SERVER_PASSWORD` environment variable on both server and client:
+
+```bash
+export OPENCODE_SERVER_PASSWORD="your-secure-password"
+opencode serve --port 4096
+
+# In another terminal (same password required)
+export OPENCODE_SERVER_PASSWORD="your-secure-password"
+opencode attach http://localhost:4096
+```
+
 ## Architecture
 
 ![Architecture Diagram](docs/architecture.png)
