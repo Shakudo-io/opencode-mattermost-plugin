@@ -510,13 +510,6 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     if (!mmClient || !threadManager) return null;
     
     try {
-      await mmClient.createPost(
-        userSession.dmChannelId,
-        `:rocket: Starting new OpenCode session...`
-      );
-      
-      // Don't pass a title - let OpenCode use its default "New session - ..." format
-      // This enables automatic LLM-based title generation from the first prompt
       const result = await client.session.create({
         body: {},
         query: {
@@ -541,7 +534,8 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       const mapping = await threadManager.createThread(
         sessionInfo,
         userSession.mattermostUserId,
-        userSession.dmChannelId
+        userSession.dmChannelId,
+        post.id
       );
       
       await openCodeSessionRegistry?.refresh();
@@ -556,7 +550,8 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       log.error("[CreateSession] Failed:", error);
       await mmClient.createPost(
         userSession.dmChannelId,
-        `:x: Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`
+        `:x: Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        post.id
       );
       return null;
     }

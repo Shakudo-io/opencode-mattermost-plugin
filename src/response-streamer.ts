@@ -11,6 +11,8 @@ export interface StreamContext {
   lastUpdateTime: number;
   totalChunks: number;
   isCancelled: boolean;
+  continuationPostIds: string[];
+  currentPostContent: string;
 }
 
 export class ResponseStreamer {
@@ -35,6 +37,8 @@ export class ResponseStreamer {
       lastUpdateTime: Date.now(),
       totalChunks: 0,
       isCancelled: false,
+      continuationPostIds: [],
+      currentPostContent: initialText,
     };
 
     this.activeStreams.set(post.id, ctx);
@@ -68,7 +72,7 @@ export class ResponseStreamer {
     }
 
     try {
-      await this.mmClient.updatePost(ctx.postId, ctx.buffer + " ...");
+      await this.updateWithSplitting(ctx, ctx.buffer + " ...");
       ctx.lastUpdateTime = Date.now();
     } catch (error) {
       log.error("[ResponseStreamer] Failed to update post:", error);
@@ -86,7 +90,7 @@ export class ResponseStreamer {
 
     if (timeSinceLastUpdate >= minInterval) {
       try {
-        await this.mmClient.updatePost(ctx.postId, ctx.buffer + " ...");
+        await this.updateWithSplitting(ctx, ctx.buffer + " ...");
         ctx.lastUpdateTime = Date.now();
       } catch (error) {
         log.error("[ResponseStreamer] Failed to update post:", error);
@@ -100,7 +104,8 @@ export class ResponseStreamer {
     this.activeStreams.delete(ctx.postId);
 
     try {
-      await this.mmClient.updatePost(ctx.postId, ctx.buffer || "(No response)");
+      const finalContent = ctx.buffer || "(No response)";
+      await this.updateWithSplitting(ctx, finalContent);
     } catch (error) {
       log.error("[ResponseStreamer] Failed to finalize post:", error);
     }
@@ -111,10 +116,105 @@ export class ResponseStreamer {
     this.activeStreams.delete(ctx.postId);
 
     try {
-      await this.mmClient.updatePost(ctx.postId, ctx.buffer + "\n\n*(Cancelled)*");
+      const cancelledContent = ctx.buffer + "\n\n*(Cancelled)*";
+      await this.updateWithSplitting(ctx, cancelledContent);
     } catch (error) {
       log.error("[ResponseStreamer] Failed to mark post as cancelled:", error);
     }
+  }
+
+  private async updateWithSplitting(ctx: StreamContext, content: string): Promise<void> {
+    const maxLen = this.config.maxPostLength;
+    
+    if (content.length <= maxLen) {
+      await this.mmClient.updatePost(ctx.postId, content);
+      ctx.currentPostContent = content;
+      return;
+    }
+
+    const parts = this.splitMessage(content, maxLen);
+    
+    const firstPartWithContinuation = parts.length > 1 
+      ? parts[0] + "\n\n*(continued below...)*"
+      : parts[0];
+    
+    await this.mmClient.updatePost(ctx.postId, firstPartWithContinuation);
+    ctx.currentPostContent = firstPartWithContinuation;
+
+    for (let i = 1; i < parts.length; i++) {
+      const isLast = i === parts.length - 1;
+      const partContent = isLast 
+        ? `*(continued ${i + 1}/${parts.length})*\n\n${parts[i]}`
+        : `*(continued ${i + 1}/${parts.length})*\n\n${parts[i]}\n\n*(continued below...)*`;
+
+      if (ctx.continuationPostIds[i - 1]) {
+        await this.mmClient.updatePost(ctx.continuationPostIds[i - 1], partContent);
+      } else {
+        const post = await this.mmClient.createPost(
+          ctx.channelId, 
+          partContent, 
+          ctx.threadRootPostId
+        );
+        ctx.continuationPostIds.push(post.id);
+      }
+    }
+
+    const extraPosts = ctx.continuationPostIds.length - (parts.length - 1);
+    if (extraPosts > 0) {
+      for (let i = 0; i < extraPosts; i++) {
+        const postIdToRemove = ctx.continuationPostIds.pop();
+        if (postIdToRemove) {
+          try {
+            await this.mmClient.updatePost(postIdToRemove, "*(message consolidated above)*");
+          } catch (e) {
+            log.debug("[ResponseStreamer] Could not update orphaned continuation post");
+          }
+        }
+      }
+    }
+  }
+
+  private splitMessage(content: string, maxLen: number): string[] {
+    if (content.length <= maxLen) {
+      return [content];
+    }
+
+    const parts: string[] = [];
+    let remaining = content;
+    const reservedSpace = 50;
+    const effectiveMax = maxLen - reservedSpace;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= effectiveMax) {
+        parts.push(remaining);
+        break;
+      }
+
+      let splitPoint = this.findSplitPoint(remaining, effectiveMax);
+      parts.push(remaining.substring(0, splitPoint).trimEnd());
+      remaining = remaining.substring(splitPoint).trimStart();
+    }
+
+    return parts;
+  }
+
+  private findSplitPoint(text: string, maxLen: number): number {
+    const doubleNewline = text.lastIndexOf("\n\n", maxLen);
+    if (doubleNewline > maxLen * 0.5) {
+      return doubleNewline + 2;
+    }
+
+    const singleNewline = text.lastIndexOf("\n", maxLen);
+    if (singleNewline > maxLen * 0.5) {
+      return singleNewline + 1;
+    }
+
+    const space = text.lastIndexOf(" ", maxLen);
+    if (space > maxLen * 0.7) {
+      return space + 1;
+    }
+
+    return maxLen;
   }
 
   isStreaming(postId: string): boolean {

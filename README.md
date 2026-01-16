@@ -212,6 +212,7 @@ export MATTERMOST_MAX_RECONNECT_ATTEMPTS="10"   # max reconnection tries
 export OPENCODE_MM_BUFFER_SIZE="50"              # characters before flushing
 export OPENCODE_MM_MAX_DELAY="500"               # max ms before forced flush
 export OPENCODE_MM_EDIT_RATE_LIMIT="10"          # max edits per second
+export OPENCODE_MM_MAX_POST_LENGTH="15000"       # max chars before splitting into multiple posts
 
 # Session configuration
 export OPENCODE_MM_SESSION_TIMEOUT="3600000"     # 1 hour in ms

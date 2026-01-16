@@ -16,7 +16,8 @@ export class ThreadManager {
   async createThread(
     sessionInfo: OpenCodeSessionInfo,
     mattermostUserId: string,
-    dmChannelId: string
+    dmChannelId: string,
+    userPostId?: string
   ): Promise<ThreadSessionMapping> {
     const existing = this.store.getBySessionId(sessionInfo.id);
     if (existing) {
@@ -35,17 +36,30 @@ export class ThreadManager {
 
     const message = this.formatThreadRootPost(content);
 
-    let rootPost;
-    try {
-      rootPost = await this.mmClient.createPost(dmChannelId, message);
-    } catch (e) {
-      log.warn(`[ThreadManager] First attempt failed, retrying...`);
-      rootPost = await this.mmClient.createPost(dmChannelId, message);
+    let threadRootPostId: string;
+
+    if (userPostId) {
+      threadRootPostId = userPostId;
+      try {
+        await this.mmClient.createPost(dmChannelId, message, userPostId);
+      } catch (e) {
+        log.warn(`[ThreadManager] First attempt failed, retrying...`);
+        await this.mmClient.createPost(dmChannelId, message, userPostId);
+      }
+    } else {
+      let rootPost;
+      try {
+        rootPost = await this.mmClient.createPost(dmChannelId, message);
+      } catch (e) {
+        log.warn(`[ThreadManager] First attempt failed, retrying...`);
+        rootPost = await this.mmClient.createPost(dmChannelId, message);
+      }
+      threadRootPostId = rootPost.id;
     }
 
     const mapping: ThreadSessionMapping = {
       sessionId: sessionInfo.id,
-      threadRootPostId: rootPost.id,
+      threadRootPostId,
       shortId: sessionInfo.shortId,
       mattermostUserId,
       dmChannelId,

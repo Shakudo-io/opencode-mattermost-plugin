@@ -18,6 +18,7 @@ const StreamingConfigSchema = z.object({
   bufferSize: z.number().default(50),
   maxDelay: z.number().default(500),
   editRateLimit: z.number().default(10),
+  maxPostLength: z.number().default(15000), // Mattermost limit is 16383, leave buffer for formatting
 });
 
 const NotificationsConfigSchema = z.object({
@@ -115,6 +116,7 @@ export function loadConfig(): PluginConfig {
       bufferSize: parseInt(process.env.OPENCODE_MM_BUFFER_SIZE || "") || 50,
       maxDelay: parseInt(process.env.OPENCODE_MM_MAX_DELAY || "") || 500,
       editRateLimit: parseInt(process.env.OPENCODE_MM_EDIT_RATE_LIMIT || "") || 10,
+      maxPostLength: parseInt(process.env.OPENCODE_MM_MAX_POST_LENGTH || "") || 15000,
     },
     notifications: {
       onCompletion: process.env.OPENCODE_MM_NOTIFY_COMPLETION !== "false",
