@@ -37,6 +37,7 @@ const SessionSelectionConfigSchema = z.object({
   commandPrefix: z.string().default("!"),
   autoSelectSingle: z.boolean().default(true),
   refreshIntervalMs: z.number().default(60000),
+  autoCreateSession: z.boolean().default(true),
 });
 
 const FilesConfigSchema = z.object({
@@ -135,6 +136,7 @@ export function loadConfig(): PluginConfig {
       commandPrefix: process.env.OPENCODE_MM_COMMAND_PREFIX || "!",
       autoSelectSingle: process.env.OPENCODE_MM_AUTO_SELECT !== "false",
       refreshIntervalMs: parseInt(process.env.OPENCODE_MM_SESSION_REFRESH_INTERVAL || "") || 60000,
+      autoCreateSession: process.env.OPENCODE_MM_AUTO_CREATE_SESSION !== "false",
     },
   };
 

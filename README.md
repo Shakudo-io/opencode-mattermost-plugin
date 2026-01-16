@@ -132,7 +132,19 @@ Use `mattermost_status` to confirm the connection is active.
 
 ### 6. Handling DMs
 
-Once connected, any DM sent to the bot user will appear as a prompt in your session prefixed with `[Mattermost DM from @username]:`. Process these as normal user requests.
+Once connected, DMs to the bot are processed as follows:
+
+**Prompt Format:**
+```
+[Mattermost DM from @username]
+[Reply-To: thread=abc123 post=xyz789 channel=dm_channel_id]
+<user's message>
+```
+
+The `Reply-To` line provides context for agents with other Mattermost integrations (MCP servers, direct API) to reply to the correct thread.
+
+**Auto-Session Creation:**
+If a user sends a message in the main DM (not in a thread) and no sessions exist, a new OpenCode session is automatically created. This can be disabled with `OPENCODE_MM_AUTO_CREATE_SESSION=false`.
 
 ### 7. Session Commands
 
@@ -204,6 +216,7 @@ export OPENCODE_MM_EDIT_RATE_LIMIT="10"          # max edits per second
 export OPENCODE_MM_SESSION_TIMEOUT="3600000"     # 1 hour in ms
 export OPENCODE_MM_MAX_SESSIONS="50"             # max concurrent sessions
 export OPENCODE_MM_ALLOWED_USERS=""              # comma-separated user IDs (empty = all)
+export OPENCODE_MM_AUTO_CREATE_SESSION="true"    # auto-create session from main DM
 
 # File handling
 export OPENCODE_MM_TEMP_DIR="/tmp/opencode-mm-plugin"
