@@ -515,10 +515,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         `:rocket: Starting new OpenCode session...`
       );
       
+      // Don't pass a title - let OpenCode use its default "New session - ..." format
+      // This enables automatic LLM-based title generation from the first prompt
       const result = await client.session.create({
-        body: {
-          title: `Mattermost DM - ${new Date().toISOString()}`
-        },
+        body: {},
         query: {
           directory: directory
         }
