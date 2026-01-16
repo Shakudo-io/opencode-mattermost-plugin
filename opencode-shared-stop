@@ -1,35 +1,90 @@
 #!/usr/bin/env bash
 #
-# opencode-shared-stop - Stop the shared OpenCode server
+# opencode-shared-stop - Stop the shared OpenCode server and supervisor
 #
 # Usage:
 #   ./opencode-shared-stop
+#
+# This script:
+#   1. Creates a stop flag to prevent auto-restart
+#   2. Stops the supervisor process
+#   3. Stops the server process
+#   4. Cleans up state files
 #
 
 set -e
 
 PORT="${OPENCODE_SERVER_PORT:-4096}"
-PIDFILE="/tmp/opencode-server.pid"
 
-if [ -f "$PIDFILE" ]; then
-    pid=$(cat "$PIDFILE")
-    if kill -0 "$pid" 2>/dev/null; then
+# State files (must match opencode-shared)
+PIDFILE="/tmp/opencode-server.pid"
+SUPERVISOR_PIDFILE="/tmp/opencode-server.supervisor.pid"
+STOP_FLAG="/tmp/opencode-server.stop"
+LOCKDIR="/tmp/opencode-server.supervisor.lock"
+
+# Step 1: Create stop flag FIRST to prevent auto-restart
+echo "Setting stop flag to prevent auto-restart..."
+touch "$STOP_FLAG"
+
+# Step 2: Stop supervisor if running
+if [[ -f "$SUPERVISOR_PIDFILE" ]]; then
+    supervisor_pid=$(cat "$SUPERVISOR_PIDFILE" 2>/dev/null || true)
+    if [[ -n "${supervisor_pid:-}" ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+        echo "Stopping supervisor (PID: ${supervisor_pid})..."
+        kill "$supervisor_pid" 2>/dev/null || true
+        # Give it a moment to exit gracefully
+        sleep 0.5
+        # Force kill if still running
+        if kill -0 "$supervisor_pid" 2>/dev/null; then
+            kill -9 "$supervisor_pid" 2>/dev/null || true
+        fi
+    else
+        echo "Supervisor process not running (stale PID file)."
+    fi
+    rm -f "$SUPERVISOR_PIDFILE"
+fi
+
+# Clean up supervisor lock directory
+if [[ -d "$LOCKDIR" ]]; then
+    rmdir "$LOCKDIR" 2>/dev/null || true
+fi
+
+# Step 3: Stop server if running
+if [[ -f "$PIDFILE" ]]; then
+    pid=$(cat "$PIDFILE" 2>/dev/null || true)
+    if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
         echo "Stopping OpenCode server (PID: ${pid})..."
-        kill "$pid"
-        rm -f "$PIDFILE"
+        kill "$pid" 2>/dev/null || true
+        # Wait for graceful shutdown
+        sleep 1
+        # Force kill if still running
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Server didn't stop gracefully, forcing..."
+            kill -9 "$pid" 2>/dev/null || true
+        fi
         echo "Server stopped."
     else
         echo "Server process not running (stale PID file)."
-        rm -f "$PIDFILE"
     fi
+    rm -f "$PIDFILE"
 else
-    # Try to find process by port
+    # Try to find process by port as fallback
     pid=$(lsof -ti :"$PORT" 2>/dev/null || true)
-    if [ -n "$pid" ]; then
+    if [[ -n "${pid:-}" ]]; then
         echo "Stopping process on port ${PORT} (PID: ${pid})..."
-        kill "$pid"
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
         echo "Server stopped."
     else
         echo "No OpenCode server running on port ${PORT}."
     fi
 fi
+
+# Step 4: Clean up stop flag (optional - can leave for debugging)
+# Uncomment next line to remove stop flag after stopping
+# rm -f "$STOP_FLAG"
+
+echo "Done. Stop flag left at ${STOP_FLAG} (will be cleared on next start)."
