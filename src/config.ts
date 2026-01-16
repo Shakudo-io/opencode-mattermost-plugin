@@ -11,7 +11,7 @@ const MattermostConfigSchema = z.object({
   debug: z.boolean().default(false),
   reconnectInterval: z.number().default(5000),
   maxReconnectAttempts: z.number().default(10),
-  autoConnect: z.boolean().default(false),
+  autoConnect: z.boolean().default(true),
 });
 
 const StreamingConfigSchema = z.object({
@@ -109,7 +109,7 @@ export function loadConfig(): PluginConfig {
       maxReconnectAttempts:
         parseInt(process.env.MATTERMOST_MAX_RECONNECT_ATTEMPTS || "") ||
         DEFAULT_MATTERMOST_CONFIG.maxReconnectAttempts,
-      autoConnect: process.env.MATTERMOST_AUTO_CONNECT === "true",
+      autoConnect: process.env.MATTERMOST_AUTO_CONNECT !== "false",
     },
     streaming: {
       bufferSize: parseInt(process.env.OPENCODE_MM_BUFFER_SIZE || "") || 50,
