@@ -5,12 +5,13 @@ import { log as fileLog } from "./logger.js";
 const MattermostConfigSchema = z.object({
   baseUrl: z.string().url(),
   wsUrl: z.string(),
-  token: z.string().default(""), // Token validated at connect time, not load time
+  token: z.string().default(""),
   botUsername: z.string().optional(),
   defaultTeam: z.string().optional(),
   debug: z.boolean().default(false),
   reconnectInterval: z.number().default(5000),
   maxReconnectAttempts: z.number().default(10),
+  autoConnect: z.boolean().default(true),
 });
 
 const StreamingConfigSchema = z.object({
@@ -37,6 +38,7 @@ const SessionSelectionConfigSchema = z.object({
   commandPrefix: z.string().default("!"),
   autoSelectSingle: z.boolean().default(true),
   refreshIntervalMs: z.number().default(60000),
+  autoCreateSession: z.boolean().default(true),
 });
 
 const FilesConfigSchema = z.object({
@@ -107,6 +109,7 @@ export function loadConfig(): PluginConfig {
       maxReconnectAttempts:
         parseInt(process.env.MATTERMOST_MAX_RECONNECT_ATTEMPTS || "") ||
         DEFAULT_MATTERMOST_CONFIG.maxReconnectAttempts,
+      autoConnect: process.env.MATTERMOST_AUTO_CONNECT !== "false",
     },
     streaming: {
       bufferSize: parseInt(process.env.OPENCODE_MM_BUFFER_SIZE || "") || 50,
@@ -135,6 +138,7 @@ export function loadConfig(): PluginConfig {
       commandPrefix: process.env.OPENCODE_MM_COMMAND_PREFIX || "!",
       autoSelectSingle: process.env.OPENCODE_MM_AUTO_SELECT !== "false",
       refreshIntervalMs: parseInt(process.env.OPENCODE_MM_SESSION_REFRESH_INTERVAL || "") || 60000,
+      autoCreateSession: process.env.OPENCODE_MM_AUTO_CREATE_SESSION !== "false",
     },
   };
 

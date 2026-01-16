@@ -7,7 +7,7 @@ import { ResponseStreamer } from "../../../src/response-streamer.js";
 import { NotificationService } from "../../../src/notification-service.js";
 import { FileHandler } from "../../../src/file-handler.js";
 import { ReactionHandler } from "../../../src/reaction-handler.js";
-import { OpenCodeSessionRegistry } from "../../../src/opencode-session-registry.js";
+import { OpenCodeSessionRegistry, type OpenCodeSessionInfo } from "../../../src/opencode-session-registry.js";
 import { MessageRouter } from "../../../src/message-router.js";
 import { CommandHandler } from "../../../src/command-handler.js";
 import { MonitorService, handleMonitorAlert, type MonitoredSession } from "../../../src/monitor-service.js";
@@ -126,7 +126,15 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
   threadMappingStore = new ThreadMappingStore();
   threadMappingStore.load().catch((e) => log.warn("[Plugin] Failed to load thread mappings:", e));
 
-  log.info("Loaded (not connected - use /mattermost connect)");
+  if (config.mattermost.autoConnect && config.mattermost.token) {
+    log.info("Auto-connect enabled, connecting to Mattermost...");
+    setTimeout(async () => {
+      const result = await handleConnect();
+      log.info(`Auto-connect result: ${result.split('\n')[0]}`);
+    }, 100);
+  } else {
+    log.info("Loaded (not connected - use /mattermost connect)");
+  }
 
   async function handleConnect(): Promise<string> {
     if (isConnected) {
@@ -423,6 +431,23 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       }
       
       case "main_dm_prompt": {
+        // Main DM prompts always create a new session when autoCreateSession is enabled
+        // This makes the main DM channel the "new session launcher"
+        // Use threads to continue existing sessions
+        if (config.sessionSelection.autoCreateSession) {
+          const newSession = await createNewSessionFromDm(userSession, post);
+          if (newSession) {
+            await handleThreadPrompt({
+              sessionId: newSession.sessionId,
+              threadRootPostId: newSession.threadRootPostId,
+              promptText: post.message.trim(),
+              fileIds: post.file_ids,
+            }, userSession, post);
+          }
+          return;
+        }
+        
+        // autoCreateSession is disabled - show error with guidance
         await mmClient.createPost(
           userSession.dmChannelId,
           `:warning: ${routeResult.errorMessage}\n\n${routeResult.suggestedAction}`
@@ -478,6 +503,65 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     };
   }
 
+  async function createNewSessionFromDm(
+    userSession: UserSession,
+    post: Post
+  ): Promise<{ sessionId: string; threadRootPostId: string } | null> {
+    if (!mmClient || !threadManager) return null;
+    
+    try {
+      await mmClient.createPost(
+        userSession.dmChannelId,
+        `:rocket: Starting new OpenCode session...`
+      );
+      
+      const result = await client.session.create({
+        body: {
+          title: `Mattermost DM - ${new Date().toISOString()}`
+        },
+        query: {
+          directory: directory
+        }
+      });
+      
+      if (!result.data) {
+        throw new Error("Failed to create session - no data returned");
+      }
+      
+      const sessionInfo: OpenCodeSessionInfo = {
+        id: result.data.id,
+        shortId: result.data.id.substring(0, 8),
+        projectName: projectName,
+        directory: directory,
+        title: result.data.title || `Mattermost DM session`,
+        lastUpdated: new Date(),
+        isAvailable: true,
+      };
+      
+      const mapping = await threadManager.createThread(
+        sessionInfo,
+        userSession.mattermostUserId,
+        userSession.dmChannelId
+      );
+      
+      await openCodeSessionRegistry?.refresh();
+      
+      log.info(`[CreateSession] Created new session ${sessionInfo.shortId} for @${userSession.mattermostUsername}`);
+      
+      return {
+        sessionId: result.data.id,
+        threadRootPostId: mapping.threadRootPostId,
+      };
+    } catch (error) {
+      log.error("[CreateSession] Failed:", error);
+      await mmClient.createPost(
+        userSession.dmChannelId,
+        `:x: Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+      return null;
+    }
+  }
+
   async function handleThreadPrompt(
     route: { sessionId: string; threadRootPostId: string; promptText: string; fileIds?: string[] },
     userSession: UserSession,
@@ -528,9 +612,14 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       
       activeResponseContexts.set(targetSessionId, responseContext);
 
-      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]: ${promptText}`;
+      // Build reply context for agents with other Mattermost integrations
+      const replyContext = threadRootPostId 
+        ? `[Reply-To: thread=${threadRootPostId} post=${post.id} channel=${userSession.dmChannelId}]`
+        : `[Reply-To: post=${post.id} channel=${userSession.dmChannelId}]`;
       
-      log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 100)}..."`);
+      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${replyContext}\n${promptText}`;
+      
+      log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 150)}..."`);
       
       await client.session.promptAsync({
         path: { id: targetSessionId },

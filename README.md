@@ -132,7 +132,19 @@ Use `mattermost_status` to confirm the connection is active.
 
 ### 6. Handling DMs
 
-Once connected, any DM sent to the bot user will appear as a prompt in your session prefixed with `[Mattermost DM from @username]:`. Process these as normal user requests.
+Once connected, DMs to the bot are processed as follows:
+
+**Prompt Format:**
+```
+[Mattermost DM from @username]
+[Reply-To: thread=abc123 post=xyz789 channel=dm_channel_id]
+<user's message>
+```
+
+The `Reply-To` line provides context for agents with other Mattermost integrations (MCP servers, direct API) to reply to the correct thread.
+
+**Auto-Session Creation:**
+When a user sends a prompt in the main DM channel (not in a thread), a new OpenCode session is automatically created with its own dedicated thread. This makes the main DM the "new session launcher" - use threads to continue existing sessions. This can be disabled with `OPENCODE_MM_AUTO_CREATE_SESSION=false`.
 
 ### 7. Session Commands
 
@@ -190,6 +202,7 @@ export MATTERMOST_URL="https://your-mattermost-instance.com/api/v4"
 export MATTERMOST_WS_URL="wss://your-mattermost-instance.com/api/v4/websocket"
 export MATTERMOST_TEAM="your-team-name"
 export MATTERMOST_DEBUG="false"
+export MATTERMOST_AUTO_CONNECT="true"            # auto-connect on plugin load
 
 # Advanced options
 export MATTERMOST_RECONNECT_INTERVAL="5000"      # ms between reconnect attempts
@@ -204,6 +217,7 @@ export OPENCODE_MM_EDIT_RATE_LIMIT="10"          # max edits per second
 export OPENCODE_MM_SESSION_TIMEOUT="3600000"     # 1 hour in ms
 export OPENCODE_MM_MAX_SESSIONS="50"             # max concurrent sessions
 export OPENCODE_MM_ALLOWED_USERS=""              # comma-separated user IDs (empty = all)
+export OPENCODE_MM_AUTO_CREATE_SESSION="true"    # auto-create session from main DM
 
 # File handling
 export OPENCODE_MM_TEMP_DIR="/tmp/opencode-mm-plugin"

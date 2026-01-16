@@ -8,28 +8,102 @@
 # Options are passed through to 'opencode attach' (e.g., --session <id>)
 #
 # Environment variables:
-#   OPENCODE_SERVER_PORT     - Port for the shared server (default: 4096)
-#   OPENCODE_SERVER_PASSWORD - Password for server authentication (optional)
-#   OPENCODE_SERVER_LOG      - Log file path (default: /tmp/opencode-server.log)
+#   OPENCODE_SERVER_PORT       - Port for the shared server (default: 4096)
+#   OPENCODE_SERVER_PASSWORD   - Password for server authentication (optional)
+#   OPENCODE_SERVER_LOG        - Log file path (default: /tmp/opencode-server.log)
+#
+# Auto-restart configuration:
+#   OPENCODE_AUTO_RESTART      - Enable auto-restart (default: true)
+#   OPENCODE_MONITOR_INTERVAL  - Health check interval in seconds (default: 2)
+#   OPENCODE_RESTART_MAX_ATTEMPTS - Max restarts in window before backoff (default: 5)
+#   OPENCODE_RESTART_WINDOW    - Time window for counting restarts in seconds (default: 300)
+#   OPENCODE_RESTART_BACKOFF_BASE - Base backoff time in seconds (default: 1)
+#   OPENCODE_RESTART_BACKOFF_MAX  - Maximum backoff time in seconds (default: 60)
+#   OPENCODE_HEALTH_TIMEOUT    - Health check timeout in seconds (default: 2)
+#   OPENCODE_HEALTH_FAIL_THRESHOLD - Consecutive health failures before restart (default: 3)
+#   OPENCODE_STARTUP_TIMEOUT   - Server startup timeout in seconds (default: 15)
 #
 
-set -e
+set -euo pipefail
+
+# =============================================================================
+# Configuration
+# =============================================================================
 
 PORT="${OPENCODE_SERVER_PORT:-4096}"
-LOG_FILE="${OPENCODE_SERVER_LOG:-/tmp/opencode-server.log}"
 SERVER_URL="http://localhost:${PORT}"
-PIDFILE="/tmp/opencode-server.pid"
 
-# Check if server is already running
+# Log files
+SERVER_LOG="${OPENCODE_SERVER_LOG:-/tmp/opencode-server.log}"
+SUPERVISOR_LOG="${OPENCODE_SUPERVISOR_LOG:-/tmp/opencode-server.supervisor.log}"
+
+# State files
+PIDFILE="/tmp/opencode-server.pid"
+SUPERVISOR_PIDFILE="/tmp/opencode-server.supervisor.pid"
+STOP_FLAG="/tmp/opencode-server.stop"
+LOCKDIR="/tmp/opencode-server.supervisor.lock"
+
+# Auto-restart settings
+AUTO_RESTART="${OPENCODE_AUTO_RESTART:-true}"
+MONITOR_INTERVAL="${OPENCODE_MONITOR_INTERVAL:-2}"
+STARTUP_TIMEOUT="${OPENCODE_STARTUP_TIMEOUT:-15}"
+
+# Health check settings
+HEALTH_PATH="${OPENCODE_HEALTH_PATH:-/global/health}"
+HEALTH_TIMEOUT="${OPENCODE_HEALTH_TIMEOUT:-2}"
+HEALTH_FAIL_THRESHOLD="${OPENCODE_HEALTH_FAIL_THRESHOLD:-3}"
+
+# Restart/backoff settings
+RESTART_MAX="${OPENCODE_RESTART_MAX_ATTEMPTS:-5}"
+RESTART_WINDOW="${OPENCODE_RESTART_WINDOW:-300}"
+BACKOFF_BASE="${OPENCODE_RESTART_BACKOFF_BASE:-1}"
+BACKOFF_MAX="${OPENCODE_RESTART_BACKOFF_MAX:-60}"
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+# Timestamp for logging
+ts() { date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S'; }
+
+# Log to supervisor log file
+log_supervisor() { 
+    printf '%s [supervisor] %s\n' "$(ts)" "$*" >> "$SUPERVISOR_LOG"
+}
+
+# Log to stdout
+log_info() {
+    echo "$*"
+}
+
+# =============================================================================
+# Server Health & Status Functions
+# =============================================================================
+
+# Check if server PID is alive
+pid_alive() {
+    [[ -f "$PIDFILE" ]] || return 1
+    local pid
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    [[ -n "${pid:-}" ]] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+# Check server health via HTTP endpoint
+health_ok() {
+    curl -fsS --max-time "$HEALTH_TIMEOUT" "${SERVER_URL}${HEALTH_PATH}" >/dev/null 2>&1 || \
+    curl -fsS --max-time "$HEALTH_TIMEOUT" "${SERVER_URL}/health" >/dev/null 2>&1 || \
+    curl -fsS --max-time "$HEALTH_TIMEOUT" "${SERVER_URL}" >/dev/null 2>&1
+}
+
+# Check if server is running (PID alive + responding)
 is_server_running() {
-    if [ -f "$PIDFILE" ]; then
+    if [[ -f "$PIDFILE" ]]; then
         local pid
-        pid=$(cat "$PIDFILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            # Process exists, verify it's actually listening on the port
-            if curl -s --connect-timeout 1 "${SERVER_URL}/health" >/dev/null 2>&1 || \
-               curl -s --connect-timeout 1 "${SERVER_URL}" >/dev/null 2>&1 || \
-               nc -z localhost "$PORT" 2>/dev/null; then
+        pid=$(cat "$PIDFILE" 2>/dev/null || true)
+        if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
+            # Process exists, verify it's actually responding
+            if health_ok || nc -z localhost "$PORT" 2>/dev/null; then
                 return 0
             fi
         fi
@@ -45,48 +119,238 @@ is_server_running() {
     return 1
 }
 
+# =============================================================================
+# Server Lifecycle Functions
+# =============================================================================
+
 # Start the server in the background
 start_server() {
-    echo "Starting OpenCode shared server on port ${PORT}..."
+    log_info "Starting OpenCode shared server on port ${PORT}..."
     
-    # Start server in background
-    nohup opencode serve --port "$PORT" >> "$LOG_FILE" 2>&1 &
+    rm -f "$PIDFILE"
+    nohup opencode serve --port "$PORT" >> "$SERVER_LOG" 2>&1 &
     local server_pid=$!
     echo "$server_pid" > "$PIDFILE"
     
-    # Wait for server to be ready
-    local max_attempts=30
+    log_info "Server process started (PID: ${server_pid})"
+    log_info "Server logs: ${SERVER_LOG}"
+}
+
+# Wait for server to become ready
+wait_server_ready() {
+    local max_attempts=$((STARTUP_TIMEOUT * 2))  # Check every 0.5s
     local attempt=0
     
-    while [ $attempt -lt $max_attempts ]; do
+    while [[ $attempt -lt $max_attempts ]]; do
         if nc -z localhost "$PORT" 2>/dev/null; then
-            echo "Server started (PID: ${server_pid})"
-            echo "Server logs: ${LOG_FILE}"
             return 0
         fi
         
         # Check if process is still running
-        if ! kill -0 "$server_pid" 2>/dev/null; then
-            echo "Error: Server process died. Check logs: ${LOG_FILE}"
-            rm -f "$PIDFILE"
-            exit 1
+        if ! pid_alive; then
+            return 1
         fi
         
         sleep 0.5
         attempt=$((attempt + 1))
     done
     
-    echo "Error: Server failed to start within 15 seconds. Check logs: ${LOG_FILE}"
-    exit 1
+    return 1
 }
 
-# Main logic
-main() {
-    if is_server_running; then
-        echo "Connecting to existing OpenCode server at ${SERVER_URL}"
+# Start server and wait for it to be ready
+start_server_and_wait() {
+    start_server
+    
+    if wait_server_ready; then
+        local pid
+        pid=$(cat "$PIDFILE" 2>/dev/null || echo "unknown")
+        log_info "Server ready (PID: ${pid})"
+        return 0
     else
-        start_server
+        log_info "Error: Server failed to start within ${STARTUP_TIMEOUT} seconds. Check logs: ${SERVER_LOG}"
+        rm -f "$PIDFILE"
+        return 1
     fi
+}
+
+# =============================================================================
+# Supervisor Functions
+# =============================================================================
+
+# Calculate exponential backoff time
+calc_backoff() {
+    local n="$1"
+    local backoff=$((BACKOFF_BASE * (2 ** (n - 1))))
+    if [[ $backoff -gt $BACKOFF_MAX ]]; then
+        backoff="$BACKOFF_MAX"
+    fi
+    echo "$backoff"
+}
+
+# The supervisor loop - monitors and restarts server
+supervise() {
+    # Acquire lock (only one supervisor allowed)
+    if ! mkdir "$LOCKDIR" 2>/dev/null; then
+        # Another supervisor is running
+        exit 0
+    fi
+    
+    # Save our PID
+    echo "$$" > "$SUPERVISOR_PIDFILE"
+    log_supervisor "supervisor started pid=$$"
+    
+    # Cleanup on exit
+    trap 'rm -f "$SUPERVISOR_PIDFILE"; rmdir "$LOCKDIR" 2>/dev/null || true; log_supervisor "supervisor stopped"' EXIT
+    
+    # Track restart times for backoff calculation
+    local -a restart_times=()
+    local health_fail_count=0
+    
+    while true; do
+        # Check for stop flag
+        if [[ -f "$STOP_FLAG" ]]; then
+            log_supervisor "stop flag detected, exiting"
+            break
+        fi
+        
+        # Check server health
+        if pid_alive && health_ok; then
+            # Server is healthy
+            health_fail_count=0
+            sleep "$MONITOR_INTERVAL"
+            continue
+        fi
+        
+        # Server might be unhealthy or down
+        if pid_alive && ! health_ok; then
+            # Process alive but not responding to health checks
+            health_fail_count=$((health_fail_count + 1))
+            log_supervisor "health check failed (${health_fail_count}/${HEALTH_FAIL_THRESHOLD})"
+            
+            if [[ $health_fail_count -lt $HEALTH_FAIL_THRESHOLD ]]; then
+                sleep "$MONITOR_INTERVAL"
+                continue
+            fi
+            
+            # Threshold exceeded, kill and restart
+            log_supervisor "health threshold exceeded, killing server"
+            local pid
+            pid=$(cat "$PIDFILE" 2>/dev/null || true)
+            if [[ -n "${pid:-}" ]]; then
+                kill "$pid" 2>/dev/null || true
+                sleep 1
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+            rm -f "$PIDFILE"
+            health_fail_count=0
+        else
+            # Server is down
+            log_supervisor "server down, preparing restart"
+        fi
+        
+        # Re-check stop flag before restart
+        if [[ -f "$STOP_FLAG" ]]; then
+            log_supervisor "stop flag detected before restart, exiting"
+            break
+        fi
+        
+        # Calculate restarts in window for backoff
+        local now
+        now="$(date +%s)"
+        local -a recent=()
+        for t in "${restart_times[@]:-}"; do
+            if [[ $((now - t)) -lt $RESTART_WINDOW ]]; then
+                recent+=("$t")
+            fi
+        done
+        restart_times=("${recent[@]}")
+        restart_times+=("$now")
+        
+        local restart_count="${#restart_times[@]}"
+        
+        # Apply backoff if too many restarts
+        if [[ $restart_count -gt 1 ]]; then
+            local backoff
+            backoff="$(calc_backoff "$restart_count")"
+            log_supervisor "backoff ${backoff}s (restart #${restart_count} in ${RESTART_WINDOW}s window)"
+            sleep "$backoff"
+            
+            # Re-check stop flag after backoff
+            if [[ -f "$STOP_FLAG" ]]; then
+                log_supervisor "stop flag detected after backoff, exiting"
+                break
+            fi
+        fi
+        
+        # Restart the server
+        log_supervisor "restarting server..."
+        start_server
+        
+        if wait_server_ready; then
+            local pid
+            pid=$(cat "$PIDFILE" 2>/dev/null || echo "unknown")
+            log_supervisor "server restarted successfully (PID: ${pid})"
+        else
+            log_supervisor "server failed to start, will retry"
+            rm -f "$PIDFILE"
+        fi
+        
+        sleep "$MONITOR_INTERVAL"
+    done
+}
+
+# Ensure supervisor is running (spawn if needed)
+ensure_supervisor_running() {
+    [[ "$AUTO_RESTART" == "true" ]] || return 0
+    
+    # Check if supervisor is already running
+    if [[ -f "$SUPERVISOR_PIDFILE" ]]; then
+        local spid
+        spid="$(cat "$SUPERVISOR_PIDFILE" 2>/dev/null || true)"
+        if [[ -n "${spid:-}" ]] && kill -0 "$spid" 2>/dev/null; then
+            # Supervisor already running
+            return 0
+        fi
+    fi
+    
+    # Clear stale stop flag from previous runs
+    rm -f "$STOP_FLAG"
+    
+    # Spawn supervisor as background process
+    log_info "Starting auto-restart supervisor..."
+    nohup "$0" --supervise >> "$SUPERVISOR_LOG" 2>&1 &
+    
+    # Give it a moment to start
+    sleep 0.2
+}
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
+main() {
+    # Handle supervisor mode
+    if [[ "${1:-}" == "--supervise" ]]; then
+        supervise
+        exit 0
+    fi
+    
+    # Normal launcher mode
+    
+    # Clear any stale stop flag
+    rm -f "$STOP_FLAG"
+    
+    if is_server_running; then
+        log_info "Connecting to existing OpenCode server at ${SERVER_URL}"
+    else
+        if ! start_server_and_wait; then
+            exit 1
+        fi
+    fi
+    
+    # Ensure supervisor is running for auto-restart
+    ensure_supervisor_running
     
     # Attach to the server, passing through any additional arguments
     exec opencode attach "$SERVER_URL" "$@"
