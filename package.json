@@ -1,6 +1,6 @@
 {
   "name": "opencode-mattermost-control",
-  "version": "0.2.17",
+  "version": "0.2.24",
   "description": "OpenCode plugin for remote control via Mattermost DMs",
   "type": "module",
   "main": ".opencode/plugin/mattermost-control/index.ts",
@@ -12,8 +12,14 @@
     ".opencode",
     "src",
     "opencode.json",
-    "README.md"
+    "README.md",
+    "opencode-shared",
+    "opencode-shared-stop"
   ],
+  "bin": {
+    "opencode-shared": "./opencode-shared",
+    "opencode-shared-stop": "./opencode-shared-stop"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",

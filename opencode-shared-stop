@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# opencode-shared-stop - Stop the shared OpenCode server
+#
+# Usage:
+#   ./opencode-shared-stop
+#
+
+set -e
+
+PORT="${OPENCODE_SERVER_PORT:-4096}"
+PIDFILE="/tmp/opencode-server.pid"
+
+if [ -f "$PIDFILE" ]; then
+    pid=$(cat "$PIDFILE")
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "Stopping OpenCode server (PID: ${pid})..."
+        kill "$pid"
+        rm -f "$PIDFILE"
+        echo "Server stopped."
+    else
+        echo "Server process not running (stale PID file)."
+        rm -f "$PIDFILE"
+    fi
+else
+    # Try to find process by port
+    pid=$(lsof -ti :"$PORT" 2>/dev/null || true)
+    if [ -n "$pid" ]; then
+        echo "Stopping process on port ${PORT} (PID: ${pid})..."
+        kill "$pid"
+        echo "Server stopped."
+    else
+        echo "No OpenCode server running on port ${PORT}."
+    fi
+fi

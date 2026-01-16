@@ -36,6 +36,9 @@ export interface OpenCodeClientSession {
   list(): Promise<{ data: OpenCodeSession[] | undefined }>;
 }
 
+export type NewSessionCallback = (session: OpenCodeSessionInfo) => void | Promise<void>;
+export type SessionDeletedCallback = (sessionId: string, sessionInfo: OpenCodeSessionInfo) => void | Promise<void>;
+
 /**
  * Registry for tracking available OpenCode sessions.
  * Provides session discovery, lookup, and availability tracking.
@@ -46,9 +49,39 @@ export class OpenCodeSessionRegistry {
   private refreshIntervalMs: number;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private client: OpenCodeClientSession | null = null;
+  private newSessionCallbacks: NewSessionCallback[] = [];
+  private sessionDeletedCallbacks: SessionDeletedCallback[] = [];
 
   constructor(refreshIntervalMs: number = 60000) {
     this.refreshIntervalMs = refreshIntervalMs;
+  }
+
+  onNewSession(callback: NewSessionCallback): void {
+    this.newSessionCallbacks.push(callback);
+  }
+
+  onSessionDeleted(callback: SessionDeletedCallback): void {
+    this.sessionDeletedCallbacks.push(callback);
+  }
+
+  private async notifyNewSession(session: OpenCodeSessionInfo): Promise<void> {
+    for (const cb of this.newSessionCallbacks) {
+      try {
+        await cb(session);
+      } catch (e) {
+        log.error("[OpenCodeSessionRegistry] New session callback error:", e);
+      }
+    }
+  }
+
+  private async notifySessionDeleted(sessionId: string, sessionInfo: OpenCodeSessionInfo): Promise<void> {
+    for (const cb of this.sessionDeletedCallbacks) {
+      try {
+        await cb(sessionId, sessionInfo);
+      } catch (e) {
+        log.error("[OpenCodeSessionRegistry] Session deleted callback error:", e);
+      }
+    }
   }
 
   /**
@@ -119,7 +152,7 @@ export class OpenCodeSessionRegistry {
         
         const existing = this.sessions.get(session.id);
         
-        this.sessions.set(session.id, {
+        const sessionInfo: OpenCodeSessionInfo = {
           id: session.id,
           projectName,
           directory: session.directory,
@@ -127,10 +160,15 @@ export class OpenCodeSessionRegistry {
           title: session.title || projectName,
           lastUpdated: new Date(session.time.updated),
           isAvailable: true,
-        });
+        };
+        
+        this.sessions.set(session.id, sessionInfo);
 
         if (!existing) {
           log.info(`[OpenCodeSessionRegistry] New session discovered: ${shortId} (${projectName})`);
+          this.notifyNewSession(sessionInfo).catch((e) => 
+            log.error("[OpenCodeSessionRegistry] Failed to notify new session:", e)
+          );
         }
       }
 
@@ -138,6 +176,9 @@ export class OpenCodeSessionRegistry {
         if (!currentIds.has(id) && info.isAvailable) {
           info.isAvailable = false;
           log.info(`[OpenCodeSessionRegistry] Session no longer available: ${info.shortId} (${info.projectName})`);
+          this.notifySessionDeleted(id, info).catch((e) => 
+            log.error("[OpenCodeSessionRegistry] Failed to notify session unavailable:", e)
+          );
         }
       }
 
@@ -237,10 +278,15 @@ export class OpenCodeSessionRegistry {
       return;
     }
     
+    const existing = this.sessions.get(session.id);
+    if (existing) {
+      return;
+    }
+    
     const projectName = this.extractProjectName(session.directory);
     const shortId = session.slug || session.id.substring(0, 8);
     
-    this.sessions.set(session.id, {
+    const sessionInfo: OpenCodeSessionInfo = {
       id: session.id,
       projectName,
       directory: session.directory,
@@ -248,13 +294,19 @@ export class OpenCodeSessionRegistry {
       title: session.title || projectName,
       lastUpdated: new Date(session.time.updated),
       isAvailable: true,
-    });
+    };
+    
+    this.sessions.set(session.id, sessionInfo);
 
     log.info(`[OpenCodeSessionRegistry] Session created: ${shortId} (${projectName})`);
 
     if (!this.defaultSessionId) {
       this.defaultSessionId = session.id;
     }
+    
+    this.notifyNewSession(sessionInfo).catch((e) => 
+      log.error("[OpenCodeSessionRegistry] Failed to notify new session:", e)
+    );
   }
 
   /**
@@ -270,6 +322,10 @@ export class OpenCodeSessionRegistry {
         const available = this.listAvailable();
         this.defaultSessionId = available.length > 0 ? available[0].id : null;
       }
+      
+      this.notifySessionDeleted(sessionId, session).catch((e) => 
+        log.error("[OpenCodeSessionRegistry] Failed to notify session deleted:", e)
+      );
     }
   }
 

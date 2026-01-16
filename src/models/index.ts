@@ -154,3 +154,29 @@ export interface PostedEvent {
   team_id: string;
   event_name?: string;
 }
+
+export type ThreadMappingStatus = "active" | "ended" | "disconnected" | "orphaned";
+
+export interface ThreadSessionMapping {
+  sessionId: string;
+  threadRootPostId: string;
+  shortId: string;
+  mattermostUserId: string;
+  dmChannelId: string;
+  projectName: string;
+  directory: string;
+  sessionTitle?: string;
+  status: ThreadMappingStatus;
+  createdAt: string;
+  lastActivityAt: string;
+  endedAt?: string;
+}
+
+export interface ThreadRootPostContent {
+  projectName: string;
+  directory: string;
+  sessionId: string;
+  shortId: string;
+  startedAt: Date;
+  sessionTitle?: string;
+}

@@ -2,12 +2,14 @@ import type { MattermostClient } from "./clients/mattermost-client.js";
 import type { OpenCodeSessionRegistry, OpenCodeSessionInfo } from "./opencode-session-registry.js";
 import type { UserSession } from "./session-manager.js";
 import type { ParsedCommand } from "./message-router.js";
+import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
 import { log } from "./logger.js";
 
 export interface CommandContext {
   userSession: UserSession;
   registry: OpenCodeSessionRegistry;
   mmClient: MattermostClient;
+  threadMappingStore?: ThreadMappingStore | null;
 }
 
 export type CommandResult = {
@@ -61,7 +63,7 @@ export class CommandHandler {
     _command: ParsedCommand,
     context: CommandContext
   ): Promise<CommandResult> {
-    const { registry, userSession } = context;
+    const { registry, userSession, threadMappingStore } = context;
     
     try {
       await registry.refresh();
@@ -79,7 +81,7 @@ export class CommandHandler {
     }
 
     const currentTarget = userSession.targetOpenCodeSessionId;
-    const lines = this.formatSessionList(sessions, currentTarget);
+    const lines = this.formatSessionList(sessions, currentTarget, threadMappingStore);
 
     return {
       success: true,
@@ -87,7 +89,11 @@ export class CommandHandler {
     };
   }
 
-  private formatSessionList(sessions: OpenCodeSessionInfo[], currentTargetId: string | null): string[] {
+  private formatSessionList(
+    sessions: OpenCodeSessionInfo[], 
+    currentTargetId: string | null,
+    threadMappingStore?: ThreadMappingStore | null
+  ): string[] {
     const defaultSession = sessions.find(s => s.id === currentTargetId);
     
     const lines: string[] = [
@@ -101,7 +107,10 @@ export class CommandHandler {
       const truncatedTitle = this.truncateString(session.title, 50);
       const relativeTime = this.formatRelativeTime(session.lastUpdated);
       
-      lines.push(`**${index + 1}.** \`${session.shortId}\`${marker}`);
+      const mapping = threadMappingStore?.getBySessionId(session.id);
+      const threadLink = mapping ? ` [:thread: thread](/_redirect/pl/${mapping.threadRootPostId})` : "";
+      
+      lines.push(`**${index + 1}.** \`${session.shortId}\`${marker}${threadLink}`);
       lines.push(`   ${truncatedTitle}`);
       lines.push(`   _${session.projectName}_ • ${relativeTime}`);
       lines.push("");
@@ -110,6 +119,11 @@ export class CommandHandler {
     if (defaultSession) {
       lines.push(`:white_check_mark: = current target (\`${defaultSession.shortId}\`)`);
     }
+    
+    if (threadMappingStore) {
+      lines.push(":thread: = click to open session thread");
+    }
+    
     lines.push("");
     lines.push(`**Commands:** \`${this.commandPrefix}use <id>\` to switch, \`${this.commandPrefix}current\` for details`);
 
@@ -237,22 +251,35 @@ export class CommandHandler {
 
   private async handleHelp(
     _command: ParsedCommand,
-    _context: CommandContext
+    context: CommandContext
   ): Promise<CommandResult> {
+    const hasThreads = !!context.threadMappingStore;
+    
+    const lines = [
+      `:question: **Available Commands**`,
+      "",
+      `| Command | Description |`,
+      `|---------|-------------|`,
+      `| \`${this.commandPrefix}sessions\` | List available OpenCode sessions |`,
+      `| \`${this.commandPrefix}use <id>\` | Switch to a different session |`,
+      `| \`${this.commandPrefix}current\` | Show currently targeted session |`,
+      `| \`${this.commandPrefix}help\` | Show this help message |`,
+      "",
+    ];
+    
+    if (hasThreads) {
+      lines.push("**Thread-Based Workflow:**");
+      lines.push("- Each OpenCode session has its own thread");
+      lines.push("- Send prompts by replying in a session's thread");
+      lines.push("- Use `" + this.commandPrefix + "sessions` to see thread links");
+      lines.push("- Commands work in main DM, prompts must go in threads");
+    } else {
+      lines.push("Any message not starting with `" + this.commandPrefix + "` is sent as a prompt to OpenCode.");
+    }
+    
     return {
       success: true,
-      message: [
-        `:question: **Available Commands**`,
-        "",
-        `| Command | Description |`,
-        `|---------|-------------|`,
-        `| \`${this.commandPrefix}sessions\` | List available OpenCode sessions |`,
-        `| \`${this.commandPrefix}use <id>\` | Switch to a different session |`,
-        `| \`${this.commandPrefix}current\` | Show currently targeted session |`,
-        `| \`${this.commandPrefix}help\` | Show this help message |`,
-        "",
-        "Any message not starting with `" + this.commandPrefix + "` is sent as a prompt to OpenCode.",
-      ].join("\n"),
+      message: lines.join("\n"),
     };
   }
 

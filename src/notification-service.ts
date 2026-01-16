@@ -19,13 +19,13 @@ export class NotificationService {
     this.config = config;
   }
 
-  async notifyCompletion(session: UserSession, summary: string): Promise<void> {
+  async notifyCompletion(session: UserSession, summary: string, threadRootPostId?: string): Promise<void> {
     if (!this.config.onCompletion) return;
 
     const message = `:white_check_mark: **Task Completed**\n\n> ${summary}`;
 
     try {
-      await this.mmClient.createPost(session.dmChannelId, message);
+      await this.mmClient.createPost(session.dmChannelId, message, threadRootPostId);
     } catch (error) {
       log.error("[NotificationService] Failed to send completion notification:", error);
     }

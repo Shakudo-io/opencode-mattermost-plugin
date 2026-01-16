@@ -11,9 +11,12 @@ import { OpenCodeSessionRegistry } from "../../../src/opencode-session-registry.
 import { MessageRouter } from "../../../src/message-router.js";
 import { CommandHandler } from "../../../src/command-handler.js";
 import { MonitorService, handleMonitorAlert, type MonitoredSession } from "../../../src/monitor-service.js";
+import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
+import { ThreadManager } from "../../../src/thread-manager.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
-import type { User, Post, WebSocketEvent } from "../../../src/models/index.js";
+import type { User, Post, WebSocketEvent, ThreadSessionMapping } from "../../../src/models/index.js";
+import type { InboundRouteResult } from "../../../src/models/routing.js";
 
 let isConnected = false;
 let mmClient: MattermostClient | null = null;
@@ -26,26 +29,32 @@ let reactionHandler: ReactionHandler | null = null;
 let openCodeSessionRegistry: OpenCodeSessionRegistry | null = null;
 let messageRouter: MessageRouter | null = null;
 let commandHandler: CommandHandler | null = null;
+let threadMappingStore: ThreadMappingStore | null = null;
+let threadManager: ThreadManager | null = null;
 let botUser: User | null = null;
 let projectName: string = "";
-let pendingResponseContext: {
+interface ResponseContext {
   opencodeSessionId: string;
   mmSession: any;
   streamCtx: any;
+  threadRootPostId?: string;
   responseBuffer: string;
   thinkingBuffer: string;
   toolsPostId: string | null;
   toolCalls: string[];
   lastUpdateTime: number;
-} | null = null;
+}
+
+const activeResponseContexts: Map<string, ResponseContext> = new Map();
 
 const TOOL_UPDATE_INTERVAL_MS = 1000;
-let toolUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+const toolUpdateTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
-async function updateToolsPost(): Promise<void> {
-  if (!pendingResponseContext || !mmClient || pendingResponseContext.toolCalls.length === 0) return;
+async function updateToolsPost(sessionId: string): Promise<void> {
+  const ctx = activeResponseContexts.get(sessionId);
+  if (!ctx || !mmClient || ctx.toolCalls.length === 0) return;
 
-  const toolCounts = pendingResponseContext.toolCalls.reduce((acc, tool) => {
+  const toolCounts = ctx.toolCalls.reduce((acc, tool) => {
     acc[tool] = (acc[tool] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
@@ -57,30 +66,45 @@ async function updateToolsPost(): Promise<void> {
   const message = `:hammer_and_wrench: **Tools:** ${summary}`;
 
   try {
-    if (pendingResponseContext.toolsPostId) {
-      await mmClient.updatePost(pendingResponseContext.toolsPostId, message);
+    if (ctx.toolsPostId) {
+      await mmClient.updatePost(ctx.toolsPostId, message);
     } else {
-      const post = await mmClient.createPost(pendingResponseContext.mmSession.dmChannelId, message);
-      pendingResponseContext.toolsPostId = post.id;
+      const post = await mmClient.createPost(
+        ctx.mmSession.dmChannelId, 
+        message,
+        ctx.threadRootPostId
+      );
+      ctx.toolsPostId = post.id;
     }
   } catch (e) {
     log.error("Failed to update tools post:", e);
   }
 }
 
-function scheduleToolUpdate(): void {
-  if (toolUpdateTimer) return;
+function scheduleToolUpdate(sessionId: string): void {
+  if (toolUpdateTimers.has(sessionId)) return;
   
-  toolUpdateTimer = setTimeout(async () => {
-    toolUpdateTimer = null;
-    await updateToolsPost();
+  const timer = setTimeout(async () => {
+    toolUpdateTimers.delete(sessionId);
+    await updateToolsPost(sessionId);
   }, TOOL_UPDATE_INTERVAL_MS);
+  
+  toolUpdateTimers.set(sessionId, timer);
 }
 
-function addToolCall(toolName: string): void {
-  if (!pendingResponseContext) return;
-  pendingResponseContext.toolCalls.push(toolName);
-  scheduleToolUpdate();
+function addToolCall(sessionId: string, toolName: string): void {
+  const ctx = activeResponseContexts.get(sessionId);
+  if (!ctx) return;
+  ctx.toolCalls.push(toolName);
+  scheduleToolUpdate(sessionId);
+}
+
+function clearToolTimer(sessionId: string): void {
+  const timer = toolUpdateTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    toolUpdateTimers.delete(sessionId);
+  }
 }
 
 function formatResponseWithThinking(response: string, thinking: string): string {
@@ -97,8 +121,10 @@ function formatResponseWithThinking(response: string, thinking: string): string 
 
 export const MattermostControlPlugin: Plugin = async ({ client, project, directory, $ }) => {
   let config = loadConfig();
-  // Use directory name as project name - project.name is the projectID hash, not a friendly name
   projectName = directory.split("/").pop() || "opencode";
+
+  threadMappingStore = new ThreadMappingStore();
+  threadMappingStore.load().catch((e) => log.warn("[Plugin] Failed to load thread mappings:", e));
 
   log.info("Loaded (not connected - use /mattermost connect)");
 
@@ -165,7 +191,82 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       messageRouter = new MessageRouter(config.sessionSelection.commandPrefix);
       commandHandler = new CommandHandler(config.sessionSelection.commandPrefix);
 
+      if (threadMappingStore) {
+        messageRouter.setThreadLookup((threadRootPostId) => 
+          threadMappingStore!.getByThreadRootPostId(threadRootPostId)
+        );
+      }
+
+      if (threadMappingStore) {
+        threadManager = new ThreadManager(mmClient, threadMappingStore);
+      }
+
+      openCodeSessionRegistry.onNewSession(async (sessionInfo) => {
+        if (!threadManager || !sessionManager) return;
+        
+        const existingMapping = threadMappingStore?.getBySessionId(sessionInfo.id);
+        if (existingMapping) {
+          log.debug(`[AutoThread] Thread already exists for session ${sessionInfo.shortId}`);
+          return;
+        }
+        
+        const mmSessions = sessionManager.listSessions();
+        if (mmSessions.length === 0) {
+          log.debug(`[AutoThread] No active Mattermost users, skipping thread creation for ${sessionInfo.shortId}`);
+          return;
+        }
+        
+        for (const mmSession of mmSessions) {
+          try {
+            await threadManager.createThread(sessionInfo, mmSession.mattermostUserId, mmSession.dmChannelId);
+            log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId} for user ${mmSession.mattermostUsername}`);
+          } catch (e) {
+            log.error(`[AutoThread] Failed to create thread for session ${sessionInfo.shortId}:`, e);
+          }
+        }
+      });
+
+      openCodeSessionRegistry.onSessionDeleted(async (sessionId, _sessionInfo) => {
+        if (!threadManager) return;
+        
+        try {
+          await threadManager.endThread(sessionId);
+          log.info(`[AutoThread] Ended thread for session ${sessionId.substring(0, 8)}`);
+        } catch (e) {
+          log.error(`[AutoThread] Failed to end thread for session ${sessionId.substring(0, 8)}:`, e);
+        }
+      });
+
       const availableSessions = openCodeSessionRegistry.listAvailable();
+      
+      // T044: Clean orphaned mappings (sessions no longer available)
+      if (threadMappingStore) {
+        const validSessionIds = new Set(availableSessions.map(s => s.id));
+        const cleanedCount = threadMappingStore.cleanOrphaned(validSessionIds);
+        if (cleanedCount > 0) {
+          log.info(`[AutoThread] Marked ${cleanedCount} orphaned mappings`);
+        }
+      }
+
+      // T046: Create threads for existing sessions on connect
+      if (threadManager && sessionManager && availableSessions.length > 0) {
+        const mmSessions = sessionManager.listSessions();
+        if (mmSessions.length > 0) {
+          for (const sessionInfo of availableSessions) {
+            const existingMapping = threadMappingStore?.getBySessionId(sessionInfo.id);
+            if (!existingMapping) {
+              for (const mmSession of mmSessions) {
+                try {
+                  await threadManager.createThread(sessionInfo, mmSession.mattermostUserId, mmSession.dmChannelId);
+                  log.info(`[AutoThread] Created thread for existing session ${sessionInfo.shortId}`);
+                } catch (e) {
+                  log.error(`[AutoThread] Failed to create thread for existing session ${sessionInfo.shortId}:`, e);
+                }
+              }
+            }
+          }
+        }
+      }
       if (availableSessions.length > 0) {
         log.info(`Found ${availableSessions.length} OpenCode session(s)`);
       }
@@ -189,16 +290,18 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     }
 
     try {
-      if (toolUpdateTimer) {
-        clearTimeout(toolUpdateTimer);
-        toolUpdateTimer = null;
+      for (const [sessionId, timer] of toolUpdateTimers) {
+        clearTimeout(timer);
+        await updateToolsPost(sessionId);
       }
-      await updateToolsPost();
+      toolUpdateTimers.clear();
+      activeResponseContexts.clear();
       
       wsClient!.disconnect();
       sessionManager?.shutdown();
       fileHandler?.cleanupTempFiles();
       openCodeSessionRegistry?.clear();
+      threadMappingStore?.shutdown();
 
       isConnected = false;
       mmClient = null;
@@ -211,6 +314,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       openCodeSessionRegistry = null;
       messageRouter = null;
       commandHandler = null;
+      threadManager = null;
 
       log.info("Disconnected from Mattermost");
 
@@ -278,71 +382,164 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     let userSession: UserSession;
     try {
       userSession = await sessionManager.getOrCreateSession(post.user_id);
-      log.info(`[DEBUG-A] Session obtained for ${userSession.mattermostUsername}`);
     } catch (error) {
       log.error("Failed to get/create session:", error);
       return;
     }
 
-    log.info(`[DEBUG-B] About to route message`);
-    log.info(`[ROUTING] Post message content: "${post.message}"`);
-    const routeResult = messageRouter.route(post);
-    log.info(`[ROUTING] Route result: type=${routeResult.type}, command=${routeResult.command?.name || 'none'}`);
-
-    if (routeResult.type === "command" && routeResult.command) {
-      log.info(`Processing command: ${routeResult.command.name}`);
-      const result = await commandHandler.execute(routeResult.command, {
-        userSession,
-        registry: openCodeSessionRegistry,
-        mmClient,
-      });
-      await mmClient.createPost(userSession.dmChannelId, result.message);
-      return;
+    // Create threads for any sessions that don't have mappings yet
+    // This handles sessions that existed before MM connection or in different project contexts
+    if (threadManager && threadMappingStore) {
+      const availableSessions = openCodeSessionRegistry.listAvailable();
+      for (const sessionInfo of availableSessions) {
+        const existingMapping = threadMappingStore.getBySessionId(sessionInfo.id);
+        if (!existingMapping) {
+          try {
+            await threadManager.createThread(sessionInfo, userSession.mattermostUserId, userSession.dmChannelId);
+            log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId} for user ${userSession.mattermostUsername}`);
+          } catch (e) {
+            log.error(`[AutoThread] Failed to create thread:`, e);
+          }
+        }
+      }
     }
+
+    const routeResult = threadMappingStore 
+      ? messageRouter.routeWithThreads(post)
+      : convertLegacyRoute(messageRouter.route(post), post);
+    
+    log.debug(`[ROUTING] type=${routeResult.type}`);
+
+    switch (routeResult.type) {
+      case "main_dm_command": {
+        const result = await commandHandler.execute(routeResult.command, {
+          userSession,
+          registry: openCodeSessionRegistry,
+          mmClient,
+          threadMappingStore,
+        });
+        await mmClient.createPost(userSession.dmChannelId, result.message);
+        return;
+      }
+      
+      case "main_dm_prompt": {
+        await mmClient.createPost(
+          userSession.dmChannelId,
+          `:warning: ${routeResult.errorMessage}\n\n${routeResult.suggestedAction}`
+        );
+        return;
+      }
+      
+      case "unknown_thread": {
+        await mmClient.createPost(
+          userSession.dmChannelId,
+          routeResult.errorMessage,
+          routeResult.threadRootPostId
+        );
+        return;
+      }
+      
+      case "ended_session": {
+        await mmClient.createPost(
+          userSession.dmChannelId,
+          `:no_entry: ${routeResult.errorMessage}`,
+          routeResult.threadRootPostId
+        );
+        return;
+      }
+      
+      case "thread_prompt": {
+        await handleThreadPrompt(routeResult, userSession, post);
+        return;
+      }
+    }
+  }
+
+  function convertLegacyRoute(legacyResult: { type: string; command?: any; promptText?: string }, post: Post): InboundRouteResult {
+    if (legacyResult.type === "command" && legacyResult.command) {
+      return { type: "main_dm_command", command: legacyResult.command };
+    }
+    
+    const defaultSession = openCodeSessionRegistry?.getDefault();
+    if (!defaultSession) {
+      return {
+        type: "main_dm_prompt",
+        errorMessage: "No OpenCode session available.",
+        suggestedAction: "Start an OpenCode session first.",
+      };
+    }
+    
+    return {
+      type: "thread_prompt",
+      sessionId: defaultSession.id,
+      threadRootPostId: "",
+      promptText: legacyResult.promptText || post.message,
+      fileIds: post.file_ids,
+    };
+  }
+
+  async function handleThreadPrompt(
+    route: { sessionId: string; threadRootPostId: string; promptText: string; fileIds?: string[] },
+    userSession: UserSession,
+    post: Post
+  ): Promise<void> {
+    if (!streamer || !notifications || !fileHandler || !mmClient) return;
 
     userSession.isProcessing = true;
     userSession.currentPromptPostId = post.id;
     userSession.lastPrompt = post;
 
-    let promptText = routeResult.promptText || post.message;
+    let promptText = route.promptText;
+    const threadRootPostId = route.threadRootPostId || undefined;
 
     try {
-      if (post.file_ids?.length > 0) {
-        const filePaths = await fileHandler.processInboundAttachments(post.file_ids);
+      if (route.fileIds && route.fileIds.length > 0) {
+        const filePaths = await fileHandler.processInboundAttachments(route.fileIds);
         if (filePaths.length > 0) {
           promptText += `\n\n[Attached files: ${filePaths.join(", ")}]`;
         }
       }
 
-      const streamCtx = await streamer.startStream(userSession);
+      const streamCtx = await streamer.startStream(userSession, threadRootPostId);
       userSession.currentResponsePostId = streamCtx.postId;
 
-      const targetSessionId = resolveTargetSession(userSession);
-      if (!targetSessionId) {
-        throw new Error("No OpenCode session available. Use `!sessions` to see options.");
-      }
-
+      const targetSessionId = route.sessionId;
       log.info(`Using OpenCode session: ${targetSessionId}`);
 
-      pendingResponseContext = {
-        opencodeSessionId: "",
+      if (threadMappingStore) {
+        const mapping = threadMappingStore.getBySessionId(targetSessionId);
+        if (mapping) {
+          mapping.lastActivityAt = new Date().toISOString();
+          threadMappingStore.update(mapping);
+        }
+      }
+
+      const responseContext: ResponseContext = {
+        opencodeSessionId: targetSessionId,
         mmSession: userSession,
         streamCtx,
+        threadRootPostId,
         responseBuffer: "",
         thinkingBuffer: "",
         toolsPostId: null,
         toolCalls: [],
         lastUpdateTime: Date.now(),
       };
+      
+      activeResponseContexts.set(targetSessionId, responseContext);
 
+      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]: ${promptText}`;
+      
+      log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 100)}..."`);
+      
       await client.session.promptAsync({
         path: { id: targetSessionId },
         body: {
-          parts: [{ type: "text", text: `[Mattermost DM from @${userSession.mattermostUsername}]: ${promptText}` }],
+          parts: [{ type: "text", text: promptMessage }],
         },
       });
 
-      log.info(`Successfully injected prompt into session ${targetSessionId}`);
+      log.info(`Prompt injected into session ${targetSessionId} from @${userSession.mattermostUsername}`);
 
     } catch (error) {
       log.error("Error processing message:", error);
@@ -350,23 +547,8 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         await notifications.notifyError(userSession, error as Error);
       }
       userSession.isProcessing = false;
-      pendingResponseContext = null;
+      activeResponseContexts.delete(route.sessionId);
     }
-  }
-
-  function resolveTargetSession(userSession: UserSession): string | null {
-    if (!openCodeSessionRegistry) return null;
-
-    if (userSession.targetOpenCodeSessionId) {
-      const targetSession = openCodeSessionRegistry.get(userSession.targetOpenCodeSessionId);
-      if (targetSession?.isAvailable) {
-        return targetSession.id;
-      }
-      userSession.targetOpenCodeSessionId = null;
-    }
-
-    const defaultSession = openCodeSessionRegistry.getDefault();
-    return defaultSession?.id || null;
   }
 
   const mattermostConnectTool = {
@@ -694,104 +876,109 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
     event: async ({ event }) => {
       const eventType = event.type as string;
       const eventSessionId = (event as any).properties?.sessionID;
-      const connectedSessionId = pendingResponseContext?.opencodeSessionId;
 
       if (eventType === "permission.asked") {
         log.debug(`[Monitor] permission.asked event: sessionId=${eventSessionId}`);
         const description = (event as any).properties?.description || "Permission requested";
-        await handleMonitorAlert(eventSessionId, "permission.asked", description, connectedSessionId);
+        const activeSessionIds = Array.from(activeResponseContexts.keys());
+        await handleMonitorAlert(eventSessionId, "permission.asked", description, activeSessionIds[0]);
       }
 
       if (eventType === "session.idle") {
         log.debug(`[Monitor] session.idle event: sessionId=${eventSessionId}, monitored=${MonitorService.isMonitored(eventSessionId || "")}`);
         if (eventSessionId) {
-          await handleMonitorAlert(eventSessionId, "session.idle", undefined, connectedSessionId);
+          const activeSessionIds = Array.from(activeResponseContexts.keys());
+          await handleMonitorAlert(eventSessionId, "session.idle", undefined, activeSessionIds[0]);
         }
       }
 
       if (!isConnected) return;
 
-      if (event.type === "message.part.updated" && pendingResponseContext && streamer) {
+      if (event.type === "message.part.updated" && streamer) {
         const part = (event as any).properties?.part;
         const delta = (event as any).properties?.delta;
         const sessionId = part?.sessionID || (event as any).properties?.sessionID;
         
-        if (!delta || delta.length === 0) return;
+        if (!delta || delta.length === 0 || !sessionId) return;
+        
+        const ctx = activeResponseContexts.get(sessionId);
+        if (!ctx) return;
         
         if (part?.type === "text" || part?.type === "thinking") {
-          if (!pendingResponseContext.opencodeSessionId) {
-            pendingResponseContext.opencodeSessionId = sessionId;
-            log.info(`Locked onto session: ${sessionId}`);
-          }
-          
-          if (sessionId !== pendingResponseContext.opencodeSessionId) return;
-          
           if (part?.type === "text") {
-            pendingResponseContext.responseBuffer += delta;
+            ctx.responseBuffer += delta;
           } else if (part?.type === "thinking") {
-            pendingResponseContext.thinkingBuffer += delta;
+            ctx.thinkingBuffer += delta;
           }
           
-          pendingResponseContext.lastUpdateTime = Date.now();
+          ctx.lastUpdateTime = Date.now();
           
           const formattedOutput = formatResponseWithThinking(
-            pendingResponseContext.responseBuffer,
-            pendingResponseContext.thinkingBuffer
+            ctx.responseBuffer,
+            ctx.thinkingBuffer
           );
           
           try {
-            await streamer.updateStream(pendingResponseContext.streamCtx, formattedOutput);
+            await streamer.updateStream(ctx.streamCtx, formattedOutput);
           } catch (e) {
             log.error("Failed to update stream:", e);
           }
         }
       }
 
-      if (event.type === "session.idle" && pendingResponseContext && streamer && notifications) {
+      if (event.type === "session.idle" && streamer && notifications) {
         const sessionId = (event as any).properties?.sessionID;
-        if (sessionId === pendingResponseContext.opencodeSessionId) {
+        if (!sessionId) return;
+        
+        const ctx = activeResponseContexts.get(sessionId);
+        if (ctx) {
           try {
-            if (toolUpdateTimer) {
-              clearTimeout(toolUpdateTimer);
-              toolUpdateTimer = null;
-            }
-            await updateToolsPost();
+            clearToolTimer(sessionId);
+            await updateToolsPost(sessionId);
             
-            pendingResponseContext.streamCtx.buffer = pendingResponseContext.responseBuffer;
-            await streamer.endStream(pendingResponseContext.streamCtx);
-            await notifications.notifyCompletion(pendingResponseContext.mmSession, "Response complete");
-            pendingResponseContext.mmSession.isProcessing = false;
+            ctx.streamCtx.buffer = ctx.responseBuffer;
+            await streamer.endStream(ctx.streamCtx);
+            await notifications.notifyCompletion(ctx.mmSession, "Response complete", ctx.streamCtx.threadRootPostId);
+            ctx.mmSession.isProcessing = false;
           } catch (e) {
             log.error("Error finalizing stream:", e);
           }
-          pendingResponseContext = null;
+          activeResponseContexts.delete(sessionId);
         }
       }
 
-      if (event.type === "file.edited" && pendingResponseContext && fileHandler) {
-        try {
-          const filePath = (event as any).properties?.path;
-          if (filePath) {
-            await fileHandler.sendOutboundFile(pendingResponseContext.mmSession, filePath, `File updated: \`${filePath}\``);
+      if (event.type === "file.edited" && fileHandler) {
+        const sessionId = (event as any).properties?.sessionID;
+        if (!sessionId) return;
+        
+        const ctx = activeResponseContexts.get(sessionId);
+        if (ctx) {
+          try {
+            const filePath = (event as any).properties?.path;
+            if (filePath) {
+              await fileHandler.sendOutboundFile(ctx.mmSession, filePath, `File updated: \`${filePath}\``);
+            }
+          } catch (e) {
+            log.error("Failed to send file update:", e);
           }
-        } catch (e) {
-          log.error("Failed to send file update:", e);
         }
       }
     },
 
     "tool.execute.after": async (input) => {
       const toolSessionId = (input as any).sessionID || (input as any).session?.id;
-      const connectedSessionId = pendingResponseContext?.opencodeSessionId;
 
       if (input.tool === "question" && toolSessionId) {
         const questionText = (input as any).args?.questions?.[0]?.question || "Question awaiting answer";
-        await handleMonitorAlert(toolSessionId, "question", questionText, connectedSessionId);
+        const activeSessionIds = Array.from(activeResponseContexts.keys());
+        await handleMonitorAlert(toolSessionId, "question", questionText, activeSessionIds[0]);
       }
 
-      if (!isConnected || !pendingResponseContext) return;
+      if (!isConnected || !toolSessionId) return;
       
-      addToolCall(input.tool);
+      if (activeResponseContexts.has(toolSessionId)) {
+        addToolCall(toolSessionId, input.tool);
+      }
     },
   };
 };
