@@ -202,6 +202,7 @@ export MATTERMOST_URL="https://your-mattermost-instance.com/api/v4"
 export MATTERMOST_WS_URL="wss://your-mattermost-instance.com/api/v4/websocket"
 export MATTERMOST_TEAM="your-team-name"
 export MATTERMOST_DEBUG="false"
+export MATTERMOST_AUTO_CONNECT="false"           # auto-connect on plugin load
 
 # Advanced options
 export MATTERMOST_RECONNECT_INTERVAL="5000"      # ms between reconnect attempts

@@ -126,7 +126,15 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
   threadMappingStore = new ThreadMappingStore();
   threadMappingStore.load().catch((e) => log.warn("[Plugin] Failed to load thread mappings:", e));
 
-  log.info("Loaded (not connected - use /mattermost connect)");
+  if (config.mattermost.autoConnect && config.mattermost.token) {
+    log.info("Auto-connect enabled, connecting to Mattermost...");
+    setTimeout(async () => {
+      const result = await handleConnect();
+      log.info(`Auto-connect result: ${result.split('\n')[0]}`);
+    }, 100);
+  } else {
+    log.info("Loaded (not connected - use /mattermost connect)");
+  }
 
   async function handleConnect(): Promise<string> {
     if (isConnected) {
