@@ -144,7 +144,7 @@ Once connected, DMs to the bot are processed as follows:
 The `Reply-To` line provides context for agents with other Mattermost integrations (MCP servers, direct API) to reply to the correct thread.
 
 **Auto-Session Creation:**
-If a user sends a message in the main DM (not in a thread) and no sessions exist, a new OpenCode session is automatically created. This can be disabled with `OPENCODE_MM_AUTO_CREATE_SESSION=false`.
+When a user sends a prompt in the main DM channel (not in a thread), a new OpenCode session is automatically created with its own dedicated thread. This makes the main DM the "new session launcher" - use threads to continue existing sessions. This can be disabled with `OPENCODE_MM_AUTO_CREATE_SESSION=false`.
 
 ### 7. Session Commands
 

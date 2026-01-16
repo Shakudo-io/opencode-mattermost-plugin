@@ -431,9 +431,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       }
       
       case "main_dm_prompt": {
-        const availableSessions = openCodeSessionRegistry?.listAvailable() || [];
-        
-        if (availableSessions.length === 0 && config.sessionSelection.autoCreateSession) {
+        // Main DM prompts always create a new session when autoCreateSession is enabled
+        // This makes the main DM channel the "new session launcher"
+        // Use threads to continue existing sessions
+        if (config.sessionSelection.autoCreateSession) {
           const newSession = await createNewSessionFromDm(userSession, post);
           if (newSession) {
             await handleThreadPrompt({
@@ -446,25 +447,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           return;
         }
         
-        if (availableSessions.length > 0) {
-          const mostRecent = availableSessions[0];
-          const mapping = threadMappingStore?.getBySessionId(mostRecent.id);
-          
-          if (mapping) {
-            await mmClient.createPost(
-              userSession.dmChannelId,
-              `:information_source: Routing to most recent session: **${mostRecent.projectName}** (\`${mostRecent.shortId}\`)\n\nUse \`!sessions\` to see all sessions or reply directly in a session thread.`
-            );
-            await handleThreadPrompt({
-              sessionId: mostRecent.id,
-              threadRootPostId: mapping.threadRootPostId,
-              promptText: post.message.trim(),
-              fileIds: post.file_ids,
-            }, userSession, post);
-            return;
-          }
-        }
-        
+        // autoCreateSession is disabled - show error with guidance
         await mmClient.createPost(
           userSession.dmChannelId,
           `:warning: ${routeResult.errorMessage}\n\n${routeResult.suggestedAction}`
