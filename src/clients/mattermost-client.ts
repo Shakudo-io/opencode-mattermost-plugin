@@ -131,6 +131,15 @@ export class MattermostClient {
     return response.data;
   }
 
+  async deletePost(postId: string): Promise<void> {
+    this.log(`Deleting post: ${postId}`);
+    const response = await this.client.delete(`/posts/${postId}`);
+
+    if (response.status >= 400) {
+      throw new Error(`Failed to delete post: ${JSON.stringify(response.data)}`);
+    }
+  }
+
   async getPosts(channelId: string, page = 0, perPage = 60): Promise<PostList> {
     const response = await this.client.get(`/channels/${channelId}/posts`, {
       params: { page, per_page: perPage },

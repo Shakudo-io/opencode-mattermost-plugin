@@ -52,7 +52,7 @@ export class TodoManager {
 
   formatTodoList(todos: TodoItem[]): string {
     if (!todos || todos.length === 0) {
-      return "📋 **Task List**\n\n_No tasks yet_";
+      return "";
     }
 
     const completed = todos.filter((t) => t.status === "completed").length;
@@ -113,31 +113,38 @@ export class TodoManager {
     }
 
     const formattedContent = this.formatTodoList(todos);
+    
+    if (!formattedContent) {
+      log.debug(`[TodoManager] Empty todo list, skipping update`);
+      return;
+    }
+    
     const existingPost = this.todoPostsBySession.get(sessionId);
 
     try {
       if (existingPost) {
-        await this.mmClient.updatePost(existingPost.postId, formattedContent);
-        existingPost.lastUpdated = Date.now();
-        existingPost.todos = todos;
-        log.debug(
-          `[TodoManager] Updated todo post for session ${sessionId.substring(0, 8)}`
-        );
-      } else {
-        const newPost = await this.mmClient.createPost(
-          channelId,
-          formattedContent,
-          threadRootPostId
-        );
-        this.todoPostsBySession.set(sessionId, {
-          postId: newPost.id,
-          lastUpdated: Date.now(),
-          todos,
-        });
-        log.info(
-          `[TodoManager] Created todo post for session ${sessionId.substring(0, 8)}`
-        );
+        try {
+          await this.mmClient.deletePost(existingPost.postId);
+        } catch (e) {
+          log.debug(`[TodoManager] Failed to delete old todo post (may already be deleted)`);
+        }
       }
+      
+      const newPost = await this.mmClient.createPost(
+        channelId,
+        formattedContent,
+        threadRootPostId
+      );
+      
+      this.todoPostsBySession.set(sessionId, {
+        postId: newPost.id,
+        lastUpdated: Date.now(),
+        todos,
+      });
+      
+      log.debug(
+        `[TodoManager] Created todo post at end of thread for session ${sessionId.substring(0, 8)}`
+      );
     } catch (e) {
       log.error(`[TodoManager] Failed to update todo post:`, e);
     }
@@ -150,5 +157,6 @@ export class TodoManager {
   clearSession(sessionId: string) {
     this.todoPostsBySession.delete(sessionId);
     this.threadRootsBySession.delete(sessionId);
+    this.channelIdsBySession.delete(sessionId);
   }
 }
