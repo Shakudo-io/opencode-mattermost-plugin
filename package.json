@@ -1,6 +1,6 @@
 {
   "name": "opencode-mattermost-control",
-  "version": "0.2.48",
+  "version": "0.2.49",
   "description": "OpenCode plugin for remote control via Mattermost DMs",
   "type": "module",
   "main": ".opencode/plugin/mattermost-control/index.ts",
@@ -46,7 +46,6 @@
   "license": "MIT",
   "dependencies": {
     "@opencode-ai/plugin": "^1.1.17",
-    "axios": "^1.7.9",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },
