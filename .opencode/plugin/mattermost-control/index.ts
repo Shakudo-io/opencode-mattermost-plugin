@@ -47,7 +47,6 @@ interface ResponseContext {
   threadRootPostId?: string;
   responseBuffer: string;
   thinkingBuffer: string;
-  toolsPostId: string | null;
   toolCalls: string[];
   activeTool: ActiveTool | null;
   lastUpdateTime: number;
@@ -58,7 +57,6 @@ interface ResponseContext {
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
 
 const TOOL_UPDATE_INTERVAL_MS = 1000;
-const toolUpdateTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
 function formatElapsedTime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -68,79 +66,46 @@ function formatElapsedTime(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-async function updateToolsPost(sessionId: string): Promise<void> {
-  const ctx = activeResponseContexts.get(sessionId);
-  if (!ctx || !mmClient) return;
-  
-  const hasTools = ctx.toolCalls.length > 0 || ctx.activeTool;
-  if (!hasTools) return;
+function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null): string {
+  const hasTools = toolCalls.length > 0 || activeTool;
+  if (!hasTools) return "";
 
-  const toolCounts = ctx.toolCalls.reduce((acc, tool) => {
-    acc[tool] = (acc[tool] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  let message = "";
+  const parts: string[] = [];
   
-  if (ctx.activeTool) {
-    const elapsed = formatElapsedTime(Date.now() - ctx.activeTool.startTime);
-    message += `🔧 **Running:** \`${ctx.activeTool.name}\` (${elapsed})\n`;
-  }
-  
-  if (ctx.toolCalls.length > 0) {
+  if (toolCalls.length > 0) {
+    const toolCounts = toolCalls.reduce((acc, tool) => {
+      acc[tool] = (acc[tool] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
     const summary = Object.entries(toolCounts)
       .map(([tool, count]) => count > 1 ? `\`${tool}\` ×${count}` : `\`${tool}\``)
       .join(", ");
-    message += `✅ **Completed:** ${summary}`;
+    parts.push(`✅ ${summary}`);
   }
-
-  try {
-    if (ctx.toolsPostId) {
-      try {
-        await mmClient.deletePost(ctx.toolsPostId);
-      } catch (e) {
-        log.debug("Failed to delete old tools post");
-      }
-    }
-    
-    const post = await mmClient.createPost(
-      ctx.mmSession.dmChannelId, 
-      message.trim(),
-      ctx.threadRootPostId
-    );
-    ctx.toolsPostId = post.id;
-  } catch (e) {
-    log.error("Failed to update tools post:", e);
-  }
-}
-
-function scheduleToolUpdate(sessionId: string): void {
-  if (toolUpdateTimers.has(sessionId)) return;
   
-  const timer = setTimeout(async () => {
-    toolUpdateTimers.delete(sessionId);
-    await updateToolsPost(sessionId);
-  }, TOOL_UPDATE_INTERVAL_MS);
-  
-  toolUpdateTimers.set(sessionId, timer);
-}
-
-function addToolCall(sessionId: string, toolName: string): void {
-  const ctx = activeResponseContexts.get(sessionId);
-  if (!ctx) return;
-  ctx.toolCalls.push(toolName);
-  scheduleToolUpdate(sessionId);
-}
-
-function clearToolTimer(sessionId: string): void {
-  const timer = toolUpdateTimers.get(sessionId);
-  if (timer) {
-    clearTimeout(timer);
-    toolUpdateTimers.delete(sessionId);
+  if (activeTool) {
+    const elapsed = formatElapsedTime(Date.now() - activeTool.startTime);
+    parts.push(`🔧 \`${activeTool.name}\` (${elapsed})...`);
   }
+  
+  return parts.join(" | ");
 }
 
 const activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+
+async function updateResponseStream(sessionId: string): Promise<void> {
+  const ctx = activeResponseContexts.get(sessionId);
+  if (!ctx || !streamer) return;
+  
+  const formattedOutput = formatFullResponse(ctx);
+  
+  try {
+    await streamer.updateStream(ctx.streamCtx, formattedOutput);
+  } catch (e) {
+    log.error("Failed to update stream:", e);
+  }
+}
 
 function startActiveToolTimer(sessionId: string): void {
   if (activeToolTimers.has(sessionId)) return;
@@ -151,7 +116,7 @@ function startActiveToolTimer(sessionId: string): void {
       stopActiveToolTimer(sessionId);
       return;
     }
-    await updateToolsPost(sessionId);
+    await updateResponseStream(sessionId);
   }, TOOL_UPDATE_INTERVAL_MS);
   
   activeToolTimers.set(sessionId, timer);
@@ -165,16 +130,25 @@ function stopActiveToolTimer(sessionId: string): void {
   }
 }
 
-function formatResponseWithThinking(response: string, thinking: string): string {
-  if (!thinking) {
-    return response;
+function formatFullResponse(ctx: ResponseContext): string {
+  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool);
+  const thinkingPreview = ctx.thinkingBuffer.length > 500 
+    ? ctx.thinkingBuffer.slice(-500) + "..." 
+    : ctx.thinkingBuffer;
+  
+  let output = "";
+  
+  if (toolStatus) {
+    output += toolStatus + "\n\n";
   }
   
-  const thinkingPreview = thinking.length > 500 
-    ? thinking.slice(-500) + "..." 
-    : thinking;
+  output += ctx.responseBuffer;
   
-  return `${response}\n\n---\n:brain: **Thinking:**\n> ${thinkingPreview.split('\n').join('\n> ')}`;
+  if (ctx.thinkingBuffer) {
+    output += `\n\n---\n:brain: **Thinking:**\n> ${thinkingPreview.split('\n').join('\n> ')}`;
+  }
+  
+  return output;
 }
 
 export const MattermostControlPlugin: Plugin = async ({ client, project, directory, $ }) => {
@@ -358,12 +332,6 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     }
 
     try {
-      for (const [sessionId, timer] of toolUpdateTimers) {
-        clearTimeout(timer);
-        await updateToolsPost(sessionId);
-      }
-      toolUpdateTimers.clear();
-      
       for (const [sessionId, timer] of activeToolTimers) {
         clearInterval(timer);
       }
@@ -710,7 +678,6 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         threadRootPostId,
         responseBuffer: "",
         thinkingBuffer: "",
-        toolsPostId: null,
         toolCalls: [],
         activeTool: null,
         lastUpdateTime: Date.now(),
@@ -1152,10 +1119,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           
           ctx.lastUpdateTime = Date.now();
           
-          const formattedOutput = formatResponseWithThinking(
-            ctx.responseBuffer,
-            ctx.thinkingBuffer
-          );
+          const formattedOutput = formatFullResponse(ctx);
           
           try {
             await streamer.updateStream(ctx.streamCtx, formattedOutput);
@@ -1171,12 +1135,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
-          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}`);
+          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}`);
           try {
-            clearToolTimer(sessionId);
-            await updateToolsPost(sessionId);
+            stopActiveToolTimer(sessionId);
             
-            ctx.streamCtx.buffer = ctx.responseBuffer;
+            ctx.streamCtx.buffer = formatFullResponse(ctx);
             await streamer.endStream(ctx.streamCtx);
             await notifications.notifyCompletion(ctx.mmSession, "Response complete", ctx.streamCtx.threadRootPostId);
             ctx.mmSession.isProcessing = false;
@@ -1242,7 +1205,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       };
       
       startActiveToolTimer(toolSessionId);
-      await updateToolsPost(toolSessionId);
+      await updateResponseStream(toolSessionId);
     },
 
     "tool.execute.after": async (input) => {
@@ -1270,7 +1233,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           ctx.activeTool = null;
           stopActiveToolTimer(toolSessionId);
         }
-        await updateToolsPost(toolSessionId);
+        await updateResponseStream(toolSessionId);
       }
     },
   };
