@@ -48,6 +48,8 @@ export class StatusIndicator {
   private startTime: number;
   private lastUpdateTime: number;
   private updateThrottleMs: number = 500;
+  private contentStarted: boolean = false;
+  private processingStartedAt: number | null = null;
 
   constructor(mmClient: MattermostClient, config: StatusIndicatorConfig) {
     this.mmClient = mmClient;
@@ -55,6 +57,14 @@ export class StatusIndicator {
     this.startTime = Date.now();
     this.lastUpdateTime = 0;
     this.currentState = { state: "queued", reason: "Initializing..." };
+  }
+
+  hasContentStarted(): boolean {
+    return this.contentStarted;
+  }
+
+  markContentStarted(): void {
+    this.contentStarted = true;
   }
 
   getState(): PromptState {
@@ -168,21 +178,32 @@ export class StatusIndicator {
   }
 
   async setConnecting(sessionId: string, shortId: string): Promise<void> {
+    if (this.processingStartedAt === null) {
+      this.processingStartedAt = Date.now();
+    }
     this.currentState = { state: "connecting", sessionId, shortId };
     log.debug(`[StatusIndicator] State -> connecting: ${shortId}`);
     await this.updatePost();
   }
 
   async setProcessing(): Promise<void> {
-    this.currentState = { state: "processing", startedAt: Date.now() };
+    if (this.processingStartedAt === null) {
+      this.processingStartedAt = Date.now();
+    }
+    this.currentState = { state: "processing", startedAt: this.processingStartedAt };
     log.debug("[StatusIndicator] State -> processing");
-    await this.updatePost();
+    if (!this.contentStarted) {
+      await this.updatePost();
+    }
   }
 
   async setToolRunning(tool: string): Promise<void> {
-    this.currentState = { state: "tool_running", tool, startedAt: Date.now() };
+    const startedAt = this.processingStartedAt || Date.now();
+    this.currentState = { state: "tool_running", tool, startedAt };
     log.debug(`[StatusIndicator] State -> tool_running: ${tool}`);
-    await this.updatePost();
+    if (!this.contentStarted) {
+      await this.updatePost();
+    }
   }
 
   async setWaiting(reason: "permission" | "question", details?: string): Promise<void> {

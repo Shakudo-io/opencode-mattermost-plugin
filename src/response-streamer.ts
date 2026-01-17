@@ -120,18 +120,16 @@ export class ResponseStreamer {
 
     ctx.buffer = fullText;
 
+    if (ctx.statusIndicator && !ctx.statusIndicator.hasContentStarted()) {
+      ctx.statusIndicator.markContentStarted();
+    }
+
     const now = Date.now();
     const timeSinceLastUpdate = now - ctx.lastUpdateTime;
     const minInterval = 1000 / this.config.editRateLimit;
 
     if (timeSinceLastUpdate >= minInterval) {
       try {
-        if (ctx.statusIndicator) {
-          const state = ctx.statusIndicator.getState();
-          if (state.state !== "processing") {
-            await ctx.statusIndicator.setProcessing();
-          }
-        }
         await this.updateWithSplitting(ctx, ctx.buffer + " ...");
         ctx.lastUpdateTime = Date.now();
       } catch (error) {
