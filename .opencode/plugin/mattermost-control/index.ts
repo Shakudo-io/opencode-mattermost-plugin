@@ -43,6 +43,8 @@ interface ResponseContext {
   toolsPostId: string | null;
   toolCalls: string[];
   lastUpdateTime: number;
+  textPartCount?: number;
+  reasoningPartCount?: number;
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -1070,11 +1072,13 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         const ctx = activeResponseContexts.get(sessionId);
         if (!ctx) return;
         
-        if (part?.type === "text" || part?.type === "thinking") {
+        if (part?.type === "text" || part?.type === "reasoning") {
           if (part?.type === "text") {
             ctx.responseBuffer += delta;
-          } else if (part?.type === "thinking") {
+            ctx.textPartCount = (ctx.textPartCount || 0) + 1;
+          } else if (part?.type === "reasoning") {
             ctx.thinkingBuffer += delta;
+            ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
           }
           
           ctx.lastUpdateTime = Date.now();
@@ -1098,6 +1102,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
+          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}`);
           try {
             clearToolTimer(sessionId);
             await updateToolsPost(sessionId);
