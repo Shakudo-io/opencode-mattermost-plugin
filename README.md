@@ -7,21 +7,42 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ## Features
 
+### Core Features
 - **Thread-Per-Session**: Each OpenCode session automatically gets its own dedicated Mattermost thread for clean conversation isolation
 - **Remote Control**: Send prompts to OpenCode via Mattermost DMs
 - **Multi-Session Management**: Control multiple OpenCode sessions in parallel via separate threads
 - **Session Monitoring**: Get DM alerts when sessions need attention (permission requests, idle, questions)
 - **Real-time Streaming**: Responses stream back in chunks with intelligent buffering
 - **File Attachments**: Send and receive files through Mattermost
-- **Emoji Commands**: React with emojis to control sessions
-  - ✅ Approve pending permission
-  - ❌ Deny pending permission  
-  - 🛑 Cancel current operation
-  - 🔁 Retry last prompt
-  - 🗑️ Clear session files
-- **Notifications**: Get notified on completion, errors, and status changes
-- **Multi-user Support**: Handle multiple users with separate sessions
 - **Automatic Reconnection**: WebSocket auto-reconnects with exponential backoff
+
+### Real-time Status Display
+- **Enhanced Status Indicator**: Shows processing state with elapsed time (e.g., `💻 Processing... (15s)`)
+- **Tool Execution Display**: See which tools are being executed in real-time with timing
+- **Live Shell Output**: Bash command output streams directly to Mattermost as it executes
+- **Todo List Tracking**: View task progress during complex multi-step operations
+- **Cost & Token Tracking**: Monitor LLM costs and token usage per session (e.g., `💰 $0.45 (+$0.03) | 125K tok`)
+
+### Model Selection
+- **Per-Session Model Switching**: Use `!models` to list available models, select by number
+- **Model Persistence**: Selected model persists for the session thread
+- **Multi-Provider Support**: Switch between providers (Anthropic, OpenAI, etc.) on the fly
+
+### Multi-User Support
+- **Owner Filtering**: Set `MATTERMOST_OWNER_USER_ID` to ensure your OpenCode instance only responds to your DMs
+- **Shared Bot Account**: Multiple users can run separate OpenCode instances with the same bot
+- **Per-User Sessions**: Each user's sessions are isolated
+
+### Emoji Commands
+React to any bot message with these emojis:
+- ✅ Approve pending permission
+- ❌ Deny pending permission  
+- 🛑 Cancel current operation
+- 🔁 Retry last prompt
+- 🗑️ Clear session files
+
+### Notifications
+- Get notified on completion, errors, and status changes
 
 ---
 
@@ -152,6 +173,8 @@ Users can send these commands via DM to manage sessions:
 - `!sessions` - List all available OpenCode sessions
 - `!use <id>` - Switch to a specific session
 - `!current` - Show currently selected session
+- `!models` - List available models and select one for the current session
+- `!model` - Show the currently selected model for this session
 - `!help` - Show available commands
 
 ---
@@ -219,6 +242,10 @@ export OPENCODE_MM_SESSION_TIMEOUT="3600000"     # 1 hour in ms
 export OPENCODE_MM_MAX_SESSIONS="50"             # max concurrent sessions
 export OPENCODE_MM_ALLOWED_USERS=""              # comma-separated user IDs (empty = all)
 export OPENCODE_MM_AUTO_CREATE_SESSION="true"    # auto-create session from main DM
+
+# Multi-user / Owner filtering
+export MATTERMOST_OWNER_USER_ID=""               # Only respond to DMs from this user ID
+                                                 # Allows multiple OpenCode instances to share one bot
 
 # File handling
 export OPENCODE_MM_TEMP_DIR="/tmp/opencode-mm-plugin"
@@ -319,6 +346,8 @@ When connected, you can manage multiple OpenCode sessions via DM commands:
 | Command | Description |
 |---------|-------------|
 | `!sessions` | List all available OpenCode sessions with thread links |
+| `!models` | List available models grouped by provider, select by number |
+| `!model` | Show the currently selected model for this session |
 | `!help` | Display available commands and thread workflow |
 
 **Example:**
@@ -336,6 +365,44 @@ Bot: 📋 Available Sessions (2)
 
      Reply in a session thread to send prompts.
 ```
+
+### Model Selection
+
+Switch between different LLM models on a per-session basis:
+
+```
+You: !models
+Bot: 🤖 Available Models
+
+     Anthropic
+       1. claude-sonnet-4-20250514
+       2. claude-3-5-haiku-20241022
+
+     OpenAI
+       3. gpt-4o
+       4. o3
+
+     Reply with a number to select a model.
+
+You: 1
+Bot: ✅ Model set to claude-sonnet-4-20250514 (Anthropic) for this session.
+```
+
+The selected model persists for the session thread. Use `!model` to check the current selection.
+
+### Multi-User Setup (Shared Bot)
+
+When multiple users want to run separate OpenCode instances with the same Mattermost bot account, use owner filtering to prevent conflicts:
+
+```bash
+# User A's environment
+export MATTERMOST_OWNER_USER_ID="user_a_id_here"
+
+# User B's environment  
+export MATTERMOST_OWNER_USER_ID="user_b_id_here"
+```
+
+Each OpenCode instance will only respond to DMs from its configured owner. To find your user ID, check your Mattermost profile or ask an admin.
 
 ### Emoji Commands
 
