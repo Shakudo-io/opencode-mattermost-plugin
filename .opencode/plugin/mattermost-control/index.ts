@@ -53,6 +53,7 @@ interface ResponseContext {
   lastUpdateTime: number;
   textPartCount?: number;
   reasoningPartCount?: number;
+  compactionCount: number;
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -67,9 +68,10 @@ function formatElapsedTime(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null): string {
+function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0): string {
   const hasTools = toolCalls.length > 0 || activeTool;
-  if (!hasTools) return "";
+  const hasCompaction = compactionCount > 0;
+  if (!hasTools && !hasCompaction) return "";
 
   const parts: string[] = [];
   
@@ -83,6 +85,10 @@ function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null): s
       .map(([tool, count]) => count > 1 ? `\`${tool}\` ×${count}` : `\`${tool}\``)
       .join(", ");
     parts.push(`✅ ${summary}`);
+  }
+  
+  if (hasCompaction) {
+    parts.push(compactionCount > 1 ? `📦 Compacted ×${compactionCount}` : `📦 Compacted`);
   }
   
   if (activeTool) {
@@ -148,7 +154,7 @@ function formatShellOutput(shellOutput: string): string {
 }
 
 function formatFullResponse(ctx: ResponseContext): string {
-  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool);
+  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount);
   const thinkingPreview = ctx.thinkingBuffer.length > 500 
     ? ctx.thinkingBuffer.slice(-500) + "..." 
     : ctx.thinkingBuffer;
@@ -704,6 +710,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         activeTool: null,
         shellOutput: "",
         lastUpdateTime: Date.now(),
+        compactionCount: 0,
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
@@ -1119,6 +1126,15 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
+      if (eventType === "session.compacted" && eventSessionId) {
+        log.info(`[Compaction] Session ${eventSessionId.substring(0, 8)} compacted`);
+        const ctx = activeResponseContexts.get(eventSessionId);
+        if (ctx) {
+          ctx.compactionCount += 1;
+          await updateResponseStream(eventSessionId);
+        }
+      }
+
       if (!isConnected) return;
 
       if (event.type === "message.part.updated" && streamer) {
@@ -1168,7 +1184,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
-          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}`);
+          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}`);
           try {
             stopActiveToolTimer(sessionId);
             
