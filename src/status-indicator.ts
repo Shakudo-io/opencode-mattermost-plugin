@@ -14,7 +14,7 @@ export type PromptState =
 const STATUS_EMOJI: Record<PromptState["state"], string> = {
   queued: "⏳",
   connecting: "🔗",
-  processing: "🤔",
+  processing: "💻",
   tool_running: "🔧",
   waiting: "⏸️",
   retrying: "🔄",
