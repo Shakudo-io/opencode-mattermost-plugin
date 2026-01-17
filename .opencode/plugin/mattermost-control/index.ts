@@ -1070,7 +1070,12 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         if (!delta || delta.length === 0 || !sessionId) return;
         
         const ctx = activeResponseContexts.get(sessionId);
-        if (!ctx) return;
+        if (!ctx) {
+          log.debug(`[PartUpdated] No context for session ${sessionId?.substring(0, 8)}, part.type=${part?.type}`);
+          return;
+        }
+        
+        log.debug(`[PartUpdated] session=${sessionId.substring(0, 8)}, part.type=${part?.type}, deltaLen=${delta.length}`);
         
         if (part?.type === "text" || part?.type === "reasoning") {
           if (part?.type === "text") {
@@ -1099,6 +1104,9 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       if (event.type === "session.idle" && streamer && notifications) {
         const sessionId = (event as any).properties?.sessionID;
         if (!sessionId) return;
+        
+        const activeKeys = Array.from(activeResponseContexts.keys());
+        log.debug(`[SessionIdle] sessionId=${sessionId}, activeContexts=[${activeKeys.join(", ")}]`);
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
