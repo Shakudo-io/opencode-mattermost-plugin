@@ -587,15 +587,13 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           registry: openCodeSessionRegistry,
           mmClient,
           threadMappingStore,
+          opencodeClient: client,
         });
         await mmClient.createPost(userSession.dmChannelId, result.message);
         return;
       }
       
       case "main_dm_prompt": {
-        // Main DM prompts always create a new session when autoCreateSession is enabled
-        // This makes the main DM channel the "new session launcher"
-        // Use threads to continue existing sessions
         if (config.sessionSelection.autoCreateSession) {
           const newSession = await createNewSessionFromDm(userSession, post);
           if (newSession) {
@@ -609,7 +607,6 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           return;
         }
         
-        // autoCreateSession is disabled - show error with guidance
         await mmClient.createPost(
           userSession.dmChannelId,
           `:warning: ${routeResult.errorMessage}\n\n${routeResult.suggestedAction}`
@@ -636,6 +633,42 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       }
       
       case "thread_prompt": {
+        const promptText = routeResult.promptText.trim();
+        
+        if (promptText.startsWith(config.sessionSelection.commandPrefix)) {
+          const parsed = messageRouter.parseCommand(promptText);
+          if (parsed) {
+            const result = await commandHandler.execute(parsed, {
+              userSession,
+              registry: openCodeSessionRegistry,
+              mmClient,
+              threadMappingStore,
+              opencodeClient: client,
+              sessionId: routeResult.sessionId,
+              threadRootPostId: routeResult.threadRootPostId,
+            });
+            await mmClient.createPost(userSession.dmChannelId, result.message, routeResult.threadRootPostId);
+            return;
+          }
+        }
+        
+        const numericSelection = parseInt(promptText, 10);
+        if (!isNaN(numericSelection) && commandHandler.isPendingModelSelection(routeResult.sessionId, threadMappingStore)) {
+          const result = await commandHandler.handleModelSelection(numericSelection, {
+            userSession,
+            registry: openCodeSessionRegistry,
+            mmClient,
+            threadMappingStore,
+            opencodeClient: client,
+            sessionId: routeResult.sessionId,
+            threadRootPostId: routeResult.threadRootPostId,
+          });
+          if (result) {
+            await mmClient.createPost(userSession.dmChannelId, result.message, routeResult.threadRootPostId);
+            return;
+          }
+        }
+        
         await handleThreadPrompt(routeResult, userSession, post);
         return;
       }
@@ -850,10 +883,23 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       
       await statusIndicator.setProcessing();
       
+      const mapping = threadMappingStore?.getBySessionId(targetSessionId);
+      const selectedModel = mapping?.model;
+      
+      if (selectedModel) {
+        log.debug(`[ModelSelection] Using model ${selectedModel.providerID}/${selectedModel.modelID} for session ${shortId}`);
+      }
+      
       await client.session.promptAsync({
         path: { id: targetSessionId },
         body: {
           parts: [{ type: "text", text: promptMessage }],
+          ...(selectedModel && {
+            model: {
+              providerID: selectedModel.providerID,
+              modelID: selectedModel.modelID,
+            },
+          }),
         },
       });
 

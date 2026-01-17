@@ -3,13 +3,24 @@ import type { OpenCodeSessionRegistry, OpenCodeSessionInfo } from "./opencode-se
 import type { UserSession } from "./session-manager.js";
 import type { ParsedCommand } from "./message-router.js";
 import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
+import type { ModelSelection } from "./models/index.js";
 import { log } from "./logger.js";
+
+export interface ProviderModel {
+  id: string;
+  name: string;
+  providerID: string;
+  providerName: string;
+}
 
 export interface CommandContext {
   userSession: UserSession;
   registry: OpenCodeSessionRegistry;
   mmClient: MattermostClient;
   threadMappingStore?: ThreadMappingStore | null;
+  opencodeClient?: any;
+  sessionId?: string;
+  threadRootPostId?: string;
 }
 
 export type CommandResult = {
@@ -36,7 +47,13 @@ export class CommandHandler {
     this.commands.set("use", this.handleUse.bind(this));
     this.commands.set("current", this.handleCurrent.bind(this));
     this.commands.set("help", this.handleHelp.bind(this));
+    this.commands.set("models", this.handleModels.bind(this));
+    this.commands.set("model", this.handleModel.bind(this));
   }
+
+  private cachedModels: ProviderModel[] = [];
+  private modelsCacheTime: number = 0;
+  private MODEL_CACHE_TTL_MS = 60000; // 1 minute
 
   async execute(command: ParsedCommand, context: CommandContext): Promise<CommandResult> {
     const executor = this.commands.get(command.name);
@@ -263,6 +280,8 @@ export class CommandHandler {
       `| \`${this.commandPrefix}sessions\` | List available OpenCode sessions |`,
       `| \`${this.commandPrefix}use <id>\` | Switch to a different session |`,
       `| \`${this.commandPrefix}current\` | Show currently targeted session |`,
+      `| \`${this.commandPrefix}models\` | List available AI models (use in thread) |`,
+      `| \`${this.commandPrefix}model\` | Show current model for this session |`,
       `| \`${this.commandPrefix}help\` | Show this help message |`,
       "",
     ];
@@ -273,6 +292,10 @@ export class CommandHandler {
       lines.push("- Send prompts by replying in a session's thread");
       lines.push("- Use `" + this.commandPrefix + "sessions` to see thread links");
       lines.push("- Commands work in main DM, prompts must go in threads");
+      lines.push("");
+      lines.push("**Model Switching:**");
+      lines.push("- Use `" + this.commandPrefix + "models` in a thread to see available models");
+      lines.push("- Reply with a number to select a model for that session");
     } else {
       lines.push("Any message not starting with `" + this.commandPrefix + "` is sent as a prompt to OpenCode.");
     }
@@ -281,6 +304,215 @@ export class CommandHandler {
       success: true,
       message: lines.join("\n"),
     };
+  }
+
+  private async fetchModels(opencodeClient: any): Promise<ProviderModel[]> {
+    const now = Date.now();
+    if (this.cachedModels.length > 0 && (now - this.modelsCacheTime) < this.MODEL_CACHE_TTL_MS) {
+      return this.cachedModels;
+    }
+
+    try {
+      const result = await opencodeClient.provider.list();
+      const providers = result.data;
+      
+      if (!providers?.all || !providers?.connected) {
+        log.warn("[CommandHandler] No providers data returned");
+        return [];
+      }
+
+      const models: ProviderModel[] = [];
+      const connectedProviders = new Set(providers.connected);
+
+      for (const provider of providers.all) {
+        if (!connectedProviders.has(provider.id)) continue;
+        
+        for (const [modelId, model] of Object.entries(provider.models || {})) {
+          const m = model as any;
+          models.push({
+            id: modelId,
+            name: m.name || modelId,
+            providerID: provider.id,
+            providerName: provider.name,
+          });
+        }
+      }
+
+      models.sort((a, b) => {
+        if (a.providerID !== b.providerID) {
+          return a.providerID.localeCompare(b.providerID);
+        }
+        return a.name.localeCompare(b.name);
+      });
+
+      this.cachedModels = models;
+      this.modelsCacheTime = now;
+      
+      log.debug(`[CommandHandler] Cached ${models.length} models from ${connectedProviders.size} providers`);
+      return models;
+    } catch (e) {
+      log.error("[CommandHandler] Failed to fetch models:", e);
+      return this.cachedModels;
+    }
+  }
+
+  private async handleModels(
+    _command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { threadMappingStore, opencodeClient, sessionId, threadRootPostId } = context;
+
+    if (!opencodeClient) {
+      return {
+        success: false,
+        message: "OpenCode client not available.",
+      };
+    }
+
+    if (!sessionId || !threadRootPostId) {
+      return {
+        success: false,
+        message: `Use \`${this.commandPrefix}models\` inside a session thread to switch models for that session.`,
+      };
+    }
+
+    const models = await this.fetchModels(opencodeClient);
+    
+    if (models.length === 0) {
+      return {
+        success: false,
+        message: "No models available. Check that providers are configured in OpenCode.",
+      };
+    }
+
+    const mapping = threadMappingStore?.getBySessionId(sessionId);
+    const currentModel = mapping?.model;
+
+    let currentProvider = "";
+    const lines: string[] = [
+      `:robot_face: **Available Models**`,
+      "",
+    ];
+
+    models.forEach((model, index) => {
+      if (model.providerID !== currentProvider) {
+        currentProvider = model.providerID;
+        lines.push(`**${model.providerName}**`);
+      }
+      
+      const isCurrent = currentModel?.providerID === model.providerID && 
+                        currentModel?.modelID === model.id;
+      const marker = isCurrent ? " :white_check_mark:" : "";
+      lines.push(`  \`${index + 1}\` ${model.name}${marker}`);
+    });
+
+    lines.push("");
+    lines.push("Reply with a **number** to select a model for this session.");
+    
+    if (currentModel) {
+      lines.push("");
+      lines.push(`:white_check_mark: Current: **${currentModel.displayName || currentModel.modelID}**`);
+    }
+
+    if (mapping && threadMappingStore) {
+      mapping.pendingModelSelection = true;
+      threadMappingStore.update(mapping);
+    }
+
+    return {
+      success: true,
+      message: lines.join("\n"),
+    };
+  }
+
+  private async handleModel(
+    _command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { threadMappingStore, sessionId } = context;
+
+    if (!sessionId) {
+      return {
+        success: false,
+        message: `Use \`${this.commandPrefix}model\` inside a session thread to see the current model.`,
+      };
+    }
+
+    const mapping = threadMappingStore?.getBySessionId(sessionId);
+    
+    if (!mapping?.model) {
+      return {
+        success: true,
+        message: `:information_source: No model explicitly set for this session. Using OpenCode default.\n\nUse \`${this.commandPrefix}models\` to select a specific model.`,
+      };
+    }
+
+    return {
+      success: true,
+      message: [
+        `:robot_face: **Current Model**`,
+        "",
+        `Provider: **${mapping.model.providerID}**`,
+        `Model: **${mapping.model.displayName || mapping.model.modelID}**`,
+        "",
+        `Use \`${this.commandPrefix}models\` to change.`,
+      ].join("\n"),
+    };
+  }
+
+  async handleModelSelection(
+    selection: number,
+    context: CommandContext
+  ): Promise<CommandResult | null> {
+    const { threadMappingStore, opencodeClient, sessionId } = context;
+
+    if (!sessionId || !threadMappingStore || !opencodeClient) {
+      return null;
+    }
+
+    const mapping = threadMappingStore.getBySessionId(sessionId);
+    if (!mapping?.pendingModelSelection) {
+      return null;
+    }
+
+    const models = await this.fetchModels(opencodeClient);
+    
+    if (selection < 1 || selection > models.length) {
+      return {
+        success: false,
+        message: `Invalid selection. Enter a number between 1 and ${models.length}.`,
+      };
+    }
+
+    const selectedModel = models[selection - 1];
+    
+    mapping.model = {
+      providerID: selectedModel.providerID,
+      modelID: selectedModel.id,
+      displayName: selectedModel.name,
+    };
+    mapping.pendingModelSelection = false;
+    threadMappingStore.update(mapping);
+
+    log.info(`[CommandHandler] Model set for session ${mapping.shortId}: ${selectedModel.providerID}/${selectedModel.id}`);
+
+    return {
+      success: true,
+      message: [
+        `:white_check_mark: **Model Changed**`,
+        "",
+        `Now using: **${selectedModel.name}**`,
+        `Provider: ${selectedModel.providerName}`,
+        "",
+        "All prompts in this thread will use this model.",
+      ].join("\n"),
+    };
+  }
+
+  isPendingModelSelection(sessionId: string, threadMappingStore: ThreadMappingStore | null): boolean {
+    if (!threadMappingStore) return false;
+    const mapping = threadMappingStore.getBySessionId(sessionId);
+    return mapping?.pendingModelSelection === true;
   }
 
   isKnownCommand(name: string): boolean {

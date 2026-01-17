@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+export const ModelSelectionSchema = z.object({
+  providerID: z.string().min(1),
+  modelID: z.string().min(1),
+  displayName: z.string().optional(),
+});
+
+export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
+
 export const ThreadSessionMappingSchema = z.object({
   sessionId: z.string().min(1),
   threadRootPostId: z.string().min(1),
@@ -13,6 +21,8 @@ export const ThreadSessionMappingSchema = z.object({
   createdAt: z.string().datetime(),
   lastActivityAt: z.string().datetime(),
   endedAt: z.string().datetime().optional(),
+  model: ModelSelectionSchema.optional(),
+  pendingModelSelection: z.boolean().optional(),
 });
 
 export const ThreadMappingFileSchema = z.object({

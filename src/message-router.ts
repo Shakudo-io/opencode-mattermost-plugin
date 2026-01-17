@@ -42,7 +42,7 @@ export class MessageRouter {
     if (this.isCommand(message)) {
       return {
         type: "command",
-        command: this.parseCommand(message),
+        command: this.parseCommand(message)!,
       };
     }
 
@@ -97,7 +97,7 @@ export class MessageRouter {
     if (this.isCommand(message)) {
       return {
         type: "main_dm_command",
-        command: this.parseCommand(message),
+        command: this.parseCommand(message)!,
       } as MainDmCommandRoute;
     }
     
@@ -112,7 +112,10 @@ export class MessageRouter {
     return message.startsWith(this.commandPrefix);
   }
 
-  private parseCommand(message: string): ParsedCommand {
+  parseCommand(message: string): ParsedCommand | null {
+    if (!message.startsWith(this.commandPrefix)) {
+      return null;
+    }
     const withoutPrefix = message.slice(this.commandPrefix.length);
     const parts = withoutPrefix.split(/\s+/);
     const name = parts[0]?.toLowerCase() || "";

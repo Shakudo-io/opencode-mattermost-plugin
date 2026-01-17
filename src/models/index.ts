@@ -157,6 +157,12 @@ export interface PostedEvent {
 
 export type ThreadMappingStatus = "active" | "ended" | "disconnected" | "orphaned";
 
+export interface ModelSelection {
+  providerID: string;
+  modelID: string;
+  displayName?: string;
+}
+
 export interface ThreadSessionMapping {
   sessionId: string;
   threadRootPostId: string;
@@ -170,6 +176,8 @@ export interface ThreadSessionMapping {
   createdAt: string;
   lastActivityAt: string;
   endedAt?: string;
+  model?: ModelSelection;
+  pendingModelSelection?: boolean;
 }
 
 export interface ThreadRootPostContent {
