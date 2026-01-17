@@ -49,6 +49,7 @@ interface ResponseContext {
   thinkingBuffer: string;
   toolCalls: string[];
   activeTool: ActiveTool | null;
+  shellOutput: string;
   lastUpdateTime: number;
   textPartCount?: number;
   reasoningPartCount?: number;
@@ -130,6 +131,22 @@ function stopActiveToolTimer(sessionId: string): void {
   }
 }
 
+const MAX_SHELL_OUTPUT_LINES = 15;
+
+function formatShellOutput(shellOutput: string): string {
+  if (!shellOutput) return "";
+  
+  const lines = shellOutput.trim().split('\n');
+  const totalLines = lines.length;
+  
+  if (totalLines <= MAX_SHELL_OUTPUT_LINES) {
+    return shellOutput.trim();
+  }
+  
+  const tailLines = lines.slice(-MAX_SHELL_OUTPUT_LINES);
+  return `... (${totalLines - MAX_SHELL_OUTPUT_LINES} lines hidden)\n${tailLines.join('\n')}`;
+}
+
 function formatFullResponse(ctx: ResponseContext): string {
   const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool);
   const thinkingPreview = ctx.thinkingBuffer.length > 500 
@@ -140,6 +157,11 @@ function formatFullResponse(ctx: ResponseContext): string {
   
   if (toolStatus) {
     output += toolStatus + "\n\n";
+  }
+  
+  if (ctx.shellOutput && ctx.activeTool?.name === "bash") {
+    const formattedShell = formatShellOutput(ctx.shellOutput);
+    output += "```\n" + formattedShell + "\n```\n\n";
   }
   
   output += ctx.responseBuffer;
@@ -680,6 +702,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         thinkingBuffer: "",
         toolCalls: [],
         activeTool: null,
+        shellOutput: "",
         lastUpdateTime: Date.now(),
       };
       
@@ -1103,20 +1126,30 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         const delta = (event as any).properties?.delta;
         const sessionId = part?.sessionID || (event as any).properties?.sessionID;
         
-        if (!delta || delta.length === 0 || !sessionId) return;
+        if (!sessionId) return;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (!ctx) return;
         
-        if (part?.type === "text" || part?.type === "reasoning") {
-          if (part?.type === "text") {
-            ctx.responseBuffer += delta;
-            ctx.textPartCount = (ctx.textPartCount || 0) + 1;
-          } else if (part?.type === "reasoning") {
-            ctx.thinkingBuffer += delta;
-            ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
+        let shouldUpdate = false;
+        
+        if (part?.type === "text" && delta) {
+          ctx.responseBuffer += delta;
+          ctx.textPartCount = (ctx.textPartCount || 0) + 1;
+          shouldUpdate = true;
+        } else if (part?.type === "reasoning" && delta) {
+          ctx.thinkingBuffer += delta;
+          ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
+          shouldUpdate = true;
+        } else if (part?.type === "tool" && part?.tool === "bash" && part?.state?.status === "running") {
+          const shellOutput = part.state.metadata?.output;
+          if (shellOutput && shellOutput !== ctx.shellOutput) {
+            ctx.shellOutput = shellOutput;
+            shouldUpdate = true;
           }
-          
+        }
+        
+        if (shouldUpdate) {
           ctx.lastUpdateTime = Date.now();
           
           const formattedOutput = formatFullResponse(ctx);
@@ -1230,6 +1263,9 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       if (ctx) {
         if (ctx.activeTool) {
           ctx.toolCalls.push(ctx.activeTool.name);
+          if (ctx.activeTool.name === "bash") {
+            ctx.shellOutput = "";
+          }
           ctx.activeTool = null;
           stopActiveToolTimer(toolSessionId);
         }
