@@ -13,6 +13,7 @@ import { CommandHandler } from "../../../src/command-handler.js";
 import { MonitorService, handleMonitorAlert, type MonitoredSession } from "../../../src/monitor-service.js";
 import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
 import { ThreadManager } from "../../../src/thread-manager.js";
+import { TodoManager } from "../../../src/todo-manager.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
 import type { User, Post, WebSocketEvent, ThreadSessionMapping } from "../../../src/models/index.js";
@@ -31,6 +32,7 @@ let messageRouter: MessageRouter | null = null;
 let commandHandler: CommandHandler | null = null;
 let threadMappingStore: ThreadMappingStore | null = null;
 let threadManager: ThreadManager | null = null;
+let todoManager: TodoManager | null = null;
 let botUser: User | null = null;
 let projectName: string = "";
 interface ResponseContext {
@@ -210,6 +212,8 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       if (threadMappingStore) {
         threadManager = new ThreadManager(mmClient, threadMappingStore);
       }
+      
+      todoManager = new TodoManager(mmClient);
 
       openCodeSessionRegistry.onNewSession(async (sessionInfo) => {
         if (!threadManager || !sessionManager) return;
@@ -652,6 +656,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
+      
+      if (todoManager && threadRootPostId) {
+        todoManager.setThreadRoot(targetSessionId, threadRootPostId);
+      }
 
       // Build reply context for agents with other Mattermost integrations
       const replyContext = threadRootPostId 
@@ -1070,12 +1078,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         if (!delta || delta.length === 0 || !sessionId) return;
         
         const ctx = activeResponseContexts.get(sessionId);
-        if (!ctx) {
-          log.debug(`[PartUpdated] No context for session ${sessionId?.substring(0, 8)}, part.type=${part?.type}`);
-          return;
-        }
-        
-        log.debug(`[PartUpdated] session=${sessionId.substring(0, 8)}, part.type=${part?.type}, deltaLen=${delta.length}`);
+        if (!ctx) return;
         
         if (part?.type === "text" || part?.type === "reasoning") {
           if (part?.type === "text") {
@@ -1104,9 +1107,6 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       if (event.type === "session.idle" && streamer && notifications) {
         const sessionId = (event as any).properties?.sessionID;
         if (!sessionId) return;
-        
-        const activeKeys = Array.from(activeResponseContexts.keys());
-        log.debug(`[SessionIdle] sessionId=${sessionId}, activeContexts=[${activeKeys.join(", ")}]`);
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
@@ -1140,6 +1140,18 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           } catch (e) {
             log.error("Failed to send file update:", e);
           }
+        }
+      }
+
+      if (event.type === "todo.updated" && todoManager && mmClient) {
+        const sessionId = (event as any).properties?.sessionID;
+        const todos = (event as any).properties?.todos;
+        if (!sessionId || !todos) return;
+        
+        const ctx = activeResponseContexts.get(sessionId);
+        if (ctx?.mmSession?.dmChannelId && ctx.threadRootPostId) {
+          todoManager.setThreadRoot(sessionId, ctx.threadRootPostId);
+          await todoManager.updateTodoPost(sessionId, todos, ctx.mmSession.dmChannelId);
         }
       }
     },
