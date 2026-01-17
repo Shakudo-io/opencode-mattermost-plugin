@@ -1,6 +1,7 @@
 import type { MattermostClient } from "./clients/mattermost-client.js";
 import type { StreamingConfig } from "./config.js";
 import type { UserSession } from "./session-manager.js";
+import { StatusIndicator, createStatusIndicator } from "./status-indicator.js";
 import { log } from "./logger.js";
 
 export interface StreamContext {
@@ -13,6 +14,7 @@ export interface StreamContext {
   isCancelled: boolean;
   continuationPostIds: string[];
   currentPostContent: string;
+  statusIndicator?: StatusIndicator;
 }
 
 export class ResponseStreamer {
@@ -26,11 +28,15 @@ export class ResponseStreamer {
   }
 
   async startStream(session: UserSession, threadRootPostId?: string, initialText: string = ""): Promise<StreamContext> {
-    const displayText = initialText || "Thinking...";
-    const post = await this.mmClient.createPost(session.dmChannelId, displayText + " ...", threadRootPostId);
+    const statusIndicator = await createStatusIndicator(
+      this.mmClient,
+      session.dmChannelId,
+      threadRootPostId,
+      "Checking session status..."
+    );
 
     const ctx: StreamContext = {
-      postId: post.id,
+      postId: statusIndicator.getPostId(),
       channelId: session.dmChannelId,
       threadRootPostId,
       buffer: initialText,
@@ -39,10 +45,40 @@ export class ResponseStreamer {
       isCancelled: false,
       continuationPostIds: [],
       currentPostContent: initialText,
+      statusIndicator,
     };
 
-    this.activeStreams.set(post.id, ctx);
+    this.activeStreams.set(ctx.postId, ctx);
     return ctx;
+  }
+
+  async startStreamWithStatus(
+    session: UserSession, 
+    threadRootPostId?: string,
+    initialReason: string = "Checking session status..."
+  ): Promise<{ streamCtx: StreamContext; statusIndicator: StatusIndicator }> {
+    const statusIndicator = await createStatusIndicator(
+      this.mmClient,
+      session.dmChannelId,
+      threadRootPostId,
+      initialReason
+    );
+
+    const ctx: StreamContext = {
+      postId: statusIndicator.getPostId(),
+      channelId: session.dmChannelId,
+      threadRootPostId,
+      buffer: "",
+      lastUpdateTime: Date.now(),
+      totalChunks: 0,
+      isCancelled: false,
+      continuationPostIds: [],
+      currentPostContent: "",
+      statusIndicator,
+    };
+
+    this.activeStreams.set(ctx.postId, ctx);
+    return { streamCtx: ctx, statusIndicator };
   }
 
   async appendChunk(ctx: StreamContext, chunk: string): Promise<void> {
@@ -90,6 +126,12 @@ export class ResponseStreamer {
 
     if (timeSinceLastUpdate >= minInterval) {
       try {
+        if (ctx.statusIndicator) {
+          const state = ctx.statusIndicator.getState();
+          if (state.state !== "processing") {
+            await ctx.statusIndicator.setProcessing();
+          }
+        }
         await this.updateWithSplitting(ctx, ctx.buffer + " ...");
         ctx.lastUpdateTime = Date.now();
       } catch (error) {
@@ -104,6 +146,9 @@ export class ResponseStreamer {
     this.activeStreams.delete(ctx.postId);
 
     try {
+      if (ctx.statusIndicator) {
+        await ctx.statusIndicator.setComplete();
+      }
       const finalContent = ctx.buffer || "(No response)";
       await this.updateWithSplitting(ctx, finalContent);
     } catch (error) {

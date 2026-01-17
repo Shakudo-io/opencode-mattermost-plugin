@@ -570,8 +570,56 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
 
     let promptText = route.promptText;
     const threadRootPostId = route.threadRootPostId || undefined;
+    const targetSessionId = route.sessionId;
+    const shortId = targetSessionId.substring(0, 8);
+
+    const { streamCtx, statusIndicator } = await streamer.startStreamWithStatus(
+      userSession,
+      threadRootPostId,
+      "Checking session status..."
+    );
+    userSession.currentResponsePostId = streamCtx.postId;
 
     try {
+      let sessionIsBusy = false;
+      let sessionIsRetrying = false;
+      let retryInfo: { attempt?: number; maxAttempts?: number } = {};
+
+      try {
+        const statusResult = await client.session.status();
+        const statusMap = statusResult.data as Record<string, { type: string; attempt?: number; maxAttempts?: number }> | undefined;
+        
+        if (statusMap && statusMap[targetSessionId]) {
+          const sessionStatus = statusMap[targetSessionId];
+          log.debug(`[StatusCheck] Session ${shortId} status: ${sessionStatus.type}`);
+          
+          if (sessionStatus.type === "busy") {
+            sessionIsBusy = true;
+          } else if (sessionStatus.type === "retry") {
+            sessionIsRetrying = true;
+            retryInfo = {
+              attempt: sessionStatus.attempt,
+              maxAttempts: sessionStatus.maxAttempts,
+            };
+          }
+        }
+      } catch (e) {
+        log.debug(`[StatusCheck] Could not get session status: ${e}`);
+      }
+
+      if (sessionIsBusy) {
+        await statusIndicator.setQueued("Session is busy processing another request", 1);
+      } else if (sessionIsRetrying) {
+        await statusIndicator.setRetrying(
+          retryInfo.attempt || 1,
+          retryInfo.maxAttempts || 3,
+          "Session is retrying a previous operation",
+          5000
+        );
+      } else {
+        await statusIndicator.setConnecting(targetSessionId, shortId);
+      }
+
       if (route.fileIds && route.fileIds.length > 0) {
         const filePaths = await fileHandler.processInboundAttachments(route.fileIds);
         if (filePaths.length > 0) {
@@ -579,10 +627,6 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
-      const streamCtx = await streamer.startStream(userSession, threadRootPostId);
-      userSession.currentResponsePostId = streamCtx.postId;
-
-      const targetSessionId = route.sessionId;
       log.info(`Using OpenCode session: ${targetSessionId}`);
 
       if (threadMappingStore) {
@@ -616,6 +660,8 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       
       log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 150)}..."`);
       
+      await statusIndicator.setProcessing();
+      
       await client.session.promptAsync({
         path: { id: targetSessionId },
         body: {
@@ -627,6 +673,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
 
     } catch (error) {
       log.error("Error processing message:", error);
+      
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await statusIndicator.setError(errorMsg, true);
+      
       if (notifications && userSession) {
         await notifications.notifyError(userSession, error as Error);
       }
@@ -966,6 +1016,13 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         const description = (event as any).properties?.description || "Permission requested";
         const activeSessionIds = Array.from(activeResponseContexts.keys());
         await handleMonitorAlert(eventSessionId, "permission.asked", description, activeSessionIds[0]);
+        
+        if (eventSessionId && isConnected) {
+          const ctx = activeResponseContexts.get(eventSessionId);
+          if (ctx?.streamCtx.statusIndicator) {
+            await ctx.streamCtx.statusIndicator.setWaiting("permission", description);
+          }
+        }
       }
 
       if (eventType === "session.idle") {
@@ -973,6 +1030,31 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         if (eventSessionId) {
           const activeSessionIds = Array.from(activeResponseContexts.keys());
           await handleMonitorAlert(eventSessionId, "session.idle", undefined, activeSessionIds[0]);
+        }
+      }
+
+      if (eventType === "session.status" && eventSessionId && isConnected) {
+        const status = (event as any).properties?.status as { type: string; attempt?: number; maxAttempts?: number; error?: string } | undefined;
+        const ctx = activeResponseContexts.get(eventSessionId);
+        
+        if (ctx?.streamCtx.statusIndicator && status) {
+          log.debug(`[StatusEvent] Session ${eventSessionId.substring(0, 8)} status: ${status.type}`);
+          
+          switch (status.type) {
+            case "busy":
+              await ctx.streamCtx.statusIndicator.setProcessing();
+              break;
+            case "retry":
+              await ctx.streamCtx.statusIndicator.setRetrying(
+                status.attempt || 1,
+                status.maxAttempts || 3,
+                status.error || "Transient error",
+                5000
+              );
+              break;
+            case "idle":
+              break;
+          }
         }
       }
 
@@ -1056,6 +1138,13 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         const questionText = (input as any).args?.questions?.[0]?.question || "Question awaiting answer";
         const activeSessionIds = Array.from(activeResponseContexts.keys());
         await handleMonitorAlert(toolSessionId, "question", questionText, activeSessionIds[0]);
+        
+        if (isConnected) {
+          const ctx = activeResponseContexts.get(toolSessionId);
+          if (ctx?.streamCtx.statusIndicator) {
+            await ctx.streamCtx.statusIndicator.setWaiting("question", questionText);
+          }
+        }
       }
 
       if (!isConnected || !toolSessionId) return;
