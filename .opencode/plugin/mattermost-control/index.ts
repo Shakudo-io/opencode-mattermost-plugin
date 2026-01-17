@@ -35,6 +35,11 @@ let threadManager: ThreadManager | null = null;
 let todoManager: TodoManager | null = null;
 let botUser: User | null = null;
 let projectName: string = "";
+interface ActiveTool {
+  name: string;
+  startTime: number;
+}
+
 interface ResponseContext {
   opencodeSessionId: string;
   mmSession: any;
@@ -44,6 +49,7 @@ interface ResponseContext {
   thinkingBuffer: string;
   toolsPostId: string | null;
   toolCalls: string[];
+  activeTool: ActiveTool | null;
   lastUpdateTime: number;
   textPartCount?: number;
   reasoningPartCount?: number;
@@ -54,32 +60,55 @@ const activeResponseContexts: Map<string, ResponseContext> = new Map();
 const TOOL_UPDATE_INTERVAL_MS = 1000;
 const toolUpdateTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
+function formatElapsedTime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
 async function updateToolsPost(sessionId: string): Promise<void> {
   const ctx = activeResponseContexts.get(sessionId);
-  if (!ctx || !mmClient || ctx.toolCalls.length === 0) return;
+  if (!ctx || !mmClient) return;
+  
+  const hasTools = ctx.toolCalls.length > 0 || ctx.activeTool;
+  if (!hasTools) return;
 
   const toolCounts = ctx.toolCalls.reduce((acc, tool) => {
     acc[tool] = (acc[tool] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
 
-  const summary = Object.entries(toolCounts)
-    .map(([tool, count]) => count > 1 ? `${tool} ×${count}` : tool)
-    .join(", ");
-
-  const message = `:hammer_and_wrench: **Tools:** ${summary}`;
+  let message = "";
+  
+  if (ctx.activeTool) {
+    const elapsed = formatElapsedTime(Date.now() - ctx.activeTool.startTime);
+    message += `🔧 **Running:** \`${ctx.activeTool.name}\` (${elapsed})\n`;
+  }
+  
+  if (ctx.toolCalls.length > 0) {
+    const summary = Object.entries(toolCounts)
+      .map(([tool, count]) => count > 1 ? `\`${tool}\` ×${count}` : `\`${tool}\``)
+      .join(", ");
+    message += `✅ **Completed:** ${summary}`;
+  }
 
   try {
     if (ctx.toolsPostId) {
-      await mmClient.updatePost(ctx.toolsPostId, message);
-    } else {
-      const post = await mmClient.createPost(
-        ctx.mmSession.dmChannelId, 
-        message,
-        ctx.threadRootPostId
-      );
-      ctx.toolsPostId = post.id;
+      try {
+        await mmClient.deletePost(ctx.toolsPostId);
+      } catch (e) {
+        log.debug("Failed to delete old tools post");
+      }
     }
+    
+    const post = await mmClient.createPost(
+      ctx.mmSession.dmChannelId, 
+      message.trim(),
+      ctx.threadRootPostId
+    );
+    ctx.toolsPostId = post.id;
   } catch (e) {
     log.error("Failed to update tools post:", e);
   }
@@ -108,6 +137,31 @@ function clearToolTimer(sessionId: string): void {
   if (timer) {
     clearTimeout(timer);
     toolUpdateTimers.delete(sessionId);
+  }
+}
+
+const activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+
+function startActiveToolTimer(sessionId: string): void {
+  if (activeToolTimers.has(sessionId)) return;
+  
+  const timer = setInterval(async () => {
+    const ctx = activeResponseContexts.get(sessionId);
+    if (!ctx?.activeTool) {
+      stopActiveToolTimer(sessionId);
+      return;
+    }
+    await updateToolsPost(sessionId);
+  }, TOOL_UPDATE_INTERVAL_MS);
+  
+  activeToolTimers.set(sessionId, timer);
+}
+
+function stopActiveToolTimer(sessionId: string): void {
+  const timer = activeToolTimers.get(sessionId);
+  if (timer) {
+    clearInterval(timer);
+    activeToolTimers.delete(sessionId);
   }
 }
 
@@ -309,6 +363,12 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         await updateToolsPost(sessionId);
       }
       toolUpdateTimers.clear();
+      
+      for (const [sessionId, timer] of activeToolTimers) {
+        clearInterval(timer);
+      }
+      activeToolTimers.clear();
+      
       activeResponseContexts.clear();
       
       wsClient!.disconnect();
@@ -652,6 +712,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         thinkingBuffer: "",
         toolsPostId: null,
         toolCalls: [],
+        activeTool: null,
         lastUpdateTime: Date.now(),
       };
       
@@ -1166,6 +1227,24 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       }
     },
 
+    "tool.execute.before": async (input) => {
+      if (!isConnected) return;
+      
+      const toolSessionId = (input as any).sessionID || (input as any).session?.id;
+      if (!toolSessionId) return;
+      
+      const ctx = activeResponseContexts.get(toolSessionId);
+      if (!ctx) return;
+      
+      ctx.activeTool = {
+        name: input.tool,
+        startTime: Date.now(),
+      };
+      
+      startActiveToolTimer(toolSessionId);
+      await updateToolsPost(toolSessionId);
+    },
+
     "tool.execute.after": async (input) => {
       const toolSessionId = (input as any).sessionID || (input as any).session?.id;
 
@@ -1184,8 +1263,14 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
 
       if (!isConnected || !toolSessionId) return;
       
-      if (activeResponseContexts.has(toolSessionId)) {
-        addToolCall(toolSessionId, input.tool);
+      const ctx = activeResponseContexts.get(toolSessionId);
+      if (ctx) {
+        if (ctx.activeTool) {
+          ctx.toolCalls.push(ctx.activeTool.name);
+          ctx.activeTool = null;
+          stopActiveToolTimer(toolSessionId);
+        }
+        await updateToolsPost(toolSessionId);
       }
     },
   };
