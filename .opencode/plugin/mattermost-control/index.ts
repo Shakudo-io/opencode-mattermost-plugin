@@ -380,10 +380,19 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           return;
         }
         
-        const mmSessions = sessionManager.listSessions();
+        let mmSessions = sessionManager.listSessions();
         if (mmSessions.length === 0) {
           log.debug(`[AutoThread] No active Mattermost users, skipping thread creation for ${sessionInfo.shortId}`);
           return;
+        }
+        
+        // Filter to only owner if ownerUserId is configured
+        if (config.mattermost.ownerUserId) {
+          mmSessions = mmSessions.filter(s => s.mattermostUserId === config.mattermost.ownerUserId);
+          if (mmSessions.length === 0) {
+            log.debug(`[AutoThread] Owner ${config.mattermost.ownerUserId} not in active sessions, skipping thread creation for ${sessionInfo.shortId}`);
+            return;
+          }
         }
         
         for (const mmSession of mmSessions) {
@@ -418,9 +427,11 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         }
       }
 
-      // T046: Create threads for existing sessions on connect
       if (threadManager && sessionManager && availableSessions.length > 0) {
-        const mmSessions = sessionManager.listSessions();
+        let mmSessions = sessionManager.listSessions();
+        if (config.mattermost.ownerUserId) {
+          mmSessions = mmSessions.filter(s => s.mattermostUserId === config.mattermost.ownerUserId);
+        }
         if (mmSessions.length > 0) {
           for (const sessionInfo of availableSessions) {
             const existingMapping = threadMappingStore?.getBySessionId(sessionInfo.id);
