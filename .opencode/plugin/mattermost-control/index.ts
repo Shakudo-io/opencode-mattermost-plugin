@@ -47,6 +47,22 @@ interface TodoItem {
   priority: string;
 }
 
+interface TokenInfo {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache: {
+    read: number;
+    write: number;
+  };
+}
+
+interface CostInfo {
+  sessionTotal: number;
+  currentMessage: number;
+  tokens: TokenInfo;
+}
+
 interface ResponseContext {
   opencodeSessionId: string;
   mmSession: any;
@@ -62,6 +78,7 @@ interface ResponseContext {
   reasoningPartCount?: number;
   compactionCount: number;
   todos: TodoItem[];
+  cost: CostInfo;
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -76,10 +93,35 @@ function formatElapsedTime(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0): string {
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}K`;
+  return `${tokens}`;
+}
+
+function formatCost(cost: number): string {
+  if (cost >= 1) return `$${cost.toFixed(2)}`;
+  if (cost >= 0.01) return `$${cost.toFixed(2)}`;
+  if (cost >= 0.001) return `$${cost.toFixed(3)}`;
+  return `$${cost.toFixed(4)}`;
+}
+
+function formatCostStatus(cost: CostInfo): string {
+  const totalTokens = cost.tokens.input + cost.tokens.output + cost.tokens.reasoning;
+  if (cost.sessionTotal === 0 && cost.currentMessage === 0 && totalTokens === 0) return "";
+  
+  const sessionCost = formatCost(cost.sessionTotal + cost.currentMessage);
+  const msgCost = cost.currentMessage > 0 ? ` (+${formatCost(cost.currentMessage)})` : "";
+  const tokenStr = totalTokens > 0 ? ` | ${formatTokenCount(totalTokens)} tok` : "";
+  
+  return `💰 ${sessionCost}${msgCost}${tokenStr}`;
+}
+
+function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0, cost?: CostInfo): string {
   const hasTools = toolCalls.length > 0 || activeTool;
   const hasCompaction = compactionCount > 0;
-  if (!hasTools && !hasCompaction) return "";
+  const hasCost = cost && (cost.sessionTotal > 0 || cost.currentMessage > 0 || cost.tokens.input > 0);
+  if (!hasTools && !hasCompaction && !hasCost) return "";
 
   const parts: string[] = [];
   
@@ -97,6 +139,10 @@ function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, co
   
   if (hasCompaction) {
     parts.push(compactionCount > 1 ? `📦 Compacted ×${compactionCount}` : `📦 Compacted`);
+  }
+  
+  if (hasCost) {
+    parts.push(formatCostStatus(cost));
   }
   
   if (activeTool) {
@@ -203,7 +249,7 @@ function formatTodoStatus(todos: TodoItem[]): string {
 }
 
 function formatFullResponse(ctx: ResponseContext): string {
-  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount);
+  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount, ctx.cost);
   const todoStatus = formatTodoStatus(ctx.todos);
   const thinkingPreview = ctx.thinkingBuffer.length > 500 
     ? ctx.thinkingBuffer.slice(-500) + "..." 
@@ -753,6 +799,20 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
+      let sessionTotalCost = 0;
+      try {
+        const messagesResult = await client.session.messages({ path: { id: targetSessionId } });
+        const messages = messagesResult.data || [];
+        for (const message of messages) {
+          if (message.info.role === "assistant") {
+            sessionTotalCost += (message.info as any).cost || 0;
+          }
+        }
+        log.debug(`[CostTracker] Session ${shortId} prior cost: $${sessionTotalCost.toFixed(4)}`);
+      } catch (e) {
+        log.debug(`[CostTracker] Could not fetch session messages: ${e}`);
+      }
+
       const responseContext: ResponseContext = {
         opencodeSessionId: targetSessionId,
         mmSession: userSession,
@@ -766,6 +826,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         lastUpdateTime: Date.now(),
         compactionCount: 0,
         todos: [],
+        cost: {
+          sessionTotal: sessionTotalCost,
+          currentMessage: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
@@ -1190,6 +1255,28 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
+      if (eventType === "message.updated") {
+        const msgInfo = (event as any).properties?.info;
+        if (msgInfo?.role === "assistant" && msgInfo?.sessionID) {
+          const ctx = activeResponseContexts.get(msgInfo.sessionID);
+          if (ctx) {
+            ctx.cost.currentMessage = msgInfo.cost || 0;
+            if (msgInfo.tokens) {
+              ctx.cost.tokens = {
+                input: msgInfo.tokens.input || 0,
+                output: msgInfo.tokens.output || 0,
+                reasoning: msgInfo.tokens.reasoning || 0,
+                cache: {
+                  read: msgInfo.tokens.cache?.read || 0,
+                  write: msgInfo.tokens.cache?.write || 0,
+                },
+              };
+            }
+            await updateResponseStream(msgInfo.sessionID);
+          }
+        }
+      }
+
       if (!isConnected) return;
 
       if (event.type === "message.part.updated" && streamer) {
@@ -1239,7 +1326,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
-          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}, todos=${ctx.todos.length}`);
+          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}, todos=${ctx.todos.length}, cost=$${(ctx.cost.sessionTotal + ctx.cost.currentMessage).toFixed(4)}`);
           try {
             stopActiveToolTimer(sessionId);
             
