@@ -658,7 +658,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       activeResponseContexts.set(targetSessionId, responseContext);
       
       if (todoManager && threadRootPostId) {
-        todoManager.setThreadRoot(targetSessionId, threadRootPostId);
+        todoManager.setThreadRoot(targetSessionId, threadRootPostId, userSession.dmChannelId);
       }
 
       // Build reply context for agents with other Mattermost integrations
@@ -1148,10 +1148,20 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         const todos = (event as any).properties?.todos;
         if (!sessionId || !todos) return;
         
+        const completed = todos.filter((t: any) => t.status === "completed").length;
+        log.info(`[TodoEvent] Session ${sessionId.substring(0, 8)}: ${completed}/${todos.length} complete`);
+        
         const ctx = activeResponseContexts.get(sessionId);
-        if (ctx?.mmSession?.dmChannelId && ctx.threadRootPostId) {
-          todoManager.setThreadRoot(sessionId, ctx.threadRootPostId);
-          await todoManager.updateTodoPost(sessionId, todos, ctx.mmSession.dmChannelId);
+        const channelId = ctx?.mmSession?.dmChannelId || todoManager.getChannelId(sessionId);
+        
+        if (ctx?.threadRootPostId) {
+          todoManager.setThreadRoot(sessionId, ctx.threadRootPostId, channelId);
+        }
+        
+        if (channelId) {
+          await todoManager.updateTodoPost(sessionId, todos, channelId);
+        } else {
+          log.debug(`[TodoEvent] No channel for session ${sessionId.substring(0, 8)}, skipping update`);
         }
       }
     },

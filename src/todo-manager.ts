@@ -33,13 +33,21 @@ export class TodoManager {
   private todoPostsBySession: Map<string, TodoPostInfo> = new Map();
   private mmClient: any;
   private threadRootsBySession: Map<string, string> = new Map();
+  private channelIdsBySession: Map<string, string> = new Map();
 
   constructor(mmClient: any) {
     this.mmClient = mmClient;
   }
 
-  setThreadRoot(sessionId: string, threadRootPostId: string) {
+  setThreadRoot(sessionId: string, threadRootPostId: string, channelId?: string) {
     this.threadRootsBySession.set(sessionId, threadRootPostId);
+    if (channelId) {
+      this.channelIdsBySession.set(sessionId, channelId);
+    }
+  }
+  
+  getChannelId(sessionId: string): string | undefined {
+    return this.channelIdsBySession.get(sessionId);
   }
 
   formatTodoList(todos: TodoItem[]): string {
