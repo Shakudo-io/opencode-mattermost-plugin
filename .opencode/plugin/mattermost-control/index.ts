@@ -504,6 +504,10 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const availableOpenCodeSessions = openCodeSessionRegistry?.countAvailable() || 0;
     const defaultSession = openCodeSessionRegistry?.getDefault();
 
+    const ownerInfo = config.mattermost.ownerUserId 
+      ? `Owner Filter: ${config.mattermost.ownerUserId}` 
+      : "Owner Filter: disabled (responds to all users)";
+
     return `Status: **Connected**
 Bot: @${botUser?.username}
 Project: ${projectName}
@@ -511,6 +515,7 @@ OpenCode Sessions: ${availableOpenCodeSessions} available
 Default Session: ${defaultSession ? `${defaultSession.projectName} (${defaultSession.shortId})` : 'none'}
 Active MM Sessions: ${mmSessions.length}
 WebSocket: ${wsStatus}
+${ownerInfo}
 
 Use \`!sessions\` in DM to see and select OpenCode sessions.`;
   }
@@ -529,6 +534,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         log.debug(`Post from user ${postData.user_id} in channel ${postData.channel_id}`);
         if (postData.user_id === botUser!.id) return;
 
+        if (config.mattermost.ownerUserId && postData.user_id !== config.mattermost.ownerUserId) {
+          log.debug(`Ignoring DM from non-owner user ${postData.user_id} (owner: ${config.mattermost.ownerUserId})`);
+          return;
+        }
+
         const channel = await mmClient!.getChannel(postData.channel_id);
         log.debug(`Channel type: ${channel.type}`);
         if (channel.type !== "D") return;
@@ -542,6 +552,12 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
 
     wsClient!.on("reaction_added", async (event: WebSocketEvent) => {
       if (!isConnected || !reactionHandler) return;
+      
+      if (config.mattermost.ownerUserId && event.data?.user_id !== config.mattermost.ownerUserId) {
+        log.debug(`Ignoring reaction from non-owner user ${event.data?.user_id}`);
+        return;
+      }
+      
       await reactionHandler.handleReaction(event);
     });
   }
