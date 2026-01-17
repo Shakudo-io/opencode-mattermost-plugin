@@ -40,6 +40,13 @@ interface ActiveTool {
   startTime: number;
 }
 
+interface TodoItem {
+  id: string;
+  content: string;
+  status: string;
+  priority: string;
+}
+
 interface ResponseContext {
   opencodeSessionId: string;
   mmSession: any;
@@ -54,6 +61,7 @@ interface ResponseContext {
   textPartCount?: number;
   reasoningPartCount?: number;
   compactionCount: number;
+  todos: TodoItem[];
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -153,8 +161,50 @@ function formatShellOutput(shellOutput: string): string {
   return `... (${totalLines - MAX_SHELL_OUTPUT_LINES} lines hidden)\n${tailLines.join('\n')}`;
 }
 
+const TODO_STATUS_ICONS: Record<string, string> = {
+  completed: "✅",
+  in_progress: "🔄",
+  pending: "⏳",
+  cancelled: "❌",
+};
+
+function formatTodoStatus(todos: TodoItem[]): string {
+  if (!todos || todos.length === 0) return "";
+  
+  const completed = todos.filter(t => t.status === "completed").length;
+  const inProgress = todos.filter(t => t.status === "in_progress").length;
+  const pending = todos.filter(t => t.status === "pending").length;
+  const total = todos.length;
+  
+  const sortedTodos = [...todos].sort((a, b) => {
+    const statusOrder: Record<string, number> = {
+      in_progress: 0,
+      pending: 1,
+      completed: 2,
+      cancelled: 3,
+    };
+    return (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
+  });
+  
+  let output = `📋 **Tasks** (${completed}/${total})\n`;
+  
+  for (const todo of sortedTodos) {
+    const icon = TODO_STATUS_ICONS[todo.status] || "❓";
+    if (todo.status === "completed") {
+      output += `${icon} ~~${todo.content}~~\n`;
+    } else if (todo.status === "cancelled") {
+      output += `${icon} ~~${todo.content}~~\n`;
+    } else {
+      output += `${icon} ${todo.content}\n`;
+    }
+  }
+  
+  return output;
+}
+
 function formatFullResponse(ctx: ResponseContext): string {
   const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount);
+  const todoStatus = formatTodoStatus(ctx.todos);
   const thinkingPreview = ctx.thinkingBuffer.length > 500 
     ? ctx.thinkingBuffer.slice(-500) + "..." 
     : ctx.thinkingBuffer;
@@ -163,6 +213,10 @@ function formatFullResponse(ctx: ResponseContext): string {
   
   if (toolStatus) {
     output += toolStatus + "\n\n";
+  }
+  
+  if (todoStatus) {
+    output += todoStatus + "\n";
   }
   
   if (ctx.shellOutput && ctx.activeTool?.name === "bash") {
@@ -711,6 +765,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         shellOutput: "",
         lastUpdateTime: Date.now(),
         compactionCount: 0,
+        todos: [],
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
@@ -1184,7 +1239,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
-          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}`);
+          log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}, todos=${ctx.todos.length}`);
           try {
             stopActiveToolTimer(sessionId);
             
@@ -1216,7 +1271,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
-      if (event.type === "todo.updated" && todoManager && mmClient) {
+      if (event.type === "todo.updated") {
         const sessionId = (event as any).properties?.sessionID;
         const todos = (event as any).properties?.todos;
         if (!sessionId || !todos) return;
@@ -1225,16 +1280,9 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         log.info(`[TodoEvent] Session ${sessionId.substring(0, 8)}: ${completed}/${todos.length} complete`);
         
         const ctx = activeResponseContexts.get(sessionId);
-        const channelId = ctx?.mmSession?.dmChannelId || todoManager.getChannelId(sessionId);
-        
-        if (ctx?.threadRootPostId) {
-          todoManager.setThreadRoot(sessionId, ctx.threadRootPostId, channelId);
-        }
-        
-        if (channelId) {
-          await todoManager.updateTodoPost(sessionId, todos, channelId);
-        } else {
-          log.debug(`[TodoEvent] No channel for session ${sessionId.substring(0, 8)}, skipping update`);
+        if (ctx) {
+          ctx.todos = todos;
+          await updateResponseStream(sessionId);
         }
       }
     },
