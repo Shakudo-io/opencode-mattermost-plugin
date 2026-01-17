@@ -79,6 +79,7 @@ interface ResponseContext {
   compactionCount: number;
   todos: TodoItem[];
   cost: CostInfo;
+  responseStartTime: number;
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -117,13 +118,13 @@ function formatCostStatus(cost: CostInfo): string {
   return `💰 ${sessionCost}${msgCost}${tokenStr}`;
 }
 
-function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0, cost?: CostInfo): string {
-  const hasTools = toolCalls.length > 0 || activeTool;
-  const hasCompaction = compactionCount > 0;
-  const hasCost = cost && (cost.sessionTotal > 0 || cost.currentMessage > 0 || cost.tokens.input > 0);
-  if (!hasTools && !hasCompaction && !hasCost) return "";
-
+function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0, cost?: CostInfo, responseStartTime?: number): string {
   const parts: string[] = [];
+  
+  if (responseStartTime) {
+    const elapsed = formatElapsedTime(Date.now() - responseStartTime);
+    parts.push(`💻 Processing (${elapsed})`);
+  }
   
   if (toolCalls.length > 0) {
     const toolCounts = toolCalls.reduce((acc, tool) => {
@@ -137,11 +138,11 @@ function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, co
     parts.push(`✅ ${summary}`);
   }
   
-  if (hasCompaction) {
+  if (compactionCount > 0) {
     parts.push(compactionCount > 1 ? `📦 Compacted ×${compactionCount}` : `📦 Compacted`);
   }
   
-  if (hasCost) {
+  if (cost && (cost.sessionTotal > 0 || cost.currentMessage > 0 || cost.tokens.input > 0)) {
     parts.push(formatCostStatus(cost));
   }
   
@@ -154,6 +155,7 @@ function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, co
 }
 
 const activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+const activeResponseTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
 
 async function updateResponseStream(sessionId: string): Promise<void> {
   const ctx = activeResponseContexts.get(sessionId);
@@ -188,6 +190,29 @@ function stopActiveToolTimer(sessionId: string): void {
   if (timer) {
     clearInterval(timer);
     activeToolTimers.delete(sessionId);
+  }
+}
+
+function startResponseTimer(sessionId: string): void {
+  if (activeResponseTimers.has(sessionId)) return;
+  
+  const timer = setInterval(async () => {
+    const ctx = activeResponseContexts.get(sessionId);
+    if (!ctx) {
+      stopResponseTimer(sessionId);
+      return;
+    }
+    await updateResponseStream(sessionId);
+  }, TOOL_UPDATE_INTERVAL_MS);
+  
+  activeResponseTimers.set(sessionId, timer);
+}
+
+function stopResponseTimer(sessionId: string): void {
+  const timer = activeResponseTimers.get(sessionId);
+  if (timer) {
+    clearInterval(timer);
+    activeResponseTimers.delete(sessionId);
   }
 }
 
@@ -249,7 +274,7 @@ function formatTodoStatus(todos: TodoItem[]): string {
 }
 
 function formatFullResponse(ctx: ResponseContext): string {
-  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount, ctx.cost);
+  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount, ctx.cost, ctx.responseStartTime);
   const todoStatus = formatTodoStatus(ctx.todos);
   const thinkingPreview = ctx.thinkingBuffer.length > 500 
     ? ctx.thinkingBuffer.slice(-500) + "..." 
@@ -891,9 +916,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           currentMessage: 0,
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         },
+        responseStartTime: Date.now(),
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
+      startResponseTimer(targetSessionId);
       
       if (todoManager && threadRootPostId) {
         todoManager.setThreadRoot(targetSessionId, threadRootPostId, userSession.dmChannelId);
@@ -934,6 +961,9 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
 
     } catch (error) {
       log.error("Error processing message:", error);
+      
+      stopResponseTimer(route.sessionId);
+      stopActiveToolTimer(route.sessionId);
       
       const errorMsg = error instanceof Error ? error.message : String(error);
       await statusIndicator.setError(errorMsg, true);
@@ -1402,6 +1432,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}, todos=${ctx.todos.length}, cost=$${(ctx.cost.sessionTotal + ctx.cost.currentMessage).toFixed(4)}`);
           try {
             stopActiveToolTimer(sessionId);
+            stopResponseTimer(sessionId);
             
             ctx.streamCtx.buffer = formatFullResponse(ctx);
             await streamer.endStream(ctx.streamCtx);
