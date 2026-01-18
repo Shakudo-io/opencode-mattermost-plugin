@@ -150,6 +150,7 @@ Use `mattermost_status` to confirm the connection is active.
 | `mattermost_current_session` | Show currently targeted session |
 | `mattermost_monitor` | Monitor session for events (permission, idle, question) |
 | `mattermost_unmonitor` | Stop monitoring a session |
+| `mattermost_send_file` | Upload a file to the current Mattermost thread |
 
 ### 6. Handling DMs
 
@@ -338,6 +339,27 @@ Bot (in thread): [Streaming response...]
 - Each thread maps to exactly one OpenCode session
 - Thread posts are routed to the correct session automatically
 - Ended sessions show a completion message and reject new prompts
+
+### Sending Files to Mattermost
+
+OpenCode can send files directly to your Mattermost conversation thread using the `mattermost_send_file` tool:
+
+**Example conversation:**
+```
+You (in thread): Create a Python script that generates a report and send it to me
+Bot: [Creates the file using Write tool]
+Bot: [Uses mattermost_send_file to upload report.py]
+     File sent to Mattermost: report.py
+```
+
+The tool automatically posts the file to the correct thread. Users can simply ask:
+- "Send me the file you just created"
+- "Upload that script to Mattermost"
+- "Give me the report.pdf"
+
+**Supported file types:** All common types including code files, documents (PDF, MD, TXT), images (PNG, JPG, GIF), and archives (ZIP).
+
+**Size limit:** 10MB by default (configurable via `OPENCODE_MM_MAX_FILE_SIZE`).
 
 ### Session Management Commands
 

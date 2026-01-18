@@ -88,6 +88,55 @@ export class FileHandler {
     }
   }
 
+  /**
+   * Send a file to a specific Mattermost channel and thread.
+   * Used by the send_file_to_mattermost tool to post files in the correct conversation thread.
+   */
+  async sendFileToThread(
+    channelId: string,
+    threadRootPostId: string,
+    filePath: string,
+    message?: string
+  ): Promise<{ success: boolean; fileName: string; error?: string }> {
+    try {
+      if (!fs.existsSync(filePath)) {
+        return { success: false, fileName: path.basename(filePath), error: `File not found: ${filePath}` };
+      }
+
+      const fileName = path.basename(filePath);
+      const fileData = fs.readFileSync(filePath);
+      const mimeType = this.getMimeType(filePath);
+      const fileSize = fileData.length;
+
+      if (fileSize > this.config.maxFileSize) {
+        return { 
+          success: false, 
+          fileName, 
+          error: `File exceeds maximum size (${(fileSize / 1024 / 1024).toFixed(2)}MB > ${(this.config.maxFileSize / 1024 / 1024).toFixed(2)}MB)` 
+        };
+      }
+
+      const uploadResult = await this.mmClient.uploadFile(
+        channelId,
+        fileName,
+        fileData,
+        mimeType
+      );
+
+      const fileIds = uploadResult.file_infos.map((f) => f.id);
+      const displayMessage = message || `File: \`${fileName}\``;
+
+      await this.mmClient.createPost(channelId, displayMessage, threadRootPostId, fileIds);
+
+      log.info(`[FileHandler] Sent file to thread: ${fileName} (${(fileSize / 1024).toFixed(1)}KB)`);
+      return { success: true, fileName };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log.error(`[FileHandler] Failed to send file to thread ${filePath}:`, error);
+      return { success: false, fileName: path.basename(filePath), error: errorMessage };
+    }
+  }
+
   private getMimeType(filePath: string): string {
     const ext = path.extname(filePath).toLowerCase();
     const mimeTypes: Record<string, string> = {
