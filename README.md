@@ -549,6 +549,29 @@ The script:
 - Attaches a TUI to the shared server
 - Logs server output to `/tmp/opencode-server.log`
 
+#### Restarting with Plugin Updates
+
+Use `opencode-shared-restart` to restart OpenCode with optional plugin version changes:
+
+```bash
+# Restart with current plugin version
+opencode-shared-restart
+
+# Update plugin and restart
+opencode-shared-restart -v 0.2.57
+
+# Rollback to a previous version
+opencode-shared-restart --rollback 0.2.55
+
+# Check current installed version
+opencode-shared-restart --current
+
+# List available versions
+opencode-shared-restart --list
+```
+
+**Automatic rollback:** If the specified version fails to install, the script automatically attempts to restore the previous working version.
+
 #### Security Note
 
 For production use, set `OPENCODE_SERVER_PASSWORD` environment variable on both server and client:

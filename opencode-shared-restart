@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+#
+# opencode-shared-restart - Restart the shared OpenCode server with optional plugin version change
+#
+# Usage:
+#   ./opencode-shared-restart [OPTIONS]
+#
+# Options:
+#   -v, --version VERSION    Update Mattermost plugin to specified version before restart
+#   -r, --rollback VERSION   Same as --version (alias for clarity when reverting)
+#   -c, --current            Show current installed plugin version and exit
+#   -l, --list               List recent available versions and exit
+#   -h, --help               Show this help message
+#
+# Examples:
+#   ./opencode-shared-restart                    # Restart with current plugin version
+#   ./opencode-shared-restart -v 0.2.55         # Update to v0.2.55 and restart
+#   ./opencode-shared-restart --rollback 0.2.54 # Rollback to v0.2.54 and restart
+#   ./opencode-shared-restart --current          # Show current version
+#   ./opencode-shared-restart --list             # Show available versions
+#
+# Environment variables:
+#   OPENCODE_CONFIG_DIR      - OpenCode config directory (default: ~/.config/opencode)
+#   VERDACCIO_REGISTRY       - Verdaccio registry URL (default: http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4873)
+#   OPENCODE_SERVER_PORT     - Server port (default: 4096)
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+REGISTRY="${VERDACCIO_REGISTRY:-http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4873}"
+PLUGIN_NAME="opencode-mattermost-control"
+PORT="${OPENCODE_SERVER_PORT:-4096}"
+
+PIDFILE="/tmp/opencode-server.pid"
+SUPERVISOR_PIDFILE="/tmp/opencode-server.supervisor.pid"
+STOP_FLAG="/tmp/opencode-server.stop"
+LOCKDIR="/tmp/opencode-server.supervisor.lock"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
+
+show_help() {
+    head -30 "$0" | tail -28 | sed 's/^#//' | sed 's/^ //'
+}
+
+get_current_version() {
+    if [[ -f "$CONFIG_DIR/node_modules/$PLUGIN_NAME/package.json" ]]; then
+        grep '"version"' "$CONFIG_DIR/node_modules/$PLUGIN_NAME/package.json" | sed 's/.*"version": *"\([^"]*\)".*/\1/'
+    else
+        echo "not installed"
+    fi
+}
+
+get_configured_version() {
+    if [[ -f "$CONFIG_DIR/package.json" ]]; then
+        grep "\"$PLUGIN_NAME\"" "$CONFIG_DIR/package.json" | sed 's/.*"'$PLUGIN_NAME'": *"\([^"]*\)".*/\1/' | tr -d '^~'
+    else
+        echo "not configured"
+    fi
+}
+
+list_versions() {
+    log_info "Fetching available versions from registry..."
+    local versions
+    versions=$(curl -s "$REGISTRY/$PLUGIN_NAME" 2>/dev/null | jq -r '.versions | keys[]' 2>/dev/null | sort -V | tail -10)
+    
+    if [[ -z "$versions" ]]; then
+        log_error "Failed to fetch versions from registry"
+        return 1
+    fi
+    
+    local current
+    current=$(get_current_version)
+    
+    echo ""
+    echo "Recent available versions:"
+    echo "=========================="
+    while IFS= read -r v; do
+        if [[ "$v" == "$current" ]]; then
+            echo -e "  ${GREEN}$v${NC} (installed)"
+        else
+            echo "  $v"
+        fi
+    done <<< "$versions"
+    echo ""
+}
+
+update_plugin_version() {
+    local target_version="$1"
+    local current_version
+    current_version=$(get_current_version)
+    
+    log_step "Updating plugin from v${current_version} to v${target_version}..."
+    
+    log_info "Updating package.json..."
+    cd "$CONFIG_DIR"
+    if [[ -f package.json ]]; then
+        jq ".dependencies[\"$PLUGIN_NAME\"] = \"$target_version\"" package.json > package.json.tmp
+        mv package.json.tmp package.json
+    else
+        log_error "package.json not found in $CONFIG_DIR"
+        return 1
+    fi
+    
+    log_info "Clearing plugin cache..."
+    rm -rf "$CONFIG_DIR/node_modules/$PLUGIN_NAME"
+    rm -f "$CONFIG_DIR/bun.lock"
+    
+    log_info "Installing plugin v${target_version}..."
+    if ! bun install --registry "$REGISTRY" 2>&1; then
+        log_error "Failed to install plugin"
+        return 1
+    fi
+    
+    local installed_version
+    installed_version=$(get_current_version)
+    if [[ "$installed_version" != "$target_version" ]]; then
+        log_error "Version mismatch: expected $target_version, got $installed_version"
+        return 1
+    fi
+    
+    log_info "Plugin updated to v${installed_version}"
+    return 0
+}
+
+stop_opencode() {
+    log_step "Stopping OpenCode..."
+    
+    touch "$STOP_FLAG"
+    
+    if [[ -f "$SUPERVISOR_PIDFILE" ]]; then
+        local supervisor_pid
+        supervisor_pid=$(cat "$SUPERVISOR_PIDFILE" 2>/dev/null || true)
+        if [[ -n "${supervisor_pid:-}" ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+            log_info "Stopping supervisor (PID: ${supervisor_pid})..."
+            kill "$supervisor_pid" 2>/dev/null || true
+            sleep 0.5
+            kill -9 "$supervisor_pid" 2>/dev/null || true
+        fi
+        rm -f "$SUPERVISOR_PIDFILE"
+    fi
+    
+    [[ -d "$LOCKDIR" ]] && rmdir "$LOCKDIR" 2>/dev/null || true
+    
+    if [[ -f "$PIDFILE" ]]; then
+        local pid
+        pid=$(cat "$PIDFILE" 2>/dev/null || true)
+        if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
+            log_info "Stopping server (PID: ${pid})..."
+            kill "$pid" 2>/dev/null || true
+            sleep 1
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+        rm -f "$PIDFILE"
+    else
+        local pid
+        pid=$(lsof -ti :"$PORT" 2>/dev/null || true)
+        if [[ -n "${pid:-}" ]]; then
+            log_info "Stopping process on port ${PORT} (PID: ${pid})..."
+            kill "$pid" 2>/dev/null || true
+            sleep 1
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    fi
+    
+    log_info "OpenCode stopped"
+}
+
+start_opencode() {
+    log_step "Starting OpenCode..."
+    
+    rm -f "$STOP_FLAG"
+    
+    if [[ -x "$SCRIPT_DIR/opencode-shared" ]]; then
+        exec "$SCRIPT_DIR/opencode-shared"
+    else
+        exec opencode-shared
+    fi
+}
+
+verify_startup() {
+    local max_attempts=30
+    local attempt=0
+    
+    log_info "Waiting for server to start..."
+    
+    while [[ $attempt -lt $max_attempts ]]; do
+        if nc -z localhost "$PORT" 2>/dev/null; then
+            log_info "Server is responding on port $PORT"
+            return 0
+        fi
+        sleep 0.5
+        attempt=$((attempt + 1))
+    done
+    
+    log_error "Server failed to start within 15 seconds"
+    return 1
+}
+
+main() {
+    local target_version=""
+    local show_current=false
+    local show_list=false
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--version|-r|--rollback)
+                target_version="$2"
+                shift 2
+                ;;
+            -c|--current)
+                show_current=true
+                shift
+                ;;
+            -l|--list)
+                show_list=true
+                shift
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
+    if $show_current; then
+        local current
+        current=$(get_current_version)
+        local configured
+        configured=$(get_configured_version)
+        echo "Installed version: $current"
+        echo "Configured version: $configured"
+        exit 0
+    fi
+    
+    if $show_list; then
+        list_versions
+        exit 0
+    fi
+    
+    local previous_version
+    previous_version=$(get_current_version)
+    
+    echo ""
+    log_info "OpenCode Shared Restart"
+    log_info "======================="
+    log_info "Current plugin version: $previous_version"
+    if [[ -n "$target_version" ]]; then
+        log_info "Target plugin version: $target_version"
+    fi
+    echo ""
+    
+    stop_opencode
+    
+    if [[ -n "$target_version" ]]; then
+        if ! update_plugin_version "$target_version"; then
+            log_error "Plugin update failed!"
+            log_warn "Attempting to restore previous version: $previous_version"
+            
+            if update_plugin_version "$previous_version"; then
+                log_info "Restored previous version"
+            else
+                log_error "Failed to restore previous version!"
+                log_error "Manual intervention required. Try:"
+                log_error "  cd $CONFIG_DIR"
+                log_error "  rm -rf node_modules/$PLUGIN_NAME bun.lock"
+                log_error "  # Edit package.json to set desired version"
+                log_error "  bun install --registry $REGISTRY"
+                exit 1
+            fi
+        fi
+    fi
+    
+    echo ""
+    log_step "Starting OpenCode with plugin v$(get_current_version)..."
+    echo ""
+    
+    start_opencode
+}
+
+main "$@"
