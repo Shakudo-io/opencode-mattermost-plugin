@@ -75,7 +75,7 @@ interface ResponseContext {
   toolCalls: string[];
   activeTool: ActiveTool | null;
   shellOutput: string;
-  shellOutputLastUpdate: number;  // Timestamp of last shell output update
+  shellOutputLastUpdate: number;
   lastUpdateTime: number;
   textPartCount?: number;
   reasoningPartCount?: number;
@@ -83,6 +83,9 @@ interface ResponseContext {
   todos: TodoItem[];
   cost: CostInfo;
   responseStartTime: number;
+  isCompacting?: boolean;
+  compactionBuffer?: string;
+  compactionPostId?: string;
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -108,6 +111,21 @@ function formatCost(cost: number): string {
   if (cost >= 0.01) return `$${cost.toFixed(2)}`;
   if (cost >= 0.001) return `$${cost.toFixed(3)}`;
   return `$${cost.toFixed(4)}`;
+}
+
+function truncateCompactionSummary(text: string, maxLength: number = 500): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  
+  const truncated = trimmed.substring(0, maxLength);
+  const lastSentence = truncated.lastIndexOf(". ");
+  const lastNewline = truncated.lastIndexOf("\n");
+  const cutPoint = Math.max(lastSentence, lastNewline);
+  
+  if (cutPoint > maxLength * 0.5) {
+    return truncated.substring(0, cutPoint + 1) + "\n\n_...summary truncated_";
+  }
+  return truncated + "...\n\n_...summary truncated_";
 }
 
 function formatCostStatus(cost: CostInfo): string {
@@ -1552,12 +1570,26 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
-      if (eventType === "session.compacted" && eventSessionId) {
+      if (eventType === "session.compacted" && eventSessionId && mmClient) {
         log.info(`[Compaction] Session ${eventSessionId.substring(0, 8)} compacted`);
         const ctx = activeResponseContexts.get(eventSessionId);
         if (ctx) {
           ctx.compactionCount += 1;
-          await updateResponseStream(eventSessionId);
+          ctx.isCompacting = true;
+          ctx.compactionBuffer = "";
+          
+          const compactionHeader = `📦 **Context Compacted** (×${ctx.compactionCount})\n\n`;
+          try {
+            const post = await mmClient.createPost(
+              ctx.mmSession.dmChannelId,
+              compactionHeader + "_Generating summary..._",
+              ctx.threadRootPostId
+            );
+            ctx.compactionPostId = post.id;
+            log.debug(`[Compaction] Created compaction post ${post.id}`);
+          } catch (e) {
+            log.error(`[Compaction] Failed to create compaction post:`, e);
+          }
         }
       }
 
@@ -1598,9 +1630,20 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         let shouldUpdate = false;
         
         if (part?.type === "text" && delta) {
-          ctx.responseBuffer += delta;
+          if (ctx.isCompacting) {
+            ctx.compactionBuffer = (ctx.compactionBuffer || "") + delta;
+            if (ctx.compactionPostId && mmClient) {
+              const summary = truncateCompactionSummary(ctx.compactionBuffer);
+              const compactionHeader = `📦 **Context Compacted** (×${ctx.compactionCount})\n\n`;
+              mmClient.updatePost(ctx.compactionPostId, compactionHeader + summary).catch((e: unknown) => {
+                log.error(`[Compaction] Failed to update compaction post:`, e);
+              });
+            }
+          } else {
+            ctx.responseBuffer += delta;
+            shouldUpdate = true;
+          }
           ctx.textPartCount = (ctx.textPartCount || 0) + 1;
-          shouldUpdate = true;
         } else if (part?.type === "reasoning" && delta) {
           ctx.thinkingBuffer += delta;
           ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
@@ -1690,6 +1733,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
       
       const ctx = activeResponseContexts.get(toolSessionId);
       if (!ctx) return;
+      
+      if (ctx.isCompacting) {
+        ctx.isCompacting = false;
+        log.debug(`[Compaction] Ended compaction mode for session ${toolSessionId.substring(0, 8)} (tool started: ${input.tool})`);
+      }
       
       ctx.activeTool = {
         name: input.tool,
