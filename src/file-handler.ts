@@ -59,6 +59,60 @@ export class FileHandler {
     return filePaths;
   }
 
+  async processInboundAttachmentsAsFileParts(fileIds: string[]): Promise<{
+    fileParts: Array<{ type: "file"; mime: string; filename: string; url: string }>;
+    textFilePaths: string[];
+  }> {
+    const fileParts: Array<{ type: "file"; mime: string; filename: string; url: string }> = [];
+    const textFilePaths: string[] = [];
+
+    for (const fileId of fileIds) {
+      try {
+        const fileInfo = await this.mmClient.getFileInfo(fileId);
+
+        if (fileInfo.size > this.config.maxFileSize) {
+          log.warn(`[FileHandler] File ${fileInfo.name} exceeds max size, skipping`);
+          continue;
+        }
+
+        if (
+          this.config.allowedExtensions[0] !== "*" &&
+          !this.config.allowedExtensions.includes(fileInfo.extension)
+        ) {
+          log.warn(`[FileHandler] File extension ${fileInfo.extension} not allowed, skipping`);
+          continue;
+        }
+
+        const fileData = await this.mmClient.downloadFile(fileId);
+        const tempFileName = `${Date.now()}-${fileInfo.name}`;
+        const tempFilePath = path.join(this.config.tempDir, tempFileName);
+
+        fs.writeFileSync(tempFilePath, fileData);
+        this.tempFiles.add(tempFilePath);
+
+        const mimeType = this.getMimeType(tempFilePath);
+
+        if (this.isImageOrPdf(mimeType)) {
+          const base64Data = fileData.toString("base64");
+          fileParts.push({
+            type: "file",
+            mime: mimeType,
+            filename: fileInfo.name,
+            url: `data:${mimeType};base64,${base64Data}`,
+          });
+          log.debug(`[FileHandler] Processed file as FilePart: ${fileInfo.name} (${mimeType})`);
+        } else {
+          textFilePaths.push(tempFilePath);
+          log.debug(`[FileHandler] Downloaded text file: ${fileInfo.name} -> ${tempFilePath}`);
+        }
+      } catch (error) {
+        log.error(`[FileHandler] Failed to process file ${fileId}:`, error);
+      }
+    }
+
+    return { fileParts, textFilePaths };
+  }
+
   async sendOutboundFile(
     session: UserSession,
     filePath: string,
@@ -137,7 +191,7 @@ export class FileHandler {
     }
   }
 
-  private getMimeType(filePath: string): string {
+  getMimeType(filePath: string): string {
     const ext = path.extname(filePath).toLowerCase();
     const mimeTypes: Record<string, string> = {
       ".txt": "text/plain",
@@ -152,10 +206,20 @@ export class FileHandler {
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
       ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".svg": "image/svg+xml",
       ".pdf": "application/pdf",
       ".zip": "application/zip",
+      ".csv": "text/csv",
+      ".xml": "application/xml",
+      ".yaml": "application/x-yaml",
+      ".yml": "application/x-yaml",
     };
     return mimeTypes[ext] || "application/octet-stream";
+  }
+
+  isImageOrPdf(mimeType: string): boolean {
+    return mimeType.startsWith("image/") || mimeType === "application/pdf";
   }
 
   cleanupTempFiles(): void {

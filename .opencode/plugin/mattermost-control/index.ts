@@ -867,10 +867,15 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         await statusIndicator.setConnecting(targetSessionId, shortId);
       }
 
+      let inboundFileParts: Array<{ type: "file"; mime: string; filename: string; url: string }> = [];
       if (route.fileIds && route.fileIds.length > 0) {
-        const filePaths = await fileHandler.processInboundAttachments(route.fileIds);
-        if (filePaths.length > 0) {
-          promptText += `\n\n[Attached files: ${filePaths.join(", ")}]`;
+        const { fileParts, textFilePaths } = await fileHandler.processInboundAttachmentsAsFileParts(route.fileIds);
+        inboundFileParts = fileParts;
+        if (textFilePaths.length > 0) {
+          promptText += `\n\n[Attached files: ${textFilePaths.join(", ")}]`;
+        }
+        if (fileParts.length > 0) {
+          log.info(`[FileHandler] Sending ${fileParts.length} file(s) as FilePartInput to OpenCode`);
         }
       }
 
@@ -944,10 +949,15 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         log.debug(`[ModelSelection] Using model ${selectedModel.providerID}/${selectedModel.modelID} for session ${shortId}`);
       }
       
+      const promptParts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; filename: string; url: string }> = [
+        { type: "text", text: promptMessage },
+        ...inboundFileParts,
+      ];
+
       await client.session.promptAsync({
         path: { id: targetSessionId },
         body: {
-          parts: [{ type: "text", text: promptMessage }],
+          parts: promptParts,
           ...(selectedModel && {
             model: {
               providerID: selectedModel.providerID,
