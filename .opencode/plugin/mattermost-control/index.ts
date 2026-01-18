@@ -73,6 +73,7 @@ interface ResponseContext {
   toolCalls: string[];
   activeTool: ActiveTool | null;
   shellOutput: string;
+  shellOutputLastUpdate: number;  // Timestamp of last shell output update
   lastUpdateTime: number;
   textPartCount?: number;
   reasoningPartCount?: number;
@@ -217,19 +218,34 @@ function stopResponseTimer(sessionId: string): void {
 }
 
 const MAX_SHELL_OUTPUT_LINES = 15;
+const BASH_HEARTBEAT_THRESHOLD_MS = 10_000;
 
-function formatShellOutput(shellOutput: string): string {
+function formatShellOutput(shellOutput: string, lastOutputTime?: number, toolStartTime?: number): string {
   if (!shellOutput) return "";
   
   const lines = shellOutput.trim().split('\n');
   const totalLines = lines.length;
   
+  let output: string;
   if (totalLines <= MAX_SHELL_OUTPUT_LINES) {
-    return shellOutput.trim();
+    output = shellOutput.trim();
+  } else {
+    const tailLines = lines.slice(-MAX_SHELL_OUTPUT_LINES);
+    output = `... (${totalLines - MAX_SHELL_OUTPUT_LINES} lines hidden)\n${tailLines.join('\n')}`;
   }
   
-  const tailLines = lines.slice(-MAX_SHELL_OUTPUT_LINES);
-  return `... (${totalLines - MAX_SHELL_OUTPUT_LINES} lines hidden)\n${tailLines.join('\n')}`;
+  if (lastOutputTime && toolStartTime) {
+    const timeSinceLastOutput = Date.now() - lastOutputTime;
+    const totalRunTime = Date.now() - toolStartTime;
+    
+    if (timeSinceLastOutput >= BASH_HEARTBEAT_THRESHOLD_MS) {
+      const lastOutputAgo = formatElapsedTime(timeSinceLastOutput);
+      const runningFor = formatElapsedTime(totalRunTime);
+      output += `\n\n⏳ Still running (${runningFor} total, last output ${lastOutputAgo} ago)`;
+    }
+  }
+  
+  return output;
 }
 
 const TODO_STATUS_ICONS: Record<string, string> = {
@@ -291,7 +307,11 @@ function formatFullResponse(ctx: ResponseContext): string {
   }
   
   if (ctx.shellOutput && ctx.activeTool?.name === "bash") {
-    const formattedShell = formatShellOutput(ctx.shellOutput);
+    const formattedShell = formatShellOutput(
+      ctx.shellOutput, 
+      ctx.shellOutputLastUpdate,
+      ctx.activeTool.startTime
+    );
     output += "```\n" + formattedShell + "\n```\n\n";
   }
   
@@ -913,6 +933,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         toolCalls: [],
         activeTool: null,
         shellOutput: "",
+        shellOutputLastUpdate: 0,
         lastUpdateTime: Date.now(),
         compactionCount: 0,
         todos: [],
@@ -1452,6 +1473,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           const shellOutput = part.state.metadata?.output;
           if (shellOutput && shellOutput !== ctx.shellOutput) {
             ctx.shellOutput = shellOutput;
+            ctx.shellOutputLastUpdate = Date.now();
             shouldUpdate = true;
           }
         }
@@ -1566,6 +1588,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           ctx.toolCalls.push(ctx.activeTool.name);
           if (ctx.activeTool.name === "bash") {
             ctx.shellOutput = "";
+            ctx.shellOutputLastUpdate = 0;
           }
           ctx.activeTool = null;
           stopActiveToolTimer(toolSessionId);
