@@ -558,7 +558,7 @@ Use `opencode-shared-restart` to restart OpenCode with optional plugin version c
 opencode-shared-restart
 
 # Update plugin and restart
-opencode-shared-restart -v 0.2.57
+opencode-shared-restart -v 0.2.59
 
 # Rollback to a previous version
 opencode-shared-restart --rollback 0.2.55
@@ -568,9 +568,26 @@ opencode-shared-restart --current
 
 # List available versions
 opencode-shared-restart --list
+
+# Check status of last restart (after reconnecting)
+opencode-shared-restart --status
 ```
 
-**Automatic rollback:** If the specified version fails to install, the script automatically attempts to restore the previous working version.
+**How it works:**
+The restart runs in a **detached background process** so it survives the OpenCode server restart. This is especially useful when an AI agent triggers the restart - the agent will be disconnected but the restart completes successfully.
+
+After reconnecting to OpenCode, use `--status` to verify the restart succeeded:
+
+```bash
+$ opencode-shared-restart --status
+=== Last Restart Status ===
+Status: SUCCESS
+Time: 2026-01-18T12:14:32+00:00
+Plugin Version: 0.2.59
+Message: Server running with v0.2.59
+```
+
+**Automatic rollback:** If the specified version fails to start, the script automatically attempts to restore the previous working version and start the server with that instead.
 
 #### Security Note
 
@@ -613,6 +630,7 @@ opencode attach http://localhost:4096
 | `FileHandler` | Inbound/outbound file attachment processing |
 | `ReactionHandler` | Emoji-based command execution |
 | `MonitorService` | Session event monitoring and DM alerts |
+| `QuestionHandler` | AI question tool support with user responses |
 
 ## Project Structure
 
@@ -644,10 +662,13 @@ opencode-mattermost-plugin/
     ├── monitor-service.ts            # Session monitoring and alerts
     ├── notification-service.ts       # Status notifications
     ├── opencode-session-registry.ts  # OpenCode session discovery
+    ├── question-handler.ts           # AI question tool responses
     ├── reaction-handler.ts           # Emoji reaction handling
     ├── response-streamer.ts          # Streams responses to MM
     ├── session-manager.ts            # User session management
-    └── thread-manager.ts             # Thread lifecycle management
+    ├── status-indicator.ts           # Real-time status display
+    ├── thread-manager.ts             # Thread lifecycle management
+    └── todo-manager.ts               # Todo list tracking
 ```
 
 ## Updating the Plugin
