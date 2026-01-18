@@ -25,6 +25,7 @@
 #   OPENCODE_CONFIG_DIR      - OpenCode config directory (default: ~/.config/opencode)
 #   VERDACCIO_REGISTRY       - Verdaccio registry URL (default: http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4873)
 #   OPENCODE_SERVER_PORT     - Server port (default: 4096)
+#   OPENCODE_WORKING_DIR     - Working directory for server (default: current directory)
 #
 # Note: This script runs the restart in a detached process so it survives
 # the OpenCode server restart. Check --status or the log file for results.
@@ -34,6 +35,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+WORKING_DIR="${OPENCODE_WORKING_DIR:-$(pwd)}"
 REGISTRY="${VERDACCIO_REGISTRY:-http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4873}"
 PLUGIN_NAME="opencode-mattermost-control"
 PORT="${OPENCODE_SERVER_PORT:-4096}"
@@ -210,10 +212,11 @@ stop_opencode() {
 }
 
 start_opencode_server() {
-    log_file "Starting OpenCode server..."
+    log_file "Starting OpenCode server in directory: $WORKING_DIR"
     
     rm -f "$STOP_FLAG"
     
+    cd "$WORKING_DIR"
     nohup opencode serve --port "$PORT" >> /tmp/opencode-server.log 2>&1 &
     local server_pid=$!
     echo "$server_pid" > "$PIDFILE"
@@ -279,6 +282,7 @@ write_status() {
 Status: $status
 Time: $(date -Iseconds)
 Plugin Version: $version
+Working Directory: $WORKING_DIR
 Message: $message
 EOF
 }
@@ -291,6 +295,7 @@ do_restart() {
     log_file "Starting restart process"
     log_file "Previous version: $previous_version"
     log_file "Target version: ${target_version:-same}"
+    log_file "Working directory: $WORKING_DIR"
     log_file "=========================================="
     
     stop_opencode
@@ -407,6 +412,10 @@ main() {
                 shift
                 [[ -n "$target_version" ]] && shift
                 ;;
+            --working-dir)
+                WORKING_DIR="$2"
+                shift 2
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -469,7 +478,7 @@ main() {
     > "$RESTART_LOG"
     write_status "IN_PROGRESS" "Restart initiated at $(date -Iseconds)"
     
-    nohup "$0" --detached-run "$target_version" >> "$RESTART_LOG" 2>&1 &
+    nohup "$0" --detached-run "$target_version" --working-dir "$WORKING_DIR" >> "$RESTART_LOG" 2>&1 &
     local bg_pid=$!
     
     log_info "Restart process started (PID: $bg_pid)"
