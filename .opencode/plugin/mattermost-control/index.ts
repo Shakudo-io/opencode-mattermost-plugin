@@ -903,6 +903,14 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
   ): Promise<void> {
     if (!streamer || !notifications || !fileHandler || !mmClient) return;
 
+    if (threadMappingStore && route.threadRootPostId) {
+      const mapping = threadMappingStore.getByThreadRootPostId(route.threadRootPostId);
+      if (mapping && mapping.status === "orphaned") {
+        threadMappingStore.reactivate(route.threadRootPostId);
+        log.info(`[ThreadMapping] Reactivated orphaned thread ${route.threadRootPostId} for session ${route.sessionId.substring(0, 8)}`);
+      }
+    }
+
     userSession.isProcessing = true;
     userSession.currentPromptPostId = post.id;
     userSession.lastPrompt = post;
@@ -1455,13 +1463,31 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
-      if (eventType === "question.asked" && questionHandler && isConnected && threadMappingStore) {
+      if (eventType === "question.asked" && questionHandler && isConnected) {
         const props = (event as any).properties;
         log.info(`[QuestionHandler] question.asked event: sessionId=${eventSessionId}, requestId=${props?.id}`);
         
         if (eventSessionId && props?.id && props?.questions) {
-          const mapping = threadMappingStore.getBySessionId(eventSessionId);
+          // First try thread mapping (per-session thread mode)
+          const mapping = threadMappingStore?.getBySessionId(eventSessionId);
+          let targetChannelId: string | undefined;
+          let targetThreadId: string | undefined;
+          
           if (mapping && mapping.status === "active") {
+            targetChannelId = mapping.dmChannelId;
+            targetThreadId = mapping.threadRootPostId;
+            log.debug(`[QuestionHandler] Using thread mapping: channel=${targetChannelId}, thread=${targetThreadId}`);
+          } else {
+            // Fall back to active response context (main DM thread mode)
+            const ctx = activeResponseContexts.get(eventSessionId);
+            if (ctx && ctx.mmSession?.dmChannelId && ctx.threadRootPostId) {
+              targetChannelId = ctx.mmSession.dmChannelId;
+              targetThreadId = ctx.threadRootPostId;
+              log.debug(`[QuestionHandler] Using active response context: channel=${targetChannelId}, thread=${targetThreadId}`);
+            }
+          }
+          
+          if (targetChannelId && targetThreadId) {
             const questionRequest: QuestionRequest = {
               id: props.id,
               sessionID: eventSessionId,
@@ -1471,10 +1497,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
             try {
               await questionHandler.handleQuestionAsked(
                 questionRequest,
-                mapping.dmChannelId,
-                mapping.threadRootPostId
+                targetChannelId,
+                targetThreadId
               );
-              log.info(`[QuestionHandler] Posted question ${props.id} to thread ${mapping.threadRootPostId}`);
+              log.info(`[QuestionHandler] Posted question ${props.id} to thread ${targetThreadId}`);
               
               const ctx = activeResponseContexts.get(eventSessionId);
               if (ctx?.streamCtx.statusIndicator) {
@@ -1488,7 +1514,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
               log.error(`[QuestionHandler] Failed to post question:`, e);
             }
           } else {
-            log.debug(`[QuestionHandler] No active thread mapping for session ${eventSessionId}`);
+            log.debug(`[QuestionHandler] No active thread context for session ${eventSessionId}`);
           }
         }
       }

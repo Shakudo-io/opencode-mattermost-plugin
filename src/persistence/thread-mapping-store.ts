@@ -211,6 +211,17 @@ export class ThreadMappingStore {
     return cleaned;
   }
 
+  reactivate(threadRootPostId: string): boolean {
+    const mapping = this.byThreadRootPostId.get(threadRootPostId);
+    if (mapping && mapping.status === "orphaned") {
+      mapping.status = "active";
+      mapping.lastActivityAt = new Date().toISOString();
+      this.update(mapping);
+      return true;
+    }
+    return false;
+  }
+
   shutdown(): void {
     if (this.saveDebounceTimer) {
       clearTimeout(this.saveDebounceTimer);
