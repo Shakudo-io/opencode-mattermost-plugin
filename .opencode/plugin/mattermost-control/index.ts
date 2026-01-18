@@ -123,7 +123,7 @@ function formatCostStatus(cost: CostInfo): string {
   return `💰 ${sessionCost}${msgCost}${tokenStr}`;
 }
 
-function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0, cost?: CostInfo, responseStartTime?: number): string {
+function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, compactionCount: number = 0, cost?: CostInfo, responseStartTime?: number, awaitingContinuation?: boolean): string {
   const parts: string[] = [];
   
   if (responseStartTime) {
@@ -145,6 +145,10 @@ function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, co
   
   if (compactionCount > 0) {
     parts.push(compactionCount > 1 ? `📦 Compacted ×${compactionCount}` : `📦 Compacted`);
+  }
+  
+  if (awaitingContinuation) {
+    parts.push(`⏳ Continuing...`);
   }
   
   if (cost && (cost.sessionTotal > 0 || cost.currentMessage > 0 || cost.tokens.input > 0)) {
@@ -320,7 +324,7 @@ function formatTodoStatus(todos: TodoItem[]): string {
 }
 
 function formatFullResponse(ctx: ResponseContext): string {
-  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount, ctx.cost, ctx.responseStartTime);
+  const toolStatus = formatToolStatus(ctx.toolCalls, ctx.activeTool, ctx.compactionCount, ctx.cost, ctx.responseStartTime, ctx.awaitingContinuation);
   const todoStatus = formatTodoStatus(ctx.todos);
   const thinkingPreview = ctx.thinkingBuffer.length > 500 
     ? ctx.thinkingBuffer.slice(-500) + "..." 
