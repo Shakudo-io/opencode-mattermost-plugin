@@ -84,6 +84,7 @@ interface ResponseContext {
   cost: CostInfo;
   responseStartTime: number;
   compactionPostId?: string;
+  awaitingContinuation: boolean; // True after compaction, waiting for continuation response
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -1024,6 +1025,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         },
         responseStartTime: Date.now(),
+        awaitingContinuation: false,
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
@@ -1561,6 +1563,8 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         const ctx = activeResponseContexts.get(eventSessionId);
         if (ctx) {
           ctx.compactionCount += 1;
+          ctx.awaitingContinuation = true;
+          log.info(`[Compaction] Set awaitingContinuation=true for session ${eventSessionId.substring(0, 8)}`);
           
           const compactionMsg = `📦 **Context Compacted** (×${ctx.compactionCount})\n\n` +
             `_Context was automatically compressed to continue the conversation._`;
@@ -1616,10 +1620,18 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         let shouldUpdate = false;
         
         if (part?.type === "text" && delta) {
+          if (ctx.awaitingContinuation) {
+            log.info(`[Compaction] Continuation content received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
+            ctx.awaitingContinuation = false;
+          }
           ctx.responseBuffer += delta;
           ctx.textPartCount = (ctx.textPartCount || 0) + 1;
           shouldUpdate = true;
         } else if (part?.type === "reasoning" && delta) {
+          if (ctx.awaitingContinuation) {
+            log.info(`[Compaction] Continuation reasoning received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
+            ctx.awaitingContinuation = false;
+          }
           ctx.thinkingBuffer += delta;
           ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
           shouldUpdate = true;
@@ -1651,6 +1663,11 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         
         const ctx = activeResponseContexts.get(sessionId);
         if (ctx) {
+          if (ctx.awaitingContinuation) {
+            log.info(`[Compaction] Session ${sessionId.substring(0, 8)} idle but awaitingContinuation=true, skipping finalization`);
+            return;
+          }
+          
           log.info(`[MessageParts] Session ${sessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}, todos=${ctx.todos.length}, cost=$${(ctx.cost.sessionTotal + ctx.cost.currentMessage).toFixed(4)}`);
           try {
             stopActiveToolTimer(sessionId);
