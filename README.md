@@ -438,6 +438,35 @@ React to any bot message with these emojis:
 | 🔁 | Retry the last prompt |
 | 🗑️ | Clear session temporary files |
 
+### AI Question Tool Support
+
+When OpenCode uses the question tool to ask for clarification, the question appears directly in your Mattermost thread with numbered options:
+
+```
+### ❓ Language
+
+Which language would you like to use?
+
+**1.** TypeScript - _Modern JavaScript with types_
+**2.** Python - _Great for data science_
+**3.** Other - _Type your own answer_
+
+---
+_Reply with a number or type your answer_
+_Use `!reject` to skip this question_
+```
+
+**How to respond:**
+- Reply with a **number** (e.g., `1`) to select an option
+- Reply with **multiple numbers** separated by commas for multi-select questions (e.g., `1, 3`)
+- Type a **custom answer** directly (e.g., `Rust`)
+- Use `!reject` or `!cancel` to skip the question (sends empty response to AI)
+
+**Notes:**
+- Questions expire after 30 minutes if not answered
+- Only one question can be pending per session at a time
+- Multi-question flows are supported (answer each question in sequence)
+
 ### Session Monitoring
 
 Monitor OpenCode sessions and receive DM alerts when they need attention. Works without requiring an active Mattermost connection.

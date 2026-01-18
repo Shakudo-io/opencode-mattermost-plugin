@@ -282,6 +282,7 @@ export class CommandHandler {
       `| \`${this.commandPrefix}current\` | Show currently targeted session |`,
       `| \`${this.commandPrefix}models\` | List available AI models (use in thread) |`,
       `| \`${this.commandPrefix}model\` | Show current model for this session |`,
+      `| \`${this.commandPrefix}reject\` | Skip/reject a pending AI question |`,
       `| \`${this.commandPrefix}help\` | Show this help message |`,
       "",
     ];
@@ -296,6 +297,10 @@ export class CommandHandler {
       lines.push("**Model Switching:**");
       lines.push("- Use `" + this.commandPrefix + "models` in a thread to see available models");
       lines.push("- Reply with a number to select a model for that session");
+      lines.push("");
+      lines.push("**AI Questions:**");
+      lines.push("- When the AI asks a question, reply with a number or type your answer");
+      lines.push("- Use `" + this.commandPrefix + "reject` or `" + this.commandPrefix + "cancel` to skip the question");
     } else {
       lines.push("Any message not starting with `" + this.commandPrefix + "` is sent as a prompt to OpenCode.");
     }

@@ -14,6 +14,7 @@ import { MonitorService, handleMonitorAlert, type MonitoredSession } from "../..
 import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
 import { ThreadManager } from "../../../src/thread-manager.js";
 import { TodoManager } from "../../../src/todo-manager.js";
+import { QuestionHandler, type QuestionRequest } from "../../../src/question-handler.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
 import type { User, Post, WebSocketEvent, ThreadSessionMapping } from "../../../src/models/index.js";
@@ -33,6 +34,7 @@ let commandHandler: CommandHandler | null = null;
 let threadMappingStore: ThreadMappingStore | null = null;
 let threadManager: ThreadManager | null = null;
 let todoManager: TodoManager | null = null;
+let questionHandler: QuestionHandler | null = null;
 let botUser: User | null = null;
 let projectName: string = "";
 interface ActiveTool {
@@ -157,6 +159,9 @@ function formatToolStatus(toolCalls: string[], activeTool: ActiveTool | null, co
 
 const activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
 const activeResponseTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+let questionCleanupTimer: ReturnType<typeof setInterval> | null = null;
+const QUESTION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const QUESTION_EXPIRY_MS = 30 * 60 * 1000;
 
 async function updateResponseStream(sessionId: string): Promise<void> {
   const ctx = activeResponseContexts.get(sessionId);
@@ -214,6 +219,29 @@ function stopResponseTimer(sessionId: string): void {
   if (timer) {
     clearInterval(timer);
     activeResponseTimers.delete(sessionId);
+  }
+}
+
+function startQuestionCleanupTimer(): void {
+  if (questionCleanupTimer) return;
+  
+  questionCleanupTimer = setInterval(() => {
+    if (questionHandler) {
+      const cleaned = questionHandler.cleanupExpired(QUESTION_EXPIRY_MS);
+      if (cleaned > 0) {
+        log.info(`[QuestionHandler] Cleaned up ${cleaned} expired questions`);
+      }
+    }
+  }, QUESTION_CLEANUP_INTERVAL_MS);
+  
+  log.debug("[QuestionHandler] Started cleanup timer");
+}
+
+function stopQuestionCleanupTimer(): void {
+  if (questionCleanupTimer) {
+    clearInterval(questionCleanupTimer);
+    questionCleanupTimer = null;
+    log.debug("[QuestionHandler] Stopped cleanup timer");
   }
 }
 
@@ -324,9 +352,10 @@ function formatFullResponse(ctx: ResponseContext): string {
   return output;
 }
 
-export const MattermostControlPlugin: Plugin = async ({ client, project, directory, $ }) => {
+export const MattermostControlPlugin: Plugin = async ({ client, project, directory, serverUrl, $ }) => {
   let config = loadConfig();
   projectName = directory.split("/").pop() || "opencode";
+  const opencodeBaseUrl = serverUrl.origin;
 
   threadMappingStore = new ThreadMappingStore();
   threadMappingStore.load().catch((e) => log.warn("[Plugin] Failed to load thread mappings:", e));
@@ -415,6 +444,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       }
       
       todoManager = new TodoManager(mmClient);
+      questionHandler = new QuestionHandler(mmClient);
 
       openCodeSessionRegistry.onNewSession(async (sessionInfo) => {
         if (!threadManager || !sessionManager) return;
@@ -498,6 +528,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       }
 
       setupEventListeners();
+      startQuestionCleanupTimer();
       isConnected = true;
 
       log.info(`Connected to Mattermost as @${botUser.username}`);
@@ -523,6 +554,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       
       activeResponseContexts.clear();
       
+      stopQuestionCleanupTimer();
       wsClient!.disconnect();
       sessionManager?.shutdown();
       fileHandler?.cleanupTempFiles();
@@ -541,6 +573,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       messageRouter = null;
       commandHandler = null;
       threadManager = null;
+      questionHandler = null;
 
       log.info("Disconnected from Mattermost");
 
@@ -737,6 +770,45 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           });
           if (result) {
             await mmClient.createPost(userSession.dmChannelId, result.message, routeResult.threadRootPostId);
+            return;
+          }
+        }
+        
+        if (questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId)) {
+          const replyResult = await questionHandler.handleUserReply(
+            routeResult.sessionId,
+            promptText,
+            userSession.dmChannelId,
+            routeResult.threadRootPostId
+          );
+          
+          if (replyResult.handled && replyResult.answers && replyResult.requestId) {
+            try {
+              const replyUrl = `${opencodeBaseUrl}/question/${replyResult.requestId}/reply`;
+              const response = await fetch(replyUrl, {
+                method: "POST",
+                headers: { 
+                  "Content-Type": "application/json",
+                  "x-opencode-directory": directory,
+                },
+                body: JSON.stringify({ answers: replyResult.answers }),
+              });
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+              }
+              log.info(`[QuestionHandler] Submitted answer for question ${replyResult.requestId}`);
+            } catch (e) {
+              log.error(`[QuestionHandler] Failed to submit answer:`, e);
+              await mmClient.createPost(
+                userSession.dmChannelId,
+                `:x: Failed to submit answer: ${e instanceof Error ? e.message : "Unknown error"}`,
+                routeResult.threadRootPostId
+              );
+            }
+            return;
+          }
+          
+          if (replyResult.handled) {
             return;
           }
         }
@@ -1379,6 +1451,44 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           const ctx = activeResponseContexts.get(eventSessionId);
           if (ctx?.streamCtx.statusIndicator) {
             await ctx.streamCtx.statusIndicator.setWaiting("permission", description);
+          }
+        }
+      }
+
+      if (eventType === "question.asked" && questionHandler && isConnected && threadMappingStore) {
+        const props = (event as any).properties;
+        log.info(`[QuestionHandler] question.asked event: sessionId=${eventSessionId}, requestId=${props?.id}`);
+        
+        if (eventSessionId && props?.id && props?.questions) {
+          const mapping = threadMappingStore.getBySessionId(eventSessionId);
+          if (mapping && mapping.status === "active") {
+            const questionRequest: QuestionRequest = {
+              id: props.id,
+              sessionID: eventSessionId,
+              questions: props.questions,
+            };
+            
+            try {
+              await questionHandler.handleQuestionAsked(
+                questionRequest,
+                mapping.dmChannelId,
+                mapping.threadRootPostId
+              );
+              log.info(`[QuestionHandler] Posted question ${props.id} to thread ${mapping.threadRootPostId}`);
+              
+              const ctx = activeResponseContexts.get(eventSessionId);
+              if (ctx?.streamCtx.statusIndicator) {
+                const firstQuestion = props.questions[0];
+                await ctx.streamCtx.statusIndicator.setWaiting(
+                  "question", 
+                  firstQuestion?.question || "Waiting for your answer..."
+                );
+              }
+            } catch (e) {
+              log.error(`[QuestionHandler] Failed to post question:`, e);
+            }
+          } else {
+            log.debug(`[QuestionHandler] No active thread mapping for session ${eventSessionId}`);
           }
         }
       }
