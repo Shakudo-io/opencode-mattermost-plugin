@@ -176,8 +176,30 @@ stop_opencode() {
     log_info "OpenCode stopped"
 }
 
-start_opencode() {
-    log_step "Starting OpenCode..."
+start_opencode_background() {
+    log_step "Starting OpenCode server..."
+    
+    rm -f "$STOP_FLAG"
+    
+    if [[ -x "$SCRIPT_DIR/opencode-shared" ]]; then
+        "$SCRIPT_DIR/opencode-shared" &
+    else
+        opencode-shared &
+    fi
+    
+    local start_pid=$!
+    sleep 2
+    
+    if ! kill -0 "$start_pid" 2>/dev/null; then
+        log_error "OpenCode process exited immediately"
+        return 1
+    fi
+    
+    return 0
+}
+
+start_opencode_foreground() {
+    log_step "Attaching to OpenCode..."
     
     rm -f "$STOP_FLAG"
     
@@ -195,9 +217,21 @@ verify_startup() {
     log_info "Waiting for server to start..."
     
     while [[ $attempt -lt $max_attempts ]]; do
+        if [[ -f "$PIDFILE" ]]; then
+            local pid
+            pid=$(cat "$PIDFILE" 2>/dev/null || true)
+            if [[ -n "${pid:-}" ]] && ! kill -0 "$pid" 2>/dev/null; then
+                log_error "Server process died unexpectedly"
+                return 1
+            fi
+        fi
+        
         if nc -z localhost "$PORT" 2>/dev/null; then
-            log_info "Server is responding on port $PORT"
-            return 0
+            sleep 1
+            if nc -z localhost "$PORT" 2>/dev/null; then
+                log_info "Server is responding on port $PORT"
+                return 0
+            fi
         fi
         sleep 0.5
         attempt=$((attempt + 1))
@@ -290,7 +324,70 @@ main() {
     log_step "Starting OpenCode with plugin v$(get_current_version)..."
     echo ""
     
-    start_opencode
+    if ! start_opencode_background; then
+        log_error "OpenCode failed to start!"
+        
+        if [[ -n "$target_version" && "$target_version" != "$previous_version" ]]; then
+            log_warn "Attempting rollback to previous version: $previous_version"
+            
+            stop_opencode
+            
+            if update_plugin_version "$previous_version"; then
+                log_info "Rolled back to v${previous_version}"
+                
+                if start_opencode_background && verify_startup; then
+                    log_info "Rollback successful - OpenCode running with v${previous_version}"
+                    echo ""
+                    log_step "Attaching to OpenCode..."
+                    start_opencode_foreground
+                else
+                    log_error "Rollback failed - OpenCode still won't start"
+                    log_error "Check logs at /tmp/opencode-server.log"
+                    exit 1
+                fi
+            else
+                log_error "Failed to rollback to previous version!"
+                exit 1
+            fi
+        else
+            log_error "No version change to rollback. Check logs at /tmp/opencode-server.log"
+            exit 1
+        fi
+    fi
+    
+    if ! verify_startup; then
+        log_error "OpenCode server not responding!"
+        
+        if [[ -n "$target_version" && "$target_version" != "$previous_version" ]]; then
+            log_warn "Attempting rollback to previous version: $previous_version"
+            
+            stop_opencode
+            
+            if update_plugin_version "$previous_version"; then
+                log_info "Rolled back to v${previous_version}"
+                
+                if start_opencode_background && verify_startup; then
+                    log_info "Rollback successful - OpenCode running with v${previous_version}"
+                    echo ""
+                    start_opencode_foreground
+                else
+                    log_error "Rollback failed - OpenCode still won't start"
+                    log_error "Check logs at /tmp/opencode-server.log"
+                    exit 1
+                fi
+            else
+                log_error "Failed to rollback to previous version!"
+                exit 1
+            fi
+        else
+            log_error "No version change to rollback. Check logs at /tmp/opencode-server.log"
+            exit 1
+        fi
+    fi
+    
+    log_info "OpenCode started successfully with plugin v$(get_current_version)"
+    echo ""
+    start_opencode_foreground
 }
 
 main "$@"
