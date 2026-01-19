@@ -75,6 +75,10 @@ export class StatusIndicator {
     return this.config.postId;
   }
 
+  updatePostId(newPostId: string): void {
+    this.config.postId = newPostId;
+  }
+
   formatStatusMessage(includeContent: boolean = false, content?: string): string {
     const emoji = STATUS_EMOJI[this.currentState.state];
     const label = STATUS_LABELS[this.currentState.state];

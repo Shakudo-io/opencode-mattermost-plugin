@@ -166,6 +166,54 @@ export class ResponseStreamer {
     }
   }
 
+  async recreateStreamAtBottom(ctx: StreamContext, finalizeOldContent?: string): Promise<StreamContext> {
+    this.activeStreams.delete(ctx.postId);
+
+    try {
+      if (finalizeOldContent !== undefined) {
+        await this.mmClient.updatePost(ctx.postId, finalizeOldContent);
+      } else {
+        await this.mmClient.deletePost(ctx.postId);
+      }
+      
+      for (const contPostId of ctx.continuationPostIds) {
+        try {
+          await this.mmClient.deletePost(contPostId);
+        } catch (e) {
+          log.debug(`[ResponseStreamer] Could not delete continuation post ${contPostId}`);
+        }
+      }
+    } catch (error) {
+      log.error("[ResponseStreamer] Failed to delete old stream post:", error);
+    }
+
+    const newPost = await this.mmClient.createPost(
+      ctx.channelId,
+      ctx.buffer || "...",
+      ctx.threadRootPostId
+    );
+
+    const newCtx: StreamContext = {
+      postId: newPost.id,
+      channelId: ctx.channelId,
+      threadRootPostId: ctx.threadRootPostId,
+      buffer: ctx.buffer,
+      lastUpdateTime: Date.now(),
+      totalChunks: ctx.totalChunks,
+      isCancelled: false,
+      continuationPostIds: [],
+      currentPostContent: ctx.buffer,
+      statusIndicator: ctx.statusIndicator,
+    };
+
+    if (newCtx.statusIndicator) {
+      newCtx.statusIndicator.updatePostId(newPost.id);
+    }
+
+    this.activeStreams.set(newCtx.postId, newCtx);
+    return newCtx;
+  }
+
   private async updateWithSplitting(ctx: StreamContext, content: string): Promise<void> {
     const maxLen = this.config.maxPostLength;
     

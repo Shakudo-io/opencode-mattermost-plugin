@@ -790,6 +790,13 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           
           if (replyResult.handled && replyResult.answers && replyResult.requestId) {
             try {
+              const ctx = activeResponseContexts.get(routeResult.sessionId);
+              if (ctx && streamer) {
+                const newStreamCtx = await streamer.recreateStreamAtBottom(ctx.streamCtx);
+                ctx.streamCtx = newStreamCtx;
+                log.debug(`[QuestionHandler] Recreated stream after answer summary, new postId=${newStreamCtx.postId}`);
+              }
+              
               const replyUrl = `${opencodeBaseUrl}/question/${replyResult.requestId}/reply`;
               const response = await fetch(replyUrl, {
                 method: "POST",
@@ -1502,6 +1509,14 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
             };
             
             try {
+              const ctx = activeResponseContexts.get(eventSessionId);
+              if (ctx && streamer) {
+                const oldContent = formatFullResponse(ctx);
+                const newStreamCtx = await streamer.recreateStreamAtBottom(ctx.streamCtx, oldContent);
+                ctx.streamCtx = newStreamCtx;
+                log.debug(`[QuestionHandler] Recreated stream before question, new postId=${newStreamCtx.postId}`);
+              }
+              
               await questionHandler.handleQuestionAsked(
                 questionRequest,
                 targetChannelId,
@@ -1509,13 +1524,18 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
               );
               log.info(`[QuestionHandler] Posted question ${props.id} to thread ${targetThreadId}`);
               
-              const ctx = activeResponseContexts.get(eventSessionId);
-              if (ctx?.streamCtx.statusIndicator) {
-                const firstQuestion = props.questions[0];
-                await ctx.streamCtx.statusIndicator.setWaiting(
-                  "question", 
-                  firstQuestion?.question || "Waiting for your answer..."
-                );
+              if (ctx && streamer) {
+                const newStreamCtx2 = await streamer.recreateStreamAtBottom(ctx.streamCtx);
+                ctx.streamCtx = newStreamCtx2;
+                log.debug(`[QuestionHandler] Recreated stream after question, new postId=${newStreamCtx2.postId}`);
+                
+                if (ctx.streamCtx.statusIndicator) {
+                  const firstQuestion = props.questions[0];
+                  await ctx.streamCtx.statusIndicator.setWaiting(
+                    "question", 
+                    firstQuestion?.question || "Waiting for your answer..."
+                  );
+                }
               }
             } catch (e) {
               log.error(`[QuestionHandler] Failed to post question:`, e);
@@ -1559,7 +1579,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         }
       }
 
-      if (eventType === "session.compacted" && eventSessionId && mmClient) {
+      if (eventType === "session.compacted" && eventSessionId && mmClient && streamer) {
         log.info(`[Compaction] Session ${eventSessionId.substring(0, 8)} compacted`);
         const props = (event as any).properties || {};
         log.debug(`[Compaction] Event properties: ${JSON.stringify(props)}`);
@@ -1570,10 +1590,15 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           ctx.awaitingContinuation = true;
           log.info(`[Compaction] Set awaitingContinuation=true for session ${eventSessionId.substring(0, 8)}`);
           
-          const compactionMsg = `📦 **Context Compacted** (×${ctx.compactionCount})\n\n` +
-            `_Context was automatically compressed to continue the conversation._`;
-          
           try {
+            const oldContent = formatFullResponse(ctx);
+            const newStreamCtx = await streamer.recreateStreamAtBottom(ctx.streamCtx, oldContent);
+            ctx.streamCtx = newStreamCtx;
+            log.debug(`[Compaction] Recreated stream at bottom, new postId=${newStreamCtx.postId}`);
+            
+            const compactionMsg = `📦 **Context Compacted** (×${ctx.compactionCount})\n\n` +
+              `_Context was automatically compressed to continue the conversation._`;
+            
             const post = await mmClient.createPost(
               ctx.mmSession.dmChannelId,
               compactionMsg,
@@ -1581,8 +1606,12 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
             );
             ctx.compactionPostId = post.id;
             log.debug(`[Compaction] Created compaction post ${post.id}`);
+            
+            const newStreamCtx2 = await streamer.recreateStreamAtBottom(ctx.streamCtx);
+            ctx.streamCtx = newStreamCtx2;
+            log.debug(`[Compaction] Recreated stream after notification, new postId=${newStreamCtx2.postId}`);
           } catch (e) {
-            log.error(`[Compaction] Failed to create compaction post:`, e);
+            log.error(`[Compaction] Failed to handle compaction:`, e);
           }
         }
       }
