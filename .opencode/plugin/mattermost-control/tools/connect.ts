@@ -295,14 +295,15 @@ function setupWebSocketListeners(
   handleUserMessage: (post: any) => Promise<void>,
   reactionHandler: ReactionHandler
 ) {
-  const mmClient = PluginState.mmClient!;
-  
   wsClient.on("hello", () => {
     log.info("Received hello event - connection authenticated");
   });
 
   wsClient.on("posted", async (event: WebSocketEvent) => {
     if (!PluginState.isConnected) return;
+    
+    const mmClient = PluginState.mmClient;
+    if (!mmClient) return;
 
     try {
       const postData = typeof event.data.post === "string" ? JSON.parse(event.data.post) : event.data.post;
@@ -319,7 +320,12 @@ function setupWebSocketListeners(
       log.info("Processing DM message...");
       await handleUserMessage(postData);
     } catch (error) {
-      log.error("Error handling posted event:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      log.error(`Error handling posted event: ${errorMessage}`);
+      if (errorStack) {
+        log.error(`Stack trace: ${errorStack}`);
+      }
     }
   });
 
