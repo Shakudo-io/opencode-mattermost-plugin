@@ -33,8 +33,9 @@ export async function handleSessionCompacted(event: any): Promise<void> {
     const compactionMsg = `📦 **Context Compacted** (×${ctx.compactionCount})\n\n` +
       `_Context was automatically compressed to continue the conversation._`;
     
+    const targetChannelId = ctx.streamCtx?.channelId || ctx.mmSession.dmChannelId;
     const post = await mmClient.createPost(
-      ctx.mmSession.dmChannelId,
+      targetChannelId,
       compactionMsg,
       ctx.threadRootPostId
     );

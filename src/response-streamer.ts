@@ -55,18 +55,20 @@ export class ResponseStreamer {
   async startStreamWithStatus(
     session: UserSession, 
     threadRootPostId?: string,
-    initialReason: string = "Checking session status..."
+    initialReason: string = "Checking session status...",
+    overrideChannelId?: string
   ): Promise<{ streamCtx: StreamContext; statusIndicator: StatusIndicator }> {
+    const targetChannelId = overrideChannelId || session.dmChannelId;
     const statusIndicator = await createStatusIndicator(
       this.mmClient,
-      session.dmChannelId,
+      targetChannelId,
       threadRootPostId,
       initialReason
     );
 
     const ctx: StreamContext = {
       postId: statusIndicator.getPostId(),
-      channelId: session.dmChannelId,
+      channelId: targetChannelId,
       threadRootPostId,
       buffer: "",
       lastUpdateTime: Date.now(),

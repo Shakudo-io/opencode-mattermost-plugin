@@ -188,7 +188,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             threadRootPostId: routeResult.threadRootPostId,
           });
           if (result) {
-            await mmClient.createPost(userSession.dmChannelId, result.message, routeResult.threadRootPostId);
+            await mmClient.createPost(post.channel_id, result.message, routeResult.threadRootPostId);
             return;
           }
         }
@@ -198,7 +198,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           const replyResult = await questionHandler.handleUserReply(
             routeResult.sessionId,
             promptText,
-            userSession.dmChannelId,
+            post.channel_id,
             routeResult.threadRootPostId
           );
           
@@ -227,7 +227,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             } catch (e) {
               log.error(`[QuestionHandler] Failed to submit answer:`, e);
               await mmClient.createPost(
-                userSession.dmChannelId,
+                post.channel_id,
                 `:x: Failed to submit answer: ${e instanceof Error ? e.message : "Unknown error"}`,
                 routeResult.threadRootPostId
               );
@@ -350,10 +350,14 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const targetSessionId = route.sessionId;
     const shortId = targetSessionId.substring(0, 8);
 
+    const existingMapping = threadMappingStore?.getBySessionId(targetSessionId);
+    const targetChannelId = existingMapping?.channelId || existingMapping?.dmChannelId || post.channel_id;
+
     const { streamCtx, statusIndicator } = await streamer.startStreamWithStatus(
       userSession,
       threadRootPostId,
-      "Checking session status..."
+      "Checking session status...",
+      targetChannelId
     );
     userSession.currentResponsePostId = streamCtx.postId;
 
@@ -445,12 +449,12 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       startResponseTimer(targetSessionId);
       
       if (todoManager && threadRootPostId) {
-        todoManager.setThreadRoot(targetSessionId, threadRootPostId, userSession.dmChannelId);
+        todoManager.setThreadRoot(targetSessionId, threadRootPostId, targetChannelId);
       }
 
       const replyContext = threadRootPostId 
-        ? `[Reply-To: thread=${threadRootPostId} post=${post.id} channel=${userSession.dmChannelId}]`
-        : `[Reply-To: post=${post.id} channel=${userSession.dmChannelId}]`;
+        ? `[Reply-To: thread=${threadRootPostId} post=${post.id} channel=${targetChannelId}]`
+        : `[Reply-To: post=${post.id} channel=${targetChannelId}]`;
       
       const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${replyContext}\n${promptText}`;
       

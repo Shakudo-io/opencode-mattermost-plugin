@@ -25,7 +25,7 @@ export function createSendFileTool(): ToolDefinition {
       }
 
       const result = await fileHandler.sendFileToThread(
-        mapping.dmChannelId,
+        mapping.channelId || mapping.dmChannelId,
         mapping.threadRootPostId,
         args.filePath,
         args.message

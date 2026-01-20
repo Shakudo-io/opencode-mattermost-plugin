@@ -25,14 +25,14 @@ export async function handleQuestionAsked(event: any): Promise<void> {
   let targetThreadId: string | undefined;
   
   if (mapping && mapping.status === "active") {
-    targetChannelId = mapping.dmChannelId;
+    targetChannelId = mapping.channelId || mapping.dmChannelId;
     targetThreadId = mapping.threadRootPostId;
     log.debug(`[QuestionHandler] Using thread mapping: channel=${targetChannelId}, thread=${targetThreadId}`);
   } else {
     // Fall back to active response context (main DM thread mode)
     const ctx = PluginState.activeResponseContexts.get(eventSessionId);
-    if (ctx && ctx.mmSession?.dmChannelId && ctx.threadRootPostId) {
-      targetChannelId = ctx.mmSession.dmChannelId;
+    if (ctx && ctx.threadRootPostId) {
+      targetChannelId = ctx.streamCtx?.channelId || ctx.mmSession?.dmChannelId;
       targetThreadId = ctx.threadRootPostId;
       log.debug(`[QuestionHandler] Using active response context: channel=${targetChannelId}, thread=${targetThreadId}`);
     }
