@@ -214,4 +214,8 @@ export class MattermostClient {
   async getFileInfo(fileId: string): Promise<FileInfo> {
     return this.request<FileInfo>(`/files/${fileId}/info`);
   }
+
+  async getChannelMembers(channelId: string): Promise<{ user_id: string; channel_id: string }[]> {
+    return this.request<{ user_id: string; channel_id: string }[]>(`/channels/${channelId}/members`);
+  }
 }

@@ -110,8 +110,9 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           mmClient,
           threadMappingStore,
           opencodeClient: client,
+          channelId: post.channel_id,
         });
-        await mmClient.createPost(userSession.dmChannelId, result.message);
+        await mmClient.createPost(post.channel_id, result.message);
         return;
       }
       
@@ -130,7 +131,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         }
         
         await mmClient.createPost(
-          userSession.dmChannelId,
+          post.channel_id,
           `:warning: ${routeResult.errorMessage}\n\n${routeResult.suggestedAction}`
         );
         return;
@@ -138,7 +139,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       
       case "unknown_thread": {
         await mmClient.createPost(
-          userSession.dmChannelId,
+          post.channel_id,
           routeResult.errorMessage,
           routeResult.threadRootPostId
         );
@@ -147,7 +148,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       
       case "ended_session": {
         await mmClient.createPost(
-          userSession.dmChannelId,
+          post.channel_id,
           `:no_entry: ${routeResult.errorMessage}`,
           routeResult.threadRootPostId
         );
@@ -168,8 +169,9 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
               opencodeClient: client,
               sessionId: routeResult.sessionId,
               threadRootPostId: routeResult.threadRootPostId,
+              channelId: post.channel_id,
             });
-            await mmClient.createPost(userSession.dmChannelId, result.message, routeResult.threadRootPostId);
+            await mmClient.createPost(post.channel_id, result.message, routeResult.threadRootPostId);
             return;
           }
         }
@@ -300,12 +302,13 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         sessionInfo,
         userSession.mattermostUserId,
         userSession.dmChannelId,
-        post.id
+        post.id,
+        post.channel_id
       );
       
       await openCodeSessionRegistry?.refresh();
       
-      log.info(`[CreateSession] Created new session ${sessionInfo.shortId} for @${userSession.mattermostUsername}`);
+      log.info(`[CreateSession] Created new session ${sessionInfo.shortId} for @${userSession.mattermostUsername} in channel ${post.channel_id}`);
       
       return {
         sessionId: result.data.id,
@@ -314,7 +317,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     } catch (error) {
       log.error("[CreateSession] Failed:", error);
       await mmClient.createPost(
-        userSession.dmChannelId,
+        post.channel_id,
         `:x: Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`,
         post.id
       );

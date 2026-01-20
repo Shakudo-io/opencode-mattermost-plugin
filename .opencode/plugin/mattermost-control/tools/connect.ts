@@ -309,13 +309,26 @@ function setupWebSocketListeners(
       const postData = typeof event.data.post === "string" ? JSON.parse(event.data.post) : event.data.post;
       if (postData.user_id === botUserId) return;
 
-      if (config.mattermost.ownerUserId && postData.user_id !== config.mattermost.ownerUserId) {
-        log.debug(`Ignoring DM from non-owner user ${postData.user_id}`);
+      const channel = await mmClient.getChannel(postData.channel_id);
+      
+      if (channel.type === "D") {
+        if (config.mattermost.ownerUserId && postData.user_id !== config.mattermost.ownerUserId) {
+          log.debug(`Ignoring 1:1 DM from non-owner user ${postData.user_id}`);
+          return;
+        }
+      } else if (channel.type === "G") {
+        if (config.mattermost.ownerUserId) {
+          const members = await mmClient.getChannelMembers(channel.id);
+          const ownerIsMember = members.some(m => m.user_id === config.mattermost.ownerUserId);
+          if (!ownerIsMember) {
+            log.debug(`Ignoring group DM ${channel.id} - owner is not a member`);
+            return;
+          }
+        }
+        log.info(`Processing message from group DM (channel: ${channel.id})`);
+      } else {
         return;
       }
-
-      const channel = await mmClient.getChannel(postData.channel_id);
-      if (channel.type !== "D") return;
 
       log.info("Processing DM message...");
       await handleUserMessage(postData);

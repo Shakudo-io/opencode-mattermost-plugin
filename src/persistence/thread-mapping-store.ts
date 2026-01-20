@@ -13,6 +13,7 @@ export class ThreadMappingStore {
   private mappings: Map<string, ThreadSessionMapping> = new Map();
   private byThreadRootPostId: Map<string, ThreadSessionMapping> = new Map();
   private byMattermostUserId: Map<string, ThreadSessionMapping[]> = new Map();
+  private byChannelId: Map<string, ThreadSessionMapping[]> = new Map();
   private filePath: string;
   private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private saveDebounceMs: number = 2000;
@@ -102,6 +103,7 @@ export class ThreadMappingStore {
     this.mappings.clear();
     this.byThreadRootPostId.clear();
     this.byMattermostUserId.clear();
+    this.byChannelId.clear();
 
     for (const m of mappings) {
       this.addToIndexes(m);
@@ -115,6 +117,11 @@ export class ThreadMappingStore {
     const userMappings = this.byMattermostUserId.get(mapping.mattermostUserId) || [];
     userMappings.push(mapping);
     this.byMattermostUserId.set(mapping.mattermostUserId, userMappings);
+
+    const channelId = mapping.channelId || mapping.dmChannelId;
+    const channelMappings = this.byChannelId.get(channelId) || [];
+    channelMappings.push(mapping);
+    this.byChannelId.set(channelId, channelMappings);
   }
 
   private removeFromIndexes(mapping: ThreadSessionMapping): void {
@@ -128,6 +135,17 @@ export class ThreadMappingStore {
         this.byMattermostUserId.set(mapping.mattermostUserId, filtered);
       } else {
         this.byMattermostUserId.delete(mapping.mattermostUserId);
+      }
+    }
+
+    const channelId = mapping.channelId || mapping.dmChannelId;
+    const channelMappings = this.byChannelId.get(channelId);
+    if (channelMappings) {
+      const filtered = channelMappings.filter((m) => m.sessionId !== mapping.sessionId);
+      if (filtered.length > 0) {
+        this.byChannelId.set(channelId, filtered);
+      } else {
+        this.byChannelId.delete(channelId);
       }
     }
   }
@@ -168,6 +186,14 @@ export class ThreadMappingStore {
 
   getActiveMappingsForUser(mattermostUserId: string): ThreadSessionMapping[] {
     return this.getByMattermostUserId(mattermostUserId).filter((m) => m.status === "active");
+  }
+
+  getByChannelId(channelId: string): ThreadSessionMapping[] {
+    return this.byChannelId.get(channelId) || [];
+  }
+
+  getActiveMappingsForChannel(channelId: string): ThreadSessionMapping[] {
+    return this.getByChannelId(channelId).filter((m) => m.status === "active");
   }
 
   listAll(): ThreadSessionMapping[] {

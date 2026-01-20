@@ -17,13 +17,16 @@ export class ThreadManager {
     sessionInfo: OpenCodeSessionInfo,
     mattermostUserId: string,
     dmChannelId: string,
-    userPostId?: string
+    userPostId?: string,
+    channelId?: string
   ): Promise<ThreadSessionMapping> {
     const existing = this.store.getBySessionId(sessionInfo.id);
     if (existing) {
       log.debug(`[ThreadManager] Thread already exists for session ${sessionInfo.shortId}`);
       return existing;
     }
+
+    const targetChannelId = channelId || dmChannelId;
 
     const content: ThreadRootPostContent = {
       projectName: sessionInfo.projectName,
@@ -41,18 +44,18 @@ export class ThreadManager {
     if (userPostId) {
       threadRootPostId = userPostId;
       try {
-        await this.mmClient.createPost(dmChannelId, message, userPostId);
+        await this.mmClient.createPost(targetChannelId, message, userPostId);
       } catch (e) {
         log.warn(`[ThreadManager] First attempt failed, retrying...`);
-        await this.mmClient.createPost(dmChannelId, message, userPostId);
+        await this.mmClient.createPost(targetChannelId, message, userPostId);
       }
     } else {
       let rootPost;
       try {
-        rootPost = await this.mmClient.createPost(dmChannelId, message);
+        rootPost = await this.mmClient.createPost(targetChannelId, message);
       } catch (e) {
         log.warn(`[ThreadManager] First attempt failed, retrying...`);
-        rootPost = await this.mmClient.createPost(dmChannelId, message);
+        rootPost = await this.mmClient.createPost(targetChannelId, message);
       }
       threadRootPostId = rootPost.id;
     }
@@ -63,6 +66,7 @@ export class ThreadManager {
       shortId: sessionInfo.shortId,
       mattermostUserId,
       dmChannelId,
+      channelId: targetChannelId,
       projectName: sessionInfo.projectName,
       directory: sessionInfo.directory,
       sessionTitle: sessionInfo.title,
@@ -77,7 +81,7 @@ export class ThreadManager {
       log.error(`[ThreadManager] Failed to persist mapping, continuing in-memory:`, e);
     }
 
-    log.info(`[ThreadManager] Created thread for session ${sessionInfo.shortId} (${sessionInfo.projectName})`);
+    log.info(`[ThreadManager] Created thread for session ${sessionInfo.shortId} (${sessionInfo.projectName}) in channel ${targetChannelId}`);
     return mapping;
   }
 
@@ -96,8 +100,9 @@ export class ThreadManager {
     const duration = this.formatDuration(new Date(mapping.createdAt), now);
     const message = this.formatSessionEndedPost(duration, now);
 
+    const targetChannelId = mapping.channelId || mapping.dmChannelId;
     try {
-      await this.mmClient.createPost(mapping.dmChannelId, message, mapping.threadRootPostId);
+      await this.mmClient.createPost(targetChannelId, message, mapping.threadRootPostId);
     } catch (e) {
       log.error(`[ThreadManager] Failed to post session ended message:`, e);
     }
@@ -121,9 +126,10 @@ export class ThreadManager {
       mapping.lastActivityAt = new Date().toISOString();
       this.store.update(mapping);
 
+      const targetChannelId = mapping.channelId || mapping.dmChannelId;
       try {
         await this.mmClient.createPost(
-          mapping.dmChannelId,
+          targetChannelId,
           ":arrows_counterclockwise: **Session reconnected**",
           mapping.threadRootPostId
         );

@@ -21,6 +21,7 @@ export interface CommandContext {
   opencodeClient?: any;
   sessionId?: string;
   threadRootPostId?: string;
+  channelId?: string;
 }
 
 export type CommandResult = {
@@ -80,7 +81,7 @@ export class CommandHandler {
     _command: ParsedCommand,
     context: CommandContext
   ): Promise<CommandResult> {
-    const { registry, userSession, threadMappingStore } = context;
+    const { registry, userSession, threadMappingStore, channelId } = context;
     
     try {
       await registry.refresh();
@@ -98,7 +99,7 @@ export class CommandHandler {
     }
 
     const currentTarget = userSession.targetOpenCodeSessionId;
-    const lines = this.formatSessionList(sessions, currentTarget, threadMappingStore);
+    const lines = this.formatSessionList(sessions, currentTarget, threadMappingStore, channelId);
 
     return {
       success: true,
@@ -109,16 +110,33 @@ export class CommandHandler {
   private formatSessionList(
     sessions: OpenCodeSessionInfo[], 
     currentTargetId: string | null,
-    threadMappingStore?: ThreadMappingStore | null
+    threadMappingStore?: ThreadMappingStore | null,
+    channelId?: string
   ): string[] {
     const defaultSession = sessions.find(s => s.id === currentTargetId);
     
+    const filteredSessions = channelId && threadMappingStore
+      ? sessions.filter(session => {
+          const mapping = threadMappingStore.getBySessionId(session.id);
+          if (!mapping) return false;
+          const mappingChannelId = mapping.channelId || mapping.dmChannelId;
+          return mappingChannelId === channelId;
+        })
+      : sessions;
+    
     const lines: string[] = [
-      ":clipboard: **Available OpenCode Sessions:**",
+      `:clipboard: **Sessions in this channel** (${filteredSessions.length}):`,
       "",
     ];
 
-    sessions.forEach((session, index) => {
+    if (filteredSessions.length === 0) {
+      lines.push("_No sessions in this channel yet._");
+      lines.push("");
+      lines.push("Send a message to start a new session.");
+      return lines;
+    }
+
+    filteredSessions.forEach((session, index) => {
       const isCurrent = session.id === currentTargetId;
       const marker = isCurrent ? " :white_check_mark:" : "";
       const truncatedTitle = this.truncateString(session.title, 50);
@@ -133,7 +151,7 @@ export class CommandHandler {
       lines.push("");
     });
 
-    if (defaultSession) {
+    if (defaultSession && filteredSessions.some(s => s.id === defaultSession.id)) {
       lines.push(`:white_check_mark: = current target (\`${defaultSession.shortId}\`)`);
     }
     

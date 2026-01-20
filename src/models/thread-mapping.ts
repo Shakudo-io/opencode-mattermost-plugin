@@ -14,6 +14,7 @@ export const ThreadSessionMappingSchema = z.object({
   shortId: z.string().min(6).max(10),
   mattermostUserId: z.string().min(1),
   dmChannelId: z.string().min(1),
+  channelId: z.string().min(1).optional(),
   projectName: z.string().min(1),
   directory: z.string().min(1),
   sessionTitle: z.string().optional(),

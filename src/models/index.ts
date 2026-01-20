@@ -169,6 +169,7 @@ export interface ThreadSessionMapping {
   shortId: string;
   mattermostUserId: string;
   dmChannelId: string;
+  channelId?: string;  // Where thread actually lives (1:1 DM or group DM) - optional for migration
   projectName: string;
   directory: string;
   sessionTitle?: string;
