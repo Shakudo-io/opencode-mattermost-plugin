@@ -85,6 +85,7 @@ interface ResponseContext {
   responseStartTime: number;
   compactionPostId?: string;
   awaitingContinuation: boolean; // True after compaction, waiting for continuation response
+  inCompactionSummary: boolean; // True while receiving compaction summary text (should be hidden)
 }
 
 const activeResponseContexts: Map<string, ResponseContext> = new Map();
@@ -1037,6 +1038,7 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         },
         responseStartTime: Date.now(),
         awaitingContinuation: false,
+        inCompactionSummary: false,
       };
       
       activeResponseContexts.set(targetSessionId, responseContext);
@@ -1588,7 +1590,8 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         if (ctx) {
           ctx.compactionCount += 1;
           ctx.awaitingContinuation = true;
-          log.info(`[Compaction] Set awaitingContinuation=true for session ${eventSessionId.substring(0, 8)}`);
+          ctx.inCompactionSummary = false;
+          log.info(`[Compaction] Set awaitingContinuation=true, inCompactionSummary=false for session ${eventSessionId.substring(0, 8)}`);
           
           try {
             const oldContent = formatFullResponse(ctx);
@@ -1621,6 +1624,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         if (msgInfo?.role === "assistant" && msgInfo?.sessionID) {
           const ctx = activeResponseContexts.get(msgInfo.sessionID);
           if (ctx) {
+            if (msgInfo.agent === "compaction" || msgInfo.summary === true) {
+              log.info(`[Compaction] Detected compaction summary message for session ${msgInfo.sessionID.substring(0, 8)}, suppressing text accumulation`);
+              ctx.inCompactionSummary = true;
+            }
             ctx.cost.currentMessage = msgInfo.cost || 0;
             if (msgInfo.tokens) {
               ctx.cost.tokens = {
@@ -1653,6 +1660,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         let shouldUpdate = false;
         
         if (part?.type === "text" && delta) {
+          if (ctx.inCompactionSummary) {
+            log.debug(`[Compaction] Suppressing compaction summary text for session ${sessionId.substring(0, 8)}`);
+            return;
+          }
           if (ctx.awaitingContinuation) {
             log.info(`[Compaction] Continuation content received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
             ctx.awaitingContinuation = false;
@@ -1661,6 +1672,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
           ctx.textPartCount = (ctx.textPartCount || 0) + 1;
           shouldUpdate = true;
         } else if (part?.type === "reasoning" && delta) {
+          if (ctx.inCompactionSummary) {
+            log.debug(`[Compaction] Suppressing compaction summary reasoning for session ${sessionId.substring(0, 8)}`);
+            return;
+          }
           if (ctx.awaitingContinuation) {
             log.info(`[Compaction] Continuation reasoning received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
             ctx.awaitingContinuation = false;
@@ -1698,6 +1713,10 @@ Use \`!sessions\` in DM to see and select OpenCode sessions.`;
         if (ctx) {
           if (ctx.awaitingContinuation) {
             log.info(`[Compaction] Session ${sessionId.substring(0, 8)} idle but awaitingContinuation=true, skipping finalization`);
+            return;
+          }
+          if (ctx.inCompactionSummary) {
+            log.info(`[Compaction] Session ${sessionId.substring(0, 8)} idle but inCompactionSummary=true, skipping finalization`);
             return;
           }
           
