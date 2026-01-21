@@ -186,7 +186,13 @@ export function formatFullResponse(ctx: ResponseContext): string {
     output += "```\n" + formattedShell + "\n```\n\n";
   }
   
-  output += ctx.responseBuffer;
+  if (ctx.responseBuffer) {
+    const needsSeparator = toolStatus || todoStatus || ctx.shellOutput;
+    if (needsSeparator) {
+      output += "---\n\n";
+    }
+    output += ctx.responseBuffer;
+  }
   
   if (ctx.thinkingBuffer) {
     output += `\n\n---\n:brain: **Thinking:**\n> ${thinkingPreview.split('\n').join('\n> ')}`;
