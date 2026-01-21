@@ -318,13 +318,11 @@ function setupWebSocketListeners(
           return;
         }
       } else if (channel.type === "G") {
-        if (config.mattermost.ownerUserId) {
-          const members = await mmClient.getChannelMembers(channel.id);
-          const ownerIsMember = members.some(m => m.user_id === config.mattermost.ownerUserId);
-          if (!ownerIsMember) {
-            log.debug(`Ignoring group DM ${channel.id} - owner is not a member`);
-            return;
-          }
+        // In group DMs, only process messages from the configured owner
+        // This prevents multiple OpenCode instances from all responding to the same @mention
+        if (config.mattermost.ownerUserId && postData.user_id !== config.mattermost.ownerUserId) {
+          log.debug(`[GroupDM] Ignoring message from non-owner user ${postData.user_id} (owner: ${config.mattermost.ownerUserId})`);
+          return;
         }
         
         const botUser = PluginState.botUser;
@@ -339,7 +337,7 @@ function setupWebSocketListeners(
           return;
         }
         
-        log.info(`[GroupDM] Bot @mentioned, processing message (channel: ${channel.id})`);
+        log.info(`[GroupDM] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
       } else {
         return;
       }
