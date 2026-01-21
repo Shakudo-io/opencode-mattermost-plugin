@@ -444,6 +444,57 @@ Bot: [Responds with explanation, having read the context from Alice and Bob's me
 
 **Note:** In regular 1:1 DMs, the bot responds to all messages without requiring @mention.
 
+### Guest Approval in Group DMs
+
+When multiple users are in a group DM with the bot, each OpenCode instance only processes messages from its owner (the user who owns the session). If another user @mentions the bot, the thread owner must approve the request.
+
+**How it works:**
+1. User A (thread owner) creates a session by @mentioning the bot
+2. User B @mentions the bot in the same thread: `@opencode-bot help me with this`
+3. The bot posts an approval request visible to User A:
+   ```
+   🔔 Guest Access Request
+   
+   @userB wants to send a prompt to your session.
+   
+   **Options:**
+   - Reply `1` to approve this message only
+   - Reply `2` to approve @userB permanently for this thread
+   - Reply `3` to approve ALL users in this thread
+   - Reply `deny` to reject
+   
+   ⏰ Request expires in 30 minutes
+   ```
+4. User A replies with `1`, `2`, or `3`
+5. If approved, the original message from User B is processed
+
+**Approval options:**
+- **1 (Once)**: Approve this single message, future messages from this user still require approval
+- **2 (User)**: Permanently approve this user - their future @mentions are processed automatically
+- **3 (All)**: Approve all users - any user in the group DM can send prompts without approval
+
+**Persistence:** User approvals (option 2) and "approve all" settings (option 3) are stored in the thread mapping and persist across sessions.
+
+**Example flow:**
+```
+[Group DM: Alice, Bob, opencode-bot]
+
+Alice: @opencode-bot analyze this code
+Bot: [Creates session, responds to Alice]
+
+Bob: @opencode-bot can you also check for security issues?
+Bot: 🔔 Guest Access Request
+     @bob wants to send a prompt to your session...
+     Reply 1/2/3 or deny
+
+Alice: 2
+Bot: ✅ @bob is now approved for this thread.
+Bot: [Processes Bob's request about security issues]
+
+Bob: @opencode-bot what about performance?
+Bot: [Processes automatically - Bob is pre-approved]
+```
+
 ### Multi-User Setup (Shared Bot)
 
 When multiple users want to run separate OpenCode instances with the same Mattermost bot account, use owner filtering to prevent conflicts:
