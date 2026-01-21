@@ -139,20 +139,32 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       }
       
       case "unknown_thread": {
-        // For group DMs, auto-create a session if enabled
         const channel = await mmClient.getChannel(post.channel_id);
-        if (channel.type === "G" && config.sessionSelection.autoCreateSession) {
-          log.info(`[GroupDM] Unknown thread in group DM, auto-creating session`);
-          const newSession = await createNewSessionFromDm(userSession, post);
-          if (newSession) {
-            await handleThreadPrompt({
-              sessionId: newSession.sessionId,
-              threadRootPostId: newSession.threadRootPostId,
-              promptText: post.message.trim(),
-              fileIds: post.file_ids,
-            }, userSession, post);
+        const threadRootPostId = routeResult.threadRootPostId;
+        
+        if (channel.type === "G") {
+          const { sessionOwnershipHandler } = PluginState;
+          if (sessionOwnershipHandler?.hasPendingConfirmation(post.channel_id, threadRootPostId, post.user_id)) {
+            const confirmResult = await sessionOwnershipHandler.handleReply(
+              post.channel_id,
+              threadRootPostId,
+              post.message.trim()
+            );
+            
+            if (confirmResult.confirmed && confirmResult.post) {
+              log.info(`[SessionOwnership] User confirmed, creating session`);
+              const newSession = await createNewSessionFromDm(userSession, confirmResult.post);
+              if (newSession) {
+                await handleThreadPrompt({
+                  sessionId: newSession.sessionId,
+                  threadRootPostId: newSession.threadRootPostId,
+                  promptText: confirmResult.post.message.trim(),
+                  fileIds: confirmResult.post.file_ids,
+                }, userSession, confirmResult.post);
+              }
+            }
+            return;
           }
-          return;
         }
         
         await mmClient.createPost(

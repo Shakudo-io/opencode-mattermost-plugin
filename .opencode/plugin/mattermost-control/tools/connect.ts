@@ -14,6 +14,7 @@ import { ThreadManager } from "../../../../src/thread-manager.js";
 import { TodoManager } from "../../../../src/todo-manager.js";
 import { QuestionHandler } from "../../../../src/question-handler.js";
 import { GuestApprovalHandler } from "../../../../src/guest-approval-handler.js";
+import { SessionOwnershipHandler } from "../../../../src/session-ownership-handler.js";
 import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
@@ -131,6 +132,7 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     const todoManager = new TodoManager(mmClient);
     const questionHandler = new QuestionHandler(mmClient);
     const guestApprovalHandler = new GuestApprovalHandler(mmClient);
+    const sessionOwnershipHandler = new SessionOwnershipHandler(mmClient);
 
     setupSessionCallbacks(openCodeSessionRegistry, threadMappingStore, threadManager, sessionManager, config);
     
@@ -156,6 +158,7 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
       todoManager,
       questionHandler,
       guestApprovalHandler,
+      sessionOwnershipHandler,
       botUser
     );
 
@@ -334,14 +337,36 @@ function setupWebSocketListeners(
         }
         
         const isOwner = !config.mattermost.ownerUserId || postData.user_id === config.mattermost.ownerUserId;
+        const threadMappingStore = PluginState.threadMappingStore;
+        const threadRootId = postData.root_id || postData.id;
+        const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
         if (isOwner) {
+          if (!mapping) {
+            const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
+            const mmClient = PluginState.mmClient;
+            if (!mmClient || !sessionOwnershipHandler) return;
+            
+            let ownerUsername = "unknown";
+            try {
+              const ownerUser = await mmClient.getUserById(postData.user_id);
+              ownerUsername = ownerUser.username;
+            } catch (e) {
+              log.warn(`[GroupDM] Could not fetch owner username: ${e}`);
+            }
+            
+            log.info(`[GroupDM] Owner @mentioned bot in unmapped thread, requesting ownership confirmation`);
+            await sessionOwnershipHandler.requestOwnershipConfirmation(
+              postData,
+              ownerUsername,
+              threadRootId,
+              channel.id
+            );
+            return;
+          }
           log.info(`[GroupDM] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
         } else {
-          const threadMappingStore = PluginState.threadMappingStore;
           const guestApprovalHandler = PluginState.guestApprovalHandler;
-          const threadRootId = postData.root_id || postData.id;
-          const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
           
           if (!mapping) {
             log.debug(`[GroupDM] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);

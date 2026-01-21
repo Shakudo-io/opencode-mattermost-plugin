@@ -14,6 +14,7 @@ import type { ThreadManager } from "../../../src/thread-manager.js";
 import type { TodoManager } from "../../../src/todo-manager.js";
 import type { QuestionHandler } from "../../../src/question-handler.js";
 import type { GuestApprovalHandler } from "../../../src/guest-approval-handler.js";
+import type { SessionOwnershipHandler } from "../../../src/session-ownership-handler.js";
 import type { User } from "../../../src/models/index.js";
 
 class PluginStateManager {
@@ -33,6 +34,7 @@ class PluginStateManager {
   private _todoManager: TodoManager | null = null;
   private _questionHandler: QuestionHandler | null = null;
   private _guestApprovalHandler: GuestApprovalHandler | null = null;
+  private _sessionOwnershipHandler: SessionOwnershipHandler | null = null;
   private _botUser: User | null = null;
   private _projectName: string = "";
 
@@ -60,6 +62,7 @@ class PluginStateManager {
   get todoManager(): TodoManager | null { return this._todoManager; }
   get questionHandler(): QuestionHandler | null { return this._questionHandler; }
   get guestApprovalHandler(): GuestApprovalHandler | null { return this._guestApprovalHandler; }
+  get sessionOwnershipHandler(): SessionOwnershipHandler | null { return this._sessionOwnershipHandler; }
   get questionCleanupTimer(): ReturnType<typeof setInterval> | null { return this._questionCleanupTimer; }
 
   setProjectName(name: string): void {
@@ -85,6 +88,7 @@ class PluginStateManager {
     todoManager: TodoManager,
     questionHandler: QuestionHandler,
     guestApprovalHandler: GuestApprovalHandler,
+    sessionOwnershipHandler: SessionOwnershipHandler,
     botUser: User
   ): void {
     this._isConnected = true;
@@ -102,6 +106,7 @@ class PluginStateManager {
     this._todoManager = todoManager;
     this._questionHandler = questionHandler;
     this._guestApprovalHandler = guestApprovalHandler;
+    this._sessionOwnershipHandler = sessionOwnershipHandler;
     this._botUser = botUser;
   }
 
@@ -136,6 +141,7 @@ class PluginStateManager {
     this._threadManager = null;
     this._questionHandler = null;
     this._guestApprovalHandler = null;
+    this._sessionOwnershipHandler = null;
   }
 }
 
