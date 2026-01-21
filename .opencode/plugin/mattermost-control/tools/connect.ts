@@ -13,6 +13,7 @@ import { CommandHandler } from "../../../../src/command-handler.js";
 import { ThreadManager } from "../../../../src/thread-manager.js";
 import { TodoManager } from "../../../../src/todo-manager.js";
 import { QuestionHandler } from "../../../../src/question-handler.js";
+import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
 import type { WebSocketEvent } from "../../../../src/models/index.js";
@@ -325,7 +326,20 @@ function setupWebSocketListeners(
             return;
           }
         }
-        log.info(`Processing message from group DM (channel: ${channel.id})`);
+        
+        const botUser = PluginState.botUser;
+        if (!botUser) {
+          log.error(`[GroupDM] Bot user not available`);
+          return;
+        }
+        
+        const mentioned = isBotMentioned(postData.message, botUser.username, botUser.id);
+        if (!mentioned) {
+          log.info(`[GroupDM] Skipping message - bot not @mentioned (channel: ${channel.id})`);
+          return;
+        }
+        
+        log.info(`[GroupDM] Bot @mentioned, processing message (channel: ${channel.id})`);
       } else {
         return;
       }

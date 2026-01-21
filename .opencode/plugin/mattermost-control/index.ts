@@ -32,6 +32,7 @@ import {
 } from "./event-handlers/index.js";
 
 import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
+import { buildThreadContext, summarizeContextWithHaiku, formatContextForPrompt, stripBotMention } from "../../../src/context-builder.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
 import type { Post } from "../../../src/models/index.js";
@@ -353,6 +354,15 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const existingMapping = threadMappingStore?.getBySessionId(targetSessionId);
     const targetChannelId = existingMapping?.channelId || existingMapping?.dmChannelId || post.channel_id;
 
+    const channel = await mmClient.getChannel(post.channel_id);
+    const isGroupDm = channel.type === "G";
+    const botUser = PluginState.botUser;
+    
+    if (isGroupDm && botUser) {
+      promptText = stripBotMention(promptText, botUser.username, botUser.id);
+      log.info(`[GroupDM] Stripped bot mention, prompt: "${promptText.slice(0, 50)}..."`);
+    }
+
     const { streamCtx, statusIndicator } = await streamer.startStreamWithStatus(
       userSession,
       threadRootPostId,
@@ -456,7 +466,23 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         ? `[Reply-To: thread=${threadRootPostId} post=${post.id} channel=${targetChannelId}]`
         : `[Reply-To: post=${post.id} channel=${targetChannelId}]`;
       
-      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${replyContext}\n${promptText}`;
+      let contextPrefix = "";
+      if (isGroupDm && threadRootPostId && botUser) {
+        try {
+          log.info(`[GroupDM] Building thread context for thread ${threadRootPostId}`);
+          let threadContext = await buildThreadContext(mmClient, threadRootPostId, post.id, botUser.id, 5);
+          
+          if (threadContext.messages.length > 0) {
+            threadContext = await summarizeContextWithHaiku(client, targetSessionId, threadContext);
+            contextPrefix = formatContextForPrompt(threadContext, userSession.mattermostUsername || "user");
+            log.info(`[GroupDM] Injecting ${threadContext.wasSummarized ? "summarized" : "full"} context (${threadContext.messages.length} messages)`);
+          }
+        } catch (e) {
+          log.error(`[GroupDM] Failed to build context: ${e}`);
+        }
+      }
+      
+      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${replyContext}\n${contextPrefix}${promptText}`;
       
       log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 150)}..."`);
       
