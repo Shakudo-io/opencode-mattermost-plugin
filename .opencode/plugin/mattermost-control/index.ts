@@ -366,6 +366,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       };
       
       const threadRootId = post.root_id || post.id;
+      log.info(`[CreateSession] post.id=${post.id}, post.root_id=${post.root_id}, threadRootId=${threadRootId}, post.channel_id=${post.channel_id}`);
       const mapping = await threadManager.createThread(
         sessionInfo,
         userSession.mattermostUserId,

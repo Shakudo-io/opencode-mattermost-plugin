@@ -43,10 +43,11 @@ export class ThreadManager {
 
     if (userPostId) {
       threadRootPostId = userPostId;
+      log.info(`[ThreadManager] Creating reply: channel=${targetChannelId}, root_id=${userPostId}`);
       try {
         await this.mmClient.createPost(targetChannelId, message, userPostId);
       } catch (e) {
-        log.warn(`[ThreadManager] First attempt failed, retrying...`);
+        log.warn(`[ThreadManager] First attempt failed (${e}), retrying...`);
         await this.mmClient.createPost(targetChannelId, message, userPostId);
       }
     } else {
