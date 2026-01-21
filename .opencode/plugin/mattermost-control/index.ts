@@ -365,11 +365,12 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         isAvailable: true,
       };
       
+      const threadRootId = post.root_id || post.id;
       const mapping = await threadManager.createThread(
         sessionInfo,
         userSession.mattermostUserId,
         userSession.dmChannelId,
-        post.id,
+        threadRootId,
         post.channel_id
       );
       
@@ -383,10 +384,11 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       };
     } catch (error) {
       log.error("[CreateSession] Failed:", error);
+      const errorThreadRoot = post.root_id || post.id;
       await mmClient.createPost(
         post.channel_id,
         `:x: Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`,
-        post.id
+        errorThreadRoot
       );
       return null;
     }
