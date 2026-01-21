@@ -169,7 +169,7 @@ export interface ThreadSessionMapping {
   shortId: string;
   mattermostUserId: string;
   dmChannelId: string;
-  channelId?: string;  // Where thread actually lives (1:1 DM or group DM) - optional for migration
+  channelId?: string;
   projectName: string;
   directory: string;
   sessionTitle?: string;
@@ -179,6 +179,8 @@ export interface ThreadSessionMapping {
   endedAt?: string;
   model?: ModelSelection;
   pendingModelSelection?: boolean;
+  approvedUsers?: string[];
+  approveAllUsers?: boolean;
 }
 
 export interface ThreadRootPostContent {

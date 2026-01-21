@@ -194,6 +194,27 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           }
         }
         
+        const { guestApprovalHandler } = PluginState;
+        if (guestApprovalHandler && threadMappingStore && guestApprovalHandler.hasPendingApproval(routeResult.sessionId)) {
+          const approvalResult = await guestApprovalHandler.handleOwnerReply(
+            routeResult.sessionId,
+            promptText,
+            threadMappingStore,
+            post.channel_id
+          );
+          
+          if (approvalResult.approved && approvalResult.post) {
+            log.info(`[GuestApproval] Processing approved guest message`);
+            await handleThreadPrompt({
+              sessionId: routeResult.sessionId,
+              threadRootPostId: routeResult.threadRootPostId,
+              promptText: approvalResult.post.message,
+              fileIds: approvalResult.post.file_ids,
+            }, userSession, approvalResult.post);
+          }
+          return;
+        }
+        
         const { questionHandler } = PluginState;
         if (questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId)) {
           const replyResult = await questionHandler.handleUserReply(

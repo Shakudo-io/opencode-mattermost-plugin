@@ -24,6 +24,8 @@ export const ThreadSessionMappingSchema = z.object({
   endedAt: z.string().datetime().optional(),
   model: ModelSelectionSchema.optional(),
   pendingModelSelection: z.boolean().optional(),
+  approvedUsers: z.array(z.string()).optional(),
+  approveAllUsers: z.boolean().optional(),
 });
 
 export const ThreadMappingFileSchema = z.object({

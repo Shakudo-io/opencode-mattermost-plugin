@@ -13,6 +13,7 @@ import type { ThreadMappingStore } from "../../../src/persistence/thread-mapping
 import type { ThreadManager } from "../../../src/thread-manager.js";
 import type { TodoManager } from "../../../src/todo-manager.js";
 import type { QuestionHandler } from "../../../src/question-handler.js";
+import type { GuestApprovalHandler } from "../../../src/guest-approval-handler.js";
 import type { User } from "../../../src/models/index.js";
 
 class PluginStateManager {
@@ -31,6 +32,7 @@ class PluginStateManager {
   private _threadManager: ThreadManager | null = null;
   private _todoManager: TodoManager | null = null;
   private _questionHandler: QuestionHandler | null = null;
+  private _guestApprovalHandler: GuestApprovalHandler | null = null;
   private _botUser: User | null = null;
   private _projectName: string = "";
 
@@ -57,6 +59,7 @@ class PluginStateManager {
   get threadManager(): ThreadManager | null { return this._threadManager; }
   get todoManager(): TodoManager | null { return this._todoManager; }
   get questionHandler(): QuestionHandler | null { return this._questionHandler; }
+  get guestApprovalHandler(): GuestApprovalHandler | null { return this._guestApprovalHandler; }
   get questionCleanupTimer(): ReturnType<typeof setInterval> | null { return this._questionCleanupTimer; }
 
   setProjectName(name: string): void {
@@ -81,6 +84,7 @@ class PluginStateManager {
     threadManager: ThreadManager | null,
     todoManager: TodoManager,
     questionHandler: QuestionHandler,
+    guestApprovalHandler: GuestApprovalHandler,
     botUser: User
   ): void {
     this._isConnected = true;
@@ -97,6 +101,7 @@ class PluginStateManager {
     this._threadManager = threadManager;
     this._todoManager = todoManager;
     this._questionHandler = questionHandler;
+    this._guestApprovalHandler = guestApprovalHandler;
     this._botUser = botUser;
   }
 
@@ -130,6 +135,7 @@ class PluginStateManager {
     this._commandHandler = null;
     this._threadManager = null;
     this._questionHandler = null;
+    this._guestApprovalHandler = null;
   }
 }
 

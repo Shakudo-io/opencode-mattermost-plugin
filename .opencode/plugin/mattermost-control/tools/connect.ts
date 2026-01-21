@@ -13,6 +13,7 @@ import { CommandHandler } from "../../../../src/command-handler.js";
 import { ThreadManager } from "../../../../src/thread-manager.js";
 import { TodoManager } from "../../../../src/todo-manager.js";
 import { QuestionHandler } from "../../../../src/question-handler.js";
+import { GuestApprovalHandler } from "../../../../src/guest-approval-handler.js";
 import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
@@ -129,6 +130,7 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     
     const todoManager = new TodoManager(mmClient);
     const questionHandler = new QuestionHandler(mmClient);
+    const guestApprovalHandler = new GuestApprovalHandler(mmClient);
 
     setupSessionCallbacks(openCodeSessionRegistry, threadMappingStore, threadManager, sessionManager, config);
     
@@ -153,6 +155,7 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
       threadManager,
       todoManager,
       questionHandler,
+      guestApprovalHandler,
       botUser
     );
 
@@ -318,13 +321,6 @@ function setupWebSocketListeners(
           return;
         }
       } else if (channel.type === "G") {
-        // In group DMs, only process messages from the configured owner
-        // This prevents multiple OpenCode instances from all responding to the same @mention
-        if (config.mattermost.ownerUserId && postData.user_id !== config.mattermost.ownerUserId) {
-          log.debug(`[GroupDM] Ignoring message from non-owner user ${postData.user_id} (owner: ${config.mattermost.ownerUserId})`);
-          return;
-        }
-        
         const botUser = PluginState.botUser;
         if (!botUser) {
           log.error(`[GroupDM] Bot user not available`);
@@ -333,11 +329,51 @@ function setupWebSocketListeners(
         
         const mentioned = isBotMentioned(postData.message, botUser.username, botUser.id);
         if (!mentioned) {
-          log.info(`[GroupDM] Skipping message - bot not @mentioned (channel: ${channel.id})`);
+          log.debug(`[GroupDM] Skipping message - bot not @mentioned (channel: ${channel.id})`);
           return;
         }
         
-        log.info(`[GroupDM] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
+        const isOwner = !config.mattermost.ownerUserId || postData.user_id === config.mattermost.ownerUserId;
+        
+        if (isOwner) {
+          log.info(`[GroupDM] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
+        } else {
+          const threadMappingStore = PluginState.threadMappingStore;
+          const guestApprovalHandler = PluginState.guestApprovalHandler;
+          const threadRootId = postData.root_id || postData.id;
+          const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
+          
+          if (!mapping) {
+            log.debug(`[GroupDM] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);
+            return;
+          }
+          
+          if (guestApprovalHandler?.isUserApproved(postData.user_id, mapping)) {
+            log.info(`[GroupDM] Bot @mentioned by approved guest ${postData.user_id}, processing (channel: ${channel.id})`);
+          } else {
+            log.info(`[GroupDM] Bot @mentioned by non-approved guest ${postData.user_id}, requesting approval (channel: ${channel.id})`);
+            
+            const mmClient = PluginState.mmClient;
+            if (!mmClient || !guestApprovalHandler) return;
+            
+            let guestUsername = "unknown";
+            try {
+              const guestUser = await mmClient.getUserById(postData.user_id);
+              guestUsername = guestUser.username;
+            } catch (e) {
+              log.warn(`[GroupDM] Could not fetch guest username: ${e}`);
+            }
+            
+            await guestApprovalHandler.requestApproval(
+              postData,
+              guestUsername,
+              threadRootId,
+              mapping.sessionId,
+              mapping.channelId || mapping.dmChannelId
+            );
+            return;
+          }
+        }
       } else {
         return;
       }
