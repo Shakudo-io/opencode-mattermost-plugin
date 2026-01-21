@@ -82,7 +82,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       return;
     }
 
-    if (threadManager && threadMappingStore) {
+    if (threadManager && threadMappingStore && !(post as any)._ownershipConfirmed) {
       const availableSessions = openCodeSessionRegistry.listAvailable();
       for (const sessionInfo of availableSessions) {
         const existingMapping = threadMappingStore.getBySessionId(sessionInfo.id);
@@ -146,7 +146,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           // Check if this post was already confirmed via _ownershipConfirmed flag
           // This flag is set by connect.ts when user replies "yes" to ownership confirmation
           if ((post as any)._ownershipConfirmed) {
-            log.info(`[SessionOwnership] Post has _ownershipConfirmed flag, creating session directly. post.channel_id=${post.channel_id}, userSession.dmChannelId=${userSession.dmChannelId}`);
+            log.info(`[SessionOwnership] Post has _ownershipConfirmed flag, creating session in group DM channel ${post.channel_id}`);
             const newSession = await createNewSessionFromDm(userSession, post);
             if (newSession) {
               await handleThreadPrompt({
