@@ -33,6 +33,12 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 - **Shared Bot Account**: Multiple users can run separate OpenCode instances with the same bot
 - **Per-User Sessions**: Each user's sessions are isolated
 
+### Group DM Support
+- **Selective Response**: In group DMs, the bot only responds when explicitly @mentioned (e.g., `@opencode-bot help me with this`)
+- **Thread Context Injection**: When responding in group DMs, the bot automatically includes context from the last 5 messages in the thread
+- **Smart Context Summarization**: If thread context exceeds 8K characters, it's automatically summarized using Claude Haiku to stay within token limits
+- **1:1 DM Behavior Unchanged**: Direct messages (not group DMs) continue to respond to all messages without requiring @mention
+
 ### Emoji Commands
 React to any bot message with these emojis:
 - ✅ Approve pending permission
@@ -412,6 +418,32 @@ Bot: ✅ Model set to claude-sonnet-4-20250514 (Anthropic) for this session.
 
 The selected model persists for the session thread. Use `!model` to check the current selection.
 
+### Group DM Usage
+
+The bot can participate in group direct messages (conversations with multiple people). In group DMs, the bot uses **selective response** - it only responds when explicitly @mentioned.
+
+**How it works:**
+1. Add the bot to a group DM with other users
+2. @mention the bot when you want it to respond: `@opencode-bot explain this error`
+3. The bot automatically includes context from recent messages in the thread
+4. Messages without @mention are silently ignored
+
+**Example:**
+```
+Alice: Hey team, I'm seeing a weird error in the logs
+Bob: Can you paste the stack trace?
+Alice: [pastes error]
+You: @opencode-bot can you explain what's causing this NullPointerException?
+Bot: [Responds with explanation, having read the context from Alice and Bob's messages]
+```
+
+**Context handling:**
+- The bot reads the last 5 messages from the thread to understand the conversation
+- If the context is too long (>8K characters), it's automatically summarized using Claude Haiku
+- This ensures the bot has relevant context without consuming excessive tokens
+
+**Note:** In regular 1:1 DMs, the bot responds to all messages without requiring @mention.
+
 ### Multi-User Setup (Shared Bot)
 
 When multiple users want to run separate OpenCode instances with the same Mattermost bot account, use owner filtering to prevent conflicts:
@@ -631,6 +663,7 @@ opencode attach http://localhost:4096
 | `ReactionHandler` | Emoji-based command execution |
 | `MonitorService` | Session event monitoring and DM alerts |
 | `QuestionHandler` | AI question tool support with user responses |
+| `ContextBuilder` | Builds thread context for group DMs, with optional Haiku summarization |
 
 ## Project Structure
 
@@ -656,6 +689,7 @@ opencode-mattermost-plugin/
     │   └── routing.ts                # Message routing types
     ├── command-handler.ts            # !command processing
     ├── config.ts                     # Configuration loading
+    ├── context-builder.ts            # Group DM context building & summarization
     ├── file-handler.ts               # File uploads/downloads
     ├── logger.ts                     # File-based logging
     ├── message-router.ts             # Thread-aware message routing
