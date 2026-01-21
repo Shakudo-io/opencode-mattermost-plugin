@@ -330,15 +330,32 @@ function setupWebSocketListeners(
           return;
         }
         
+        const threadRootId = postData.root_id || postData.id;
+        const isOwner = !config.mattermost.ownerUserId || postData.user_id === config.mattermost.ownerUserId;
+        
+        const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
+        if (isOwner && sessionOwnershipHandler?.hasPendingConfirmation(channel.id, threadRootId, postData.user_id)) {
+          log.info(`[GroupDM] Processing ownership confirmation reply from @${postData.user_id}`);
+          const confirmResult = await sessionOwnershipHandler.handleReply(
+            channel.id,
+            threadRootId,
+            postData.message.trim()
+          );
+          
+          if (confirmResult.confirmed && confirmResult.post) {
+            log.info(`[SessionOwnership] User confirmed, proceeding to create session`);
+            await handleUserMessage(confirmResult.post);
+          }
+          return;
+        }
+        
         const mentioned = isBotMentioned(postData.message, botUser.username, botUser.id);
         if (!mentioned) {
           log.debug(`[GroupDM] Skipping message - bot not @mentioned (channel: ${channel.id})`);
           return;
         }
         
-        const isOwner = !config.mattermost.ownerUserId || postData.user_id === config.mattermost.ownerUserId;
         const threadMappingStore = PluginState.threadMappingStore;
-        const threadRootId = postData.root_id || postData.id;
         const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
         if (isOwner) {
