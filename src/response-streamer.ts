@@ -110,10 +110,14 @@ export class ResponseStreamer {
     }
 
     try {
-      await this.updateWithSplitting(ctx, ctx.buffer + " ...");
+      await this.retryOperation(
+        () => this.updateWithSplitting(ctx, ctx.buffer + " ..."),
+        1,
+        200
+      );
       ctx.lastUpdateTime = Date.now();
     } catch (error) {
-      log.error("[ResponseStreamer] Failed to update post:", error);
+      log.warn("[ResponseStreamer] Failed to update post (non-critical):", error);
     }
   }
 
@@ -132,10 +136,14 @@ export class ResponseStreamer {
 
     if (timeSinceLastUpdate >= minInterval) {
       try {
-        await this.updateWithSplitting(ctx, ctx.buffer + " ...");
+        await this.retryOperation(
+          () => this.updateWithSplitting(ctx, ctx.buffer + " ..."),
+          1,
+          200
+        );
         ctx.lastUpdateTime = Date.now();
       } catch (error) {
-        log.error("[ResponseStreamer] Failed to update post:", error);
+        log.warn("[ResponseStreamer] Failed to update post (non-critical):", error);
       }
     }
   }
@@ -150,9 +158,24 @@ export class ResponseStreamer {
         await ctx.statusIndicator.setComplete();
       }
       const finalContent = ctx.buffer || "(No response)";
-      await this.updateWithSplitting(ctx, finalContent);
+      await this.retryOperation(
+        () => this.updateWithSplitting(ctx, finalContent),
+        3,
+        500
+      );
     } catch (error) {
-      log.error("[ResponseStreamer] Failed to finalize post:", error);
+      log.error("[ResponseStreamer] Failed to update post after retries, attempting fallback:", error);
+      try {
+        const finalContent = ctx.buffer || "(No response)";
+        await this.mmClient.createPost(
+          ctx.channelId,
+          `*(Response recovered)*\n\n${finalContent}`,
+          ctx.threadRootPostId
+        );
+        log.info("[ResponseStreamer] Successfully posted final content via fallback");
+      } catch (fallbackError) {
+        log.error("[ResponseStreamer] Fallback also failed - response may be incomplete:", fallbackError);
+      }
     }
   }
 
@@ -316,5 +339,26 @@ export class ResponseStreamer {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async retryOperation<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelayMs: number = 500
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetries) {
+          const delay = baseDelayMs * Math.pow(2, attempt);
+          log.debug(`[ResponseStreamer] Retry ${attempt + 1}/${maxRetries} after ${delay}ms`);
+          await this.sleep(delay);
+        }
+      }
+    }
+    throw lastError;
   }
 }
