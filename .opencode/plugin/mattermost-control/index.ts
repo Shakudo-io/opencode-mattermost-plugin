@@ -143,6 +143,23 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         const threadRootPostId = routeResult.threadRootPostId;
         
         if (channel.type === "G") {
+          // Check if this post was already confirmed via _ownershipConfirmed flag
+          // This flag is set by connect.ts when user replies "yes" to ownership confirmation
+          if ((post as any)._ownershipConfirmed) {
+            log.info(`[SessionOwnership] Post has _ownershipConfirmed flag, creating session directly`);
+            const newSession = await createNewSessionFromDm(userSession, post);
+            if (newSession) {
+              await handleThreadPrompt({
+                sessionId: newSession.sessionId,
+                threadRootPostId: newSession.threadRootPostId,
+                promptText: post.message.trim(),
+                fileIds: post.file_ids,
+              }, userSession, post);
+            }
+            return;
+          }
+          
+          // Legacy path: check for pending confirmation (shouldn't normally be hit anymore)
           const { sessionOwnershipHandler } = PluginState;
           if (sessionOwnershipHandler?.hasPendingConfirmation(post.channel_id, threadRootPostId, post.user_id)) {
             const confirmResult = await sessionOwnershipHandler.handleReply(

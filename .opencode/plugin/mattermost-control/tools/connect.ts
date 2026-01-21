@@ -336,15 +336,18 @@ function setupWebSocketListeners(
         const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
         if (isOwner && sessionOwnershipHandler?.hasPendingConfirmation(channel.id, threadRootId, postData.user_id)) {
           log.info(`[GroupDM] Processing ownership confirmation reply from @${postData.user_id}`);
+          const pending = sessionOwnershipHandler.getPendingConfirmation(channel.id, threadRootId);
           const confirmResult = await sessionOwnershipHandler.handleReply(
             channel.id,
             threadRootId,
             postData.message.trim()
           );
           
-          if (confirmResult.confirmed && confirmResult.post) {
-            log.info(`[SessionOwnership] User confirmed, proceeding to create session`);
-            await handleUserMessage(confirmResult.post);
+          if (confirmResult.confirmed && pending?.originalPost) {
+            log.info(`[SessionOwnership] User confirmed, creating session directly`);
+            const originalPost = pending.originalPost;
+            (originalPost as any)._ownershipConfirmed = true;
+            await handleUserMessage(originalPost);
           }
           return;
         }
