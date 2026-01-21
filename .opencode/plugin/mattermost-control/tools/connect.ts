@@ -15,6 +15,7 @@ import { TodoManager } from "../../../../src/todo-manager.js";
 import { QuestionHandler } from "../../../../src/question-handler.js";
 import { GuestApprovalHandler } from "../../../../src/guest-approval-handler.js";
 import { SessionOwnershipHandler } from "../../../../src/session-ownership-handler.js";
+import { FileCompletionHandler } from "../../../../src/file-completion-handler.js";
 import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
@@ -24,6 +25,7 @@ export interface ConnectionContext {
   client: any;
   directory: string;
   projectName: string;
+  opencodeBaseUrl: string;
   handleUserMessage: (post: any) => Promise<void>;
 }
 
@@ -134,6 +136,9 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     const guestApprovalHandler = new GuestApprovalHandler(mmClient);
     const sessionOwnershipHandler = new SessionOwnershipHandler(mmClient);
     sessionOwnershipHandler.setBotUserId(botUser.id);
+    
+    const fileCompletionHandler = new FileCompletionHandler(ctx.opencodeBaseUrl, ctx.directory);
+    PluginState.setFileCompletionHandler(fileCompletionHandler);
 
     setupSessionCallbacks(openCodeSessionRegistry, threadMappingStore, threadManager, sessionManager, config);
     

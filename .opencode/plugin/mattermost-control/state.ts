@@ -15,6 +15,7 @@ import type { TodoManager } from "../../../src/todo-manager.js";
 import type { QuestionHandler } from "../../../src/question-handler.js";
 import type { GuestApprovalHandler } from "../../../src/guest-approval-handler.js";
 import type { SessionOwnershipHandler } from "../../../src/session-ownership-handler.js";
+import type { FileCompletionHandler } from "../../../src/file-completion-handler.js";
 import type { User } from "../../../src/models/index.js";
 
 class PluginStateManager {
@@ -35,6 +36,7 @@ class PluginStateManager {
   private _questionHandler: QuestionHandler | null = null;
   private _guestApprovalHandler: GuestApprovalHandler | null = null;
   private _sessionOwnershipHandler: SessionOwnershipHandler | null = null;
+  private _fileCompletionHandler: FileCompletionHandler | null = null;
   private _botUser: User | null = null;
   private _projectName: string = "";
 
@@ -63,6 +65,7 @@ class PluginStateManager {
   get questionHandler(): QuestionHandler | null { return this._questionHandler; }
   get guestApprovalHandler(): GuestApprovalHandler | null { return this._guestApprovalHandler; }
   get sessionOwnershipHandler(): SessionOwnershipHandler | null { return this._sessionOwnershipHandler; }
+  get fileCompletionHandler(): FileCompletionHandler | null { return this._fileCompletionHandler; }
   get questionCleanupTimer(): ReturnType<typeof setInterval> | null { return this._questionCleanupTimer; }
 
   setProjectName(name: string): void {
@@ -114,6 +117,10 @@ class PluginStateManager {
     this._questionCleanupTimer = timer;
   }
 
+  setFileCompletionHandler(handler: FileCompletionHandler): void {
+    this._fileCompletionHandler = handler;
+  }
+
   disconnect(): void {
     for (const [_, timer] of this.activeToolTimers) {
       clearInterval(timer);
@@ -142,6 +149,7 @@ class PluginStateManager {
     this._questionHandler = null;
     this._guestApprovalHandler = null;
     this._sessionOwnershipHandler = null;
+    this._fileCompletionHandler = null;
   }
 }
 

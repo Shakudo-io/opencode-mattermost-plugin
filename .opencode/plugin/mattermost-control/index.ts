@@ -55,6 +55,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     client,
     directory,
     projectName,
+    opencodeBaseUrl,
     handleUserMessage,
   };
 
@@ -311,6 +312,87 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           
           if (replyResult.handled) {
             return;
+          }
+        }
+        
+        const { fileCompletionHandler } = PluginState;
+        if (fileCompletionHandler) {
+          if (fileCompletionHandler.hasPendingCompletion(routeResult.sessionId)) {
+            const disambiguationResult = fileCompletionHandler.handleDisambiguationReply(
+              routeResult.sessionId,
+              promptText
+            );
+            
+            if (disambiguationResult.resolved) {
+              if (disambiguationResult.cancelled) {
+                await mmClient.createPost(
+                  post.channel_id,
+                  `:white_check_mark: File completion cancelled.`,
+                  routeResult.threadRootPostId
+                );
+                return;
+              }
+              
+              if (disambiguationResult.result) {
+                log.info(`[FileCompletion] User resolved file references, processing message`);
+                await handleThreadPromptWithFiles(
+                  {
+                    sessionId: routeResult.sessionId,
+                    threadRootPostId: routeResult.threadRootPostId,
+                    promptText: disambiguationResult.result.processedMessage,
+                    fileIds: routeResult.fileIds,
+                  },
+                  userSession,
+                  post,
+                  disambiguationResult.result.resolvedFilePaths
+                );
+                return;
+              }
+            }
+          }
+          
+          if (fileCompletionHandler.hasFileReferences(promptText)) {
+            log.info(`[FileCompletion] Message contains !! file references`);
+            
+            const completionResult = await fileCompletionHandler.processMessage(
+              routeResult.sessionId,
+              routeResult.threadRootPostId,
+              post.channel_id,
+              promptText,
+              post.user_id,
+              routeResult.fileIds
+            );
+            
+            if (completionResult.needsDisambiguation) {
+              const disambiguationPrompt = fileCompletionHandler.formatDisambiguationPrompt(
+                completionResult.unresolvedReferences
+              );
+              const disambiguationPost = await mmClient.createPost(
+                post.channel_id,
+                disambiguationPrompt,
+                routeResult.threadRootPostId
+              );
+              fileCompletionHandler.setDisambiguationPostId(
+                routeResult.sessionId,
+                disambiguationPost.id
+              );
+              return;
+            }
+            
+            if (completionResult.resolvedFilePaths.length > 0) {
+              await handleThreadPromptWithFiles(
+                {
+                  sessionId: routeResult.sessionId,
+                  threadRootPostId: routeResult.threadRootPostId,
+                  promptText: completionResult.processedMessage,
+                  fileIds: routeResult.fileIds,
+                },
+                userSession,
+                post,
+                completionResult.resolvedFilePaths
+              );
+              return;
+            }
           }
         }
         
@@ -607,6 +689,45 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       userSession.isProcessing = false;
       PluginState.activeResponseContexts.delete(route.sessionId);
     }
+  }
+
+  async function handleThreadPromptWithFiles(
+    route: { sessionId: string; threadRootPostId: string; promptText: string; fileIds?: string[] },
+    userSession: UserSession,
+    post: Post,
+    resolvedFilePaths: string[]
+  ): Promise<void> {
+    const { fileCompletionHandler, mmClient } = PluginState;
+    
+    if (!fileCompletionHandler || !mmClient || resolvedFilePaths.length === 0) {
+      return handleThreadPrompt(route, userSession, post);
+    }
+    
+    let fileContentSuffix = "";
+    const attachedFiles: string[] = [];
+    
+    for (const filePath of resolvedFilePaths) {
+      const content = await fileCompletionHandler.readFileContent(filePath);
+      if (content !== null) {
+        fileContentSuffix += fileCompletionHandler.formatFileContentForPrompt(filePath, content);
+        attachedFiles.push(filePath);
+        log.info(`[FileCompletion] Attached file content: ${filePath} (${content.length} chars)`);
+      } else {
+        log.warn(`[FileCompletion] Could not read file: ${filePath}`);
+      }
+    }
+    
+    if (attachedFiles.length > 0) {
+      const updatedRoute = {
+        ...route,
+        promptText: route.promptText + fileContentSuffix,
+      };
+      
+      log.info(`[FileCompletion] Processing prompt with ${attachedFiles.length} attached file(s)`);
+      return handleThreadPrompt(updatedRoute, userSession, post);
+    }
+    
+    return handleThreadPrompt(route, userSession, post);
   }
 
   const mattermostConnectTool = createConnectTool(connectionContext);
