@@ -18,7 +18,8 @@ export class ThreadManager {
     mattermostUserId: string,
     dmChannelId: string,
     userPostId?: string,
-    channelId?: string
+    channelId?: string,
+    ownerUsername?: string
   ): Promise<ThreadSessionMapping> {
     const existing = this.store.getBySessionId(sessionInfo.id);
     if (existing) {
@@ -35,6 +36,7 @@ export class ThreadManager {
       shortId: sessionInfo.shortId,
       startedAt: new Date(),
       sessionTitle: sessionInfo.title,
+      ownerUsername,
     };
 
     const message = this.formatThreadRootPost(content);
@@ -185,6 +187,10 @@ export class ThreadManager {
 
     if (content.sessionTitle) {
       lines.splice(2, 0, `**Title**: ${content.sessionTitle}`);
+    }
+
+    if (content.ownerUsername) {
+      lines.splice(2, 0, `**Owner**: @${content.ownerUsername}`);
     }
 
     lines.push(``, `_Reply in this thread to send prompts to this session._`);

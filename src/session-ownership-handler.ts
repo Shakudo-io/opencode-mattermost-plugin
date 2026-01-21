@@ -11,8 +11,14 @@ export interface PendingOwnershipConfirmation {
   createdAt: Date;
 }
 
+export interface ExistingSessionOwner {
+  username: string;
+  found: boolean;
+}
+
 export class SessionOwnershipHandler {
   private mmClient: any;
+  private botUserId: string | null = null;
   private pendingConfirmations: Map<string, PendingOwnershipConfirmation> = new Map();
   private readonly CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -20,8 +26,52 @@ export class SessionOwnershipHandler {
     this.mmClient = mmClient;
   }
 
+  setBotUserId(botUserId: string): void {
+    this.botUserId = botUserId;
+  }
+
   private getKey(channelId: string, threadRootPostId: string): string {
     return `${channelId}:${threadRootPostId}`;
+  }
+
+  async checkExistingSessionOwner(
+    threadRootPostId: string,
+    currentUsername: string
+  ): Promise<ExistingSessionOwner> {
+    try {
+      const thread = await this.mmClient.getPostThread(threadRootPostId);
+      if (!thread || !thread.posts) {
+        return { found: false, username: "" };
+      }
+
+      const posts = Object.values(thread.posts) as Post[];
+      const SESSION_ANNOUNCEMENT_MARKER = "OpenCode Session Started";
+      const OWNER_FIELD_MARKER = "**Owner**:";
+      const OWNER_PATTERN = /\*\*Owner\*\*:\s*@(\w+)/;
+      
+      for (const post of posts) {
+        const isBotMessage = this.botUserId && post.user_id === this.botUserId;
+        if (!isBotMessage) continue;
+        
+        const message = post.message || "";
+        const isSessionAnnouncement = message.includes(SESSION_ANNOUNCEMENT_MARKER) && message.includes(OWNER_FIELD_MARKER);
+        if (!isSessionAnnouncement) continue;
+
+        const ownerMatch = message.match(OWNER_PATTERN);
+        if (ownerMatch) {
+          const existingOwner = ownerMatch[1];
+          if (existingOwner.toLowerCase() !== currentUsername.toLowerCase()) {
+            log.info(`[SessionOwnership] Found existing session owner @${existingOwner} (current user: @${currentUsername})`);
+            return { found: true, username: existingOwner };
+          }
+        }
+      }
+      
+      return { found: false, username: "" };
+    } catch (error) {
+      log.warn(`[SessionOwnership] Failed to check existing session owner: ${error}`);
+      return { found: false, username: "" };
+    }
   }
 
   async requestOwnershipConfirmation(
@@ -29,8 +79,14 @@ export class SessionOwnershipHandler {
     username: string,
     threadRootPostId: string,
     channelId: string
-  ): Promise<string> {
+  ): Promise<string | null> {
     const key = this.getKey(channelId, threadRootPostId);
+    
+    const existingOwner = await this.checkExistingSessionOwner(threadRootPostId, username);
+    if (existingOwner.found) {
+      log.info(`[SessionOwnership] Skipping ownership confirmation - thread already owned by @${existingOwner.username}`);
+      return null;
+    }
 
     const confirmationMessage = `No session exists for this thread yet.
 

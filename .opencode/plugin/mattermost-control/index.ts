@@ -88,7 +88,14 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         const existingMapping = threadMappingStore.getBySessionId(sessionInfo.id);
         if (!existingMapping) {
           try {
-            await threadManager.createThread(sessionInfo, userSession.mattermostUserId, userSession.dmChannelId);
+            await threadManager.createThread(
+              sessionInfo,
+              userSession.mattermostUserId,
+              userSession.dmChannelId,
+              undefined,
+              undefined,
+              userSession.mattermostUsername
+            );
             log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId} for user ${userSession.mattermostUsername}`);
           } catch (e) {
             log.error(`[AutoThread] Failed to create thread:`, e);
@@ -372,7 +379,8 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         userSession.mattermostUserId,
         userSession.dmChannelId,
         threadRootId,
-        post.channel_id
+        post.channel_id,
+        userSession.mattermostUsername
       );
       
       await openCodeSessionRegistry?.refresh();

@@ -190,4 +190,5 @@ export interface ThreadRootPostContent {
   shortId: string;
   startedAt: Date;
   sessionTitle?: string;
+  ownerUsername?: string;
 }

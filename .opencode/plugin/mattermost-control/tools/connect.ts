@@ -133,6 +133,7 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     const questionHandler = new QuestionHandler(mmClient);
     const guestApprovalHandler = new GuestApprovalHandler(mmClient);
     const sessionOwnershipHandler = new SessionOwnershipHandler(mmClient);
+    sessionOwnershipHandler.setBotUserId(botUser.id);
 
     setupSessionCallbacks(openCodeSessionRegistry, threadMappingStore, threadManager, sessionManager, config);
     
@@ -236,7 +237,14 @@ function setupSessionCallbacks(
     
     for (const mmSession of mmSessions) {
       try {
-        await threadManager.createThread(sessionInfo, mmSession.mattermostUserId, mmSession.dmChannelId);
+        await threadManager.createThread(
+          sessionInfo,
+          mmSession.mattermostUserId,
+          mmSession.dmChannelId,
+          undefined,
+          undefined,
+          mmSession.mattermostUsername
+        );
         log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId}`);
       } catch (e) {
         log.error(`[AutoThread] Failed to create thread:`, e);
@@ -286,7 +294,14 @@ async function createThreadsForExistingSessions(
     
     for (const mmSession of mmSessions) {
       try {
-        await threadManager.createThread(sessionInfo, mmSession.mattermostUserId, mmSession.dmChannelId);
+        await threadManager.createThread(
+          sessionInfo,
+          mmSession.mattermostUserId,
+          mmSession.dmChannelId,
+          undefined,
+          undefined,
+          mmSession.mattermostUsername
+        );
         log.info(`[AutoThread] Created thread for existing session ${sessionInfo.shortId}`);
       } catch (e) {
         log.error(`[AutoThread] Failed to create thread:`, e);
@@ -352,13 +367,37 @@ function setupWebSocketListeners(
           return;
         }
         
+        // Check if owner is replying to a pending guest approval (no @mention needed)
+        const threadMappingStore = PluginState.threadMappingStore;
+        const guestApprovalHandler = PluginState.guestApprovalHandler;
+        const mappingForApproval = threadMappingStore?.getByThreadRootPostId(threadRootId);
+        
+        if (isOwner && mappingForApproval && guestApprovalHandler?.hasPendingApproval(mappingForApproval.sessionId)) {
+          const trimmedReply = postData.message.trim().toLowerCase();
+          // Check if this looks like an approval response (1, 2, 3, deny, 0, no)
+          if (/^[0-3]$/.test(trimmedReply) || trimmedReply === "deny" || trimmedReply === "no") {
+            log.info(`[GroupDM] Processing guest approval reply from owner: "${trimmedReply}"`);
+            const result = await guestApprovalHandler.handleOwnerReply(
+              mappingForApproval.sessionId,
+              postData.message.trim(),
+              threadMappingStore!,
+              mappingForApproval.channelId || mappingForApproval.dmChannelId
+            );
+            
+            if (result.approved && result.post) {
+              log.info(`[GuestApproval] Approved, processing original guest message`);
+              await handleUserMessage(result.post);
+            }
+            return;
+          }
+        }
+        
         const mentioned = isBotMentioned(postData.message, botUser.username, botUser.id);
         if (!mentioned) {
           log.debug(`[GroupDM] Skipping message - bot not @mentioned (channel: ${channel.id})`);
           return;
         }
         
-        const threadMappingStore = PluginState.threadMappingStore;
         const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
         if (isOwner) {
@@ -386,8 +425,6 @@ function setupWebSocketListeners(
           }
           log.info(`[GroupDM] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
         } else {
-          const guestApprovalHandler = PluginState.guestApprovalHandler;
-          
           if (!mapping) {
             log.debug(`[GroupDM] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);
             return;
