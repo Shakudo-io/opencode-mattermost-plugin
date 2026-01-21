@@ -139,6 +139,22 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       }
       
       case "unknown_thread": {
+        // For group DMs, auto-create a session if enabled
+        const channel = await mmClient.getChannel(post.channel_id);
+        if (channel.type === "G" && config.sessionSelection.autoCreateSession) {
+          log.info(`[GroupDM] Unknown thread in group DM, auto-creating session`);
+          const newSession = await createNewSessionFromDm(userSession, post);
+          if (newSession) {
+            await handleThreadPrompt({
+              sessionId: newSession.sessionId,
+              threadRootPostId: newSession.threadRootPostId,
+              promptText: post.message.trim(),
+              fileIds: post.file_ids,
+            }, userSession, post);
+          }
+          return;
+        }
+        
         await mmClient.createPost(
           post.channel_id,
           routeResult.errorMessage,
