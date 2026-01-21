@@ -65,18 +65,15 @@ export async function handleQuestionAsked(event: any): Promise<void> {
     );
     log.info(`[QuestionHandler] Posted question ${props.id} to thread ${targetThreadId}`);
     
-    if (ctx && streamer) {
-      const newStreamCtx2 = await streamer.recreateStreamAtBottom(ctx.streamCtx);
-      ctx.streamCtx = newStreamCtx2;
-      log.debug(`[QuestionHandler] Recreated stream after question, new postId=${newStreamCtx2.postId}`);
-      
-      if (ctx.streamCtx.statusIndicator) {
-        const firstQuestion = props.questions[0];
-        await ctx.streamCtx.statusIndicator.setWaiting(
-          "question", 
-          firstQuestion?.question || "Waiting for your answer..."
-        );
-      }
+    // Don't recreate stream after question - let the question be the last visible post
+    // The user needs to see and answer the question without it being buried
+    // The stream will resume when the question is answered
+    if (ctx && ctx.streamCtx.statusIndicator) {
+      const firstQuestion = props.questions[0];
+      await ctx.streamCtx.statusIndicator.setWaiting(
+        "question", 
+        firstQuestion?.question || "Waiting for your answer..."
+      );
     }
   } catch (e) {
     log.error(`[QuestionHandler] Failed to post question:`, e);
