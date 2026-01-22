@@ -1,5 +1,78 @@
 # Bug Log
 
+## 2026-01-22: Question timeout - user reply ignored after ~105 minutes (v0.3.23 → v0.3.24)
+
+**Problem:** User replied "1" to a question ~105 minutes after it was asked, but the response wasn't processed. The AI had continued without the answer.
+
+**Specific case:** https://mattermost.dev.hyperplane.dev/shakudo-internal/pl/kwawy4tis7dr5e4d6f47q4n6ww
+- Question "Loki StatefulSet Diff" asked at timestamp `1769031244047`
+- User replied "1" at timestamp `1769037557087` (~105 minutes later)
+- Bot was already processing bash commands 77ms after user's reply
+
+**Root Cause:** The plugin and OpenCode server track questions independently in-memory:
+- **Plugin:** `pendingQuestions` Map in `QuestionHandler`
+- **Server:** `pending` record in `Question` namespace
+
+When the OpenCode server restarts or the session continues (e.g., due to context compaction), the server-side question is lost/resolved, but the plugin still thinks it's pending. When user finally replies, the plugin calls `/question/{id}/reply` but the server silently ignores it ("reply for unknown request" log).
+
+**Fix:** Added server-side question state verification:
+1. `QuestionHandler.setOpenCodeConfig(baseUrl, directory)` - Configure server connection
+2. `QuestionHandler.verifyQuestionStillPending(sessionId)` - Check with server before processing reply
+3. `QuestionHandler.syncWithServer()` - Periodic sync to clean up stale questions
+
+**Implementation:**
+- Before processing a question reply, call `/question` endpoint to verify question exists on server
+- If server no longer has the question, notify user: "This question has expired or was already answered elsewhere"
+- Cleanup timer now also syncs with server every 5 minutes to remove stale plugin state
+
+**Files Changed:**
+- `src/question-handler.ts` - Added `setOpenCodeConfig`, `verifyQuestionStillPending`, `syncWithServer`
+- `.opencode/plugin/mattermost-control/index.ts` - Added verification before processing reply
+- `.opencode/plugin/mattermost-control/tools/connect.ts` - Configure question handler with OpenCode URL
+- `.opencode/plugin/mattermost-control/timers.ts` - Added server sync to cleanup timer
+
+**Prevention:** When syncing state between plugin and server, always verify server-side state before acting on plugin-side state, especially for long-running interactions like questions.
+
+---
+
+## 2026-01-21: File completion `!!` feature - API response format and `!cancel` flow (v0.3.22 → v0.3.23)
+
+**Problem 1:** File search with `!!path` always returned "No files found" even when files exist.
+
+**Root Cause:** The `/find/file` API returns a plain string array `["path1", "path2", ...]`, but the code expected `{ files: [{ path, score }] }`.
+
+**Fix:** Updated `searchFiles()` in `src/file-completion-handler.ts` to handle the actual API response format:
+```typescript
+// OLD - wrong assumption
+const data = await response.json() as { files?: Array<{ path: string; score: number }> };
+if (!data.files || !Array.isArray(data.files)) return [];
+
+// NEW - matches actual API
+const data = await response.json();
+if (!Array.isArray(data)) return [];
+return data.map((path: string) => ({ path, score: 0 }));
+```
+
+**Problem 2:** `!cancel` command didn't work during file completion disambiguation.
+
+**Root Cause:** In the message flow, command parsing (`!cancel` → "Unknown command") ran BEFORE the file completion handler could check for `!cancel`. The command handler doesn't have a `cancel` command registered, so it returned "Unknown command" and never reached the disambiguation handler.
+
+**Fix:** Moved the pending file completion check to run BEFORE command parsing in `.opencode/plugin/mattermost-control/index.ts`:
+```typescript
+// Check pending file completions FIRST (before command parsing)
+if (fileCompletionHandler?.hasPendingCompletion(sessionId)) {
+  const result = fileCompletionHandler.handleDisambiguationReply(sessionId, promptText);
+  if (result.resolved && result.cancelled) { /* handle cancel */ }
+}
+
+// THEN check for commands
+if (promptText.startsWith(commandPrefix)) { /* parse command */ }
+```
+
+**Prevention:** When adding special reply handlers (disambiguation, questions, etc.), ensure they run before generic command parsing if they need to handle `!commands` themselves.
+
+---
+
 ## 2026-01-21: Multiple instances send ownership confirmation in group DMs (v0.3.17 → v0.3.18)
 
 **Problem:** When user A creates a session in a group DM thread, and user B @mentions the bot in that thread, BOTH instances respond:

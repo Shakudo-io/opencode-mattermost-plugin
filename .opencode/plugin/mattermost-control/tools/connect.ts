@@ -133,6 +133,7 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     
     const todoManager = new TodoManager(mmClient);
     const questionHandler = new QuestionHandler(mmClient);
+    questionHandler.setOpenCodeConfig(ctx.opencodeBaseUrl, ctx.directory);
     const guestApprovalHandler = new GuestApprovalHandler(mmClient);
     const sessionOwnershipHandler = new SessionOwnershipHandler(mmClient);
     sessionOwnershipHandler.setBotUserId(botUser.id);

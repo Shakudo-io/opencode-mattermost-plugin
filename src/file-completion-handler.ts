@@ -136,16 +136,24 @@ export class FileCompletionHandler {
         return [];
       }
       
-      const data = await response.json() as { files?: Array<{ path: string; score: number }> };
+      const data = await response.json();
       
-      if (!data.files || !Array.isArray(data.files)) {
+      // API returns a plain array of strings, not { files: [...] }
+      if (!Array.isArray(data)) {
+        log.debug(`[FileCompletion] Unexpected response format for query: ${query}`, data);
+        return [];
+      }
+      
+      if (data.length === 0) {
         log.debug(`[FileCompletion] No files returned for query: ${query}`);
         return [];
       }
       
-      return data.files.map(f => ({
-        path: f.path,
-        score: f.score ?? 0,
+      log.debug(`[FileCompletion] Found ${data.length} files for query: ${query}`);
+      
+      return data.map((path: string) => ({
+        path,
+        score: 0,  // API doesn't return scores
       }));
     } catch (error) {
       log.error(`[FileCompletion] Search error:`, error);

@@ -68,8 +68,13 @@ export function stopResponseTimer(sessionId: string): void {
 export function startQuestionCleanupTimer(): void {
   if (PluginState.questionCleanupTimer) return;
   
-  const timer = setInterval(() => {
+  const timer = setInterval(async () => {
     if (PluginState.questionHandler) {
+      const syncResult = await PluginState.questionHandler.syncWithServer();
+      if (syncResult.removed > 0) {
+        log.info(`[QuestionHandler] Sync removed ${syncResult.removed} stale questions (server has ${syncResult.synced} pending)`);
+      }
+      
       const cleaned = PluginState.questionHandler.cleanupExpired(QUESTION_EXPIRY_MS);
       if (cleaned > 0) {
         log.info(`[QuestionHandler] Cleaned up ${cleaned} expired questions`);

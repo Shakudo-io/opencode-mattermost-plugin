@@ -34,13 +34,31 @@ interface PendingQuestion {
   answers: string[][];
 }
 
+// OpenCode server question response structure
+interface OpenCodeQuestion {
+  id: string;
+  sessionID: string;
+  questions: QuestionInfo[];
+}
+
 export class QuestionHandler {
   private mmClient: MattermostClient;
   private pendingQuestions: Map<string, PendingQuestion> = new Map();
   private sessionToQuestion: Map<string, string> = new Map();
+  private opencodeBaseUrl: string = "";
+  private opencodeDirectory: string = "";
 
   constructor(mmClient: MattermostClient) {
     this.mmClient = mmClient;
+  }
+
+  /**
+   * Configure the OpenCode server connection for question state verification.
+   */
+  setOpenCodeConfig(baseUrl: string, directory: string): void {
+    this.opencodeBaseUrl = baseUrl;
+    this.opencodeDirectory = directory;
+    log.info(`[QuestionHandler] OpenCode config set: baseUrl=${baseUrl}`);
   }
 
   async handleQuestionAsked(
@@ -242,8 +260,69 @@ export class QuestionHandler {
     return this.sessionToQuestion.has(sessionId);
   }
 
+  /**
+   * Verify with OpenCode server that a question is still pending.
+   * Returns true only if both plugin AND server have the question pending.
+   * If the server no longer has the question, cleans up plugin state.
+   */
+  async verifyQuestionStillPending(sessionId: string): Promise<{
+    pending: boolean;
+    reason?: "no_plugin_state" | "server_no_longer_pending" | "server_error";
+  }> {
+    const questionId = this.sessionToQuestion.get(sessionId);
+    if (!questionId) {
+      return { pending: false, reason: "no_plugin_state" };
+    }
+
+    const pending = this.pendingQuestions.get(questionId);
+    if (!pending) {
+      this.sessionToQuestion.delete(sessionId);
+      return { pending: false, reason: "no_plugin_state" };
+    }
+
+    if (!this.opencodeBaseUrl) {
+      log.warn(`[QuestionHandler] OpenCode config not set, assuming question ${questionId} is still pending`);
+      return { pending: true };
+    }
+
+    try {
+      const response = await fetch(`${this.opencodeBaseUrl}/question`, {
+        method: "GET",
+        headers: {
+          "x-opencode-directory": this.opencodeDirectory,
+        },
+      });
+
+      if (!response.ok) {
+        log.warn(`[QuestionHandler] Failed to fetch server questions: HTTP ${response.status}`);
+        return { pending: true };
+      }
+
+      const serverQuestions: OpenCodeQuestion[] = await response.json();
+      const isStillPending = serverQuestions.some(q => q.id === questionId);
+
+      if (!isStillPending) {
+        log.info(`[QuestionHandler] Question ${questionId} no longer pending on server, cleaning up plugin state`);
+        this.pendingQuestions.delete(questionId);
+        this.sessionToQuestion.delete(sessionId);
+        return { pending: false, reason: "server_no_longer_pending" };
+      }
+
+      return { pending: true };
+    } catch (error) {
+      log.error(`[QuestionHandler] Error verifying question state:`, error);
+      return { pending: true };
+    }
+  }
+
   getPendingQuestionId(sessionId: string): string | undefined {
     return this.sessionToQuestion.get(sessionId);
+  }
+
+  getPendingQuestionInfo(sessionId: string): PendingQuestion | undefined {
+    const questionId = this.sessionToQuestion.get(sessionId);
+    if (!questionId) return undefined;
+    return this.pendingQuestions.get(questionId);
   }
 
   cancelQuestion(questionId: string): void {
@@ -279,5 +358,44 @@ export class QuestionHandler {
     }
     
     return cleaned;
+  }
+
+  async syncWithServer(): Promise<{ synced: number; removed: number }> {
+    if (!this.opencodeBaseUrl) {
+      return { synced: 0, removed: 0 };
+    }
+
+    let removed = 0;
+
+    try {
+      const response = await fetch(`${this.opencodeBaseUrl}/question`, {
+        method: "GET",
+        headers: {
+          "x-opencode-directory": this.opencodeDirectory,
+        },
+      });
+
+      if (!response.ok) {
+        log.warn(`[QuestionHandler] Failed to sync with server: HTTP ${response.status}`);
+        return { synced: 0, removed: 0 };
+      }
+
+      const serverQuestions: OpenCodeQuestion[] = await response.json();
+      const serverQuestionIds = new Set(serverQuestions.map(q => q.id));
+
+      for (const [questionId, pending] of this.pendingQuestions.entries()) {
+        if (!serverQuestionIds.has(questionId)) {
+          log.info(`[QuestionHandler] Sync: Question ${questionId} no longer on server, removing`);
+          this.sessionToQuestion.delete(pending.request.sessionID);
+          this.pendingQuestions.delete(questionId);
+          removed++;
+        }
+      }
+
+      return { synced: serverQuestions.length, removed };
+    } catch (error) {
+      log.error(`[QuestionHandler] Error syncing with server:`, error);
+      return { synced: 0, removed: 0 };
+    }
   }
 }

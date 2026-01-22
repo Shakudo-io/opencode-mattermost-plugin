@@ -212,6 +212,41 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       case "thread_prompt": {
         const promptText = routeResult.promptText.trim();
         
+        const { fileCompletionHandler } = PluginState;
+        if (fileCompletionHandler && fileCompletionHandler.hasPendingCompletion(routeResult.sessionId)) {
+          const disambiguationResult = fileCompletionHandler.handleDisambiguationReply(
+            routeResult.sessionId,
+            promptText
+          );
+          
+          if (disambiguationResult.resolved) {
+            if (disambiguationResult.cancelled) {
+              await mmClient.createPost(
+                post.channel_id,
+                `:white_check_mark: File completion cancelled.`,
+                routeResult.threadRootPostId
+              );
+              return;
+            }
+            
+            if (disambiguationResult.result) {
+              log.info(`[FileCompletion] User resolved file references, processing message`);
+              await handleThreadPromptWithFiles(
+                {
+                  sessionId: routeResult.sessionId,
+                  threadRootPostId: routeResult.threadRootPostId,
+                  promptText: disambiguationResult.result.processedMessage,
+                  fileIds: routeResult.fileIds,
+                },
+                userSession,
+                post,
+                disambiguationResult.result.resolvedFilePaths
+              );
+              return;
+            }
+          }
+        }
+        
         if (promptText.startsWith(config.sessionSelection.commandPrefix)) {
           const parsed = messageRouter.parseCommand(promptText);
           if (parsed) {
@@ -270,6 +305,22 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         
         const { questionHandler } = PluginState;
         if (questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId)) {
+          const verifyResult = await questionHandler.verifyQuestionStillPending(routeResult.sessionId);
+          
+          if (!verifyResult.pending) {
+            if (verifyResult.reason === "server_no_longer_pending") {
+              const questionInfo = questionHandler.getPendingQuestionInfo(routeResult.sessionId);
+              const questionHeader = questionInfo?.request.questions[0]?.header || "Unknown";
+              log.warn(`[QuestionHandler] Question "${questionHeader}" is no longer pending on server (expired or already answered)`);
+              await mmClient.createPost(
+                post.channel_id,
+                `:warning: This question has expired or was already answered elsewhere. Your response "${promptText}" was not processed.\n\nThe AI session has likely continued without waiting for your answer.`,
+                routeResult.threadRootPostId
+              );
+              return;
+            }
+          }
+          
           const replyResult = await questionHandler.handleUserReply(
             routeResult.sessionId,
             promptText,
@@ -315,43 +366,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           }
         }
         
-        const { fileCompletionHandler } = PluginState;
-        if (fileCompletionHandler) {
-          if (fileCompletionHandler.hasPendingCompletion(routeResult.sessionId)) {
-            const disambiguationResult = fileCompletionHandler.handleDisambiguationReply(
-              routeResult.sessionId,
-              promptText
-            );
-            
-            if (disambiguationResult.resolved) {
-              if (disambiguationResult.cancelled) {
-                await mmClient.createPost(
-                  post.channel_id,
-                  `:white_check_mark: File completion cancelled.`,
-                  routeResult.threadRootPostId
-                );
-                return;
-              }
-              
-              if (disambiguationResult.result) {
-                log.info(`[FileCompletion] User resolved file references, processing message`);
-                await handleThreadPromptWithFiles(
-                  {
-                    sessionId: routeResult.sessionId,
-                    threadRootPostId: routeResult.threadRootPostId,
-                    promptText: disambiguationResult.result.processedMessage,
-                    fileIds: routeResult.fileIds,
-                  },
-                  userSession,
-                  post,
-                  disambiguationResult.result.resolvedFilePaths
-                );
-                return;
-              }
-            }
-          }
-          
-          if (fileCompletionHandler.hasFileReferences(promptText)) {
+        if (fileCompletionHandler && fileCompletionHandler.hasFileReferences(promptText)) {
             log.info(`[FileCompletion] Message contains !! file references`);
             
             const completionResult = await fileCompletionHandler.processMessage(
@@ -393,7 +408,6 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
               );
               return;
             }
-          }
         }
         
         await handleThreadPrompt(routeResult, userSession, post);
