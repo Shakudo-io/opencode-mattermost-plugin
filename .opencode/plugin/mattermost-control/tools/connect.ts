@@ -16,6 +16,7 @@ import { QuestionHandler } from "../../../../src/question-handler.js";
 import { GuestApprovalHandler } from "../../../../src/guest-approval-handler.js";
 import { SessionOwnershipHandler } from "../../../../src/session-ownership-handler.js";
 import { FileCompletionHandler } from "../../../../src/file-completion-handler.js";
+import { getSchedulerService } from "../../../../src/scheduler/scheduler-service.js";
 import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
@@ -150,6 +151,22 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     setupWebSocketListeners(wsClient, botUser.id, config, ctx.handleUserMessage, reactionHandler);
     startQuestionCleanupTimer();
 
+    const scheduler = getSchedulerService();
+    scheduler.setPromptExecutor(async (sessionId: string, prompt: string) => {
+      const result = await ctx.client.session.prompt({
+        path: { id: sessionId },
+        body: { parts: [{ type: "text", text: prompt }] },
+      });
+      return result.data?.text || "";
+    });
+    scheduler.setSessionChecker(async (sessionId: string) => {
+      const session = openCodeSessionRegistry.get(sessionId);
+      return session !== null && session.isAvailable;
+    });
+    await scheduler.start();
+    PluginState.setSchedulerService(scheduler);
+    log.info(`[SchedulerService] Initialized with ${scheduler.getStats().enabled} active schedules`);
+
     PluginState.setConnected(
       mmClient,
       wsClient,
@@ -185,6 +202,11 @@ async function handleDisconnect(): Promise<string> {
 
   try {
     stopQuestionCleanupTimer();
+    const scheduler = PluginState.schedulerService;
+    if (scheduler) {
+      await scheduler.stop();
+      log.info("[SchedulerService] Stopped");
+    }
     PluginState.disconnect();
     log.info("Disconnected from Mattermost");
     return "Disconnected from Mattermost";

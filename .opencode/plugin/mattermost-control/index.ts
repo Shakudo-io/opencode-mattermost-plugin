@@ -15,6 +15,12 @@ import {
   createMonitorTool,
   createUnmonitorTool,
   createSendFileTool,
+  createScheduleAddTool,
+  createScheduleListTool,
+  createScheduleRemoveTool,
+  createScheduleEnableTool,
+  createScheduleDisableTool,
+  createScheduleRunTool,
 } from "./tools/index.js";
 
 import {
@@ -282,8 +288,57 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           }
         }
         
-        const { guestApprovalHandler } = PluginState;
-        if (guestApprovalHandler && threadMappingStore && guestApprovalHandler.hasPendingApproval(routeResult.sessionId)) {
+        const { guestApprovalHandler, questionHandler } = PluginState;
+        
+        // Check if BOTH guest approval AND question are pending - this is a collision scenario
+        const hasGuestApproval = guestApprovalHandler && threadMappingStore && guestApprovalHandler.hasPendingApproval(routeResult.sessionId);
+        const hasQuestion = questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId);
+        
+        // If both are pending and message looks like a question answer (bare number), prioritize question
+        // Questions are more time-sensitive (AI is actively waiting) and guest approval has alternative syntax
+        if (hasGuestApproval && hasQuestion) {
+          const trimmed = promptText.trim();
+          const looksLikeQuestionAnswer = /^\d+$/.test(trimmed) || /^\d+(,\s*\d+)+$/.test(trimmed); // "1" or "1, 2, 3"
+          const looksLikeGuestApprovalOnly = /^(deny|no|0)$/i.test(trimmed); // Only guest approval uses these
+          
+          if (looksLikeQuestionAnswer && !looksLikeGuestApprovalOnly) {
+            log.info(`[CollisionHandler] Both guest approval and question pending. Message "${trimmed}" looks like question answer - routing to question handler first`);
+            // Fall through to question handler below
+          } else if (looksLikeGuestApprovalOnly) {
+            log.info(`[CollisionHandler] Both pending but message "${trimmed}" is guest approval syntax - routing to guest approval`);
+            // Process guest approval
+            const approvalResult = await guestApprovalHandler.handleOwnerReply(
+              routeResult.sessionId,
+              promptText,
+              threadMappingStore,
+              post.channel_id
+            );
+            
+            if (approvalResult.approved && approvalResult.post) {
+              log.info(`[GuestApproval] Processing approved guest message`);
+              await handleThreadPrompt({
+                sessionId: routeResult.sessionId,
+                threadRootPostId: routeResult.threadRootPostId,
+                promptText: approvalResult.post.message,
+                fileIds: approvalResult.post.file_ids,
+              }, userSession, approvalResult.post);
+            }
+            return;
+          } else {
+            // Ambiguous text - could be custom answer or unrecognized. Ask user to clarify.
+            log.info(`[CollisionHandler] Both pending, message "${trimmed}" is ambiguous - asking user to clarify`);
+            await mmClient.createPost(
+              post.channel_id,
+              `:warning: **Multiple pending requests**\n\nI have both a **question** and a **guest approval request** pending.\n\n` +
+              `• To answer the AI question: Reply with a number (e.g., \`1\`) or your answer\n` +
+              `• To respond to guest approval: Use \`approve 1\`, \`approve 2\`, \`approve 3\`, or \`deny\`\n\n` +
+              `_Use explicit prefixes to avoid confusion._`,
+              routeResult.threadRootPostId
+            );
+            return;
+          }
+        } else if (hasGuestApproval) {
+          // Only guest approval pending - handle normally
           const approvalResult = await guestApprovalHandler.handleOwnerReply(
             routeResult.sessionId,
             promptText,
@@ -303,7 +358,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           return;
         }
         
-        const { questionHandler } = PluginState;
+        // Question handler (either only question pending, or collision where we decided to prioritize question)
         if (questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId)) {
           const verifyResult = await questionHandler.verifyQuestionStillPending(routeResult.sessionId);
           
@@ -768,6 +823,14 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
   const mattermostUnmonitorTool = createUnmonitorTool(client);
   const mattermostSendFileTool = createSendFileTool();
 
+  const scheduleContext = { client, directory, projectName };
+  const mattermostScheduleAddTool = createScheduleAddTool(scheduleContext);
+  const mattermostScheduleListTool = createScheduleListTool();
+  const mattermostScheduleRemoveTool = createScheduleRemoveTool();
+  const mattermostScheduleEnableTool = createScheduleEnableTool();
+  const mattermostScheduleDisableTool = createScheduleDisableTool();
+  const mattermostScheduleRunTool = createScheduleRunTool();
+
   return {
     tool: {
       mattermost_connect: mattermostConnectTool,
@@ -779,6 +842,12 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       mattermost_monitor: mattermostMonitorTool,
       mattermost_unmonitor: mattermostUnmonitorTool,
       mattermost_send_file: mattermostSendFileTool,
+      mattermost_schedule_add: mattermostScheduleAddTool,
+      mattermost_schedule_list: mattermostScheduleListTool,
+      mattermost_schedule_remove: mattermostScheduleRemoveTool,
+      mattermost_schedule_enable: mattermostScheduleEnableTool,
+      mattermost_schedule_disable: mattermostScheduleDisableTool,
+      mattermost_schedule_run: mattermostScheduleRunTool,
     },
 
     async event({ event }) {

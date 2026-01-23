@@ -16,6 +16,7 @@ import type { QuestionHandler } from "../../../src/question-handler.js";
 import type { GuestApprovalHandler } from "../../../src/guest-approval-handler.js";
 import type { SessionOwnershipHandler } from "../../../src/session-ownership-handler.js";
 import type { FileCompletionHandler } from "../../../src/file-completion-handler.js";
+import type { SchedulerService } from "../../../src/scheduler/scheduler-service.js";
 import type { User } from "../../../src/models/index.js";
 
 class PluginStateManager {
@@ -37,6 +38,7 @@ class PluginStateManager {
   private _guestApprovalHandler: GuestApprovalHandler | null = null;
   private _sessionOwnershipHandler: SessionOwnershipHandler | null = null;
   private _fileCompletionHandler: FileCompletionHandler | null = null;
+  private _schedulerService: SchedulerService | null = null;
   private _botUser: User | null = null;
   private _projectName: string = "";
 
@@ -67,6 +69,7 @@ class PluginStateManager {
   get sessionOwnershipHandler(): SessionOwnershipHandler | null { return this._sessionOwnershipHandler; }
   get fileCompletionHandler(): FileCompletionHandler | null { return this._fileCompletionHandler; }
   get questionCleanupTimer(): ReturnType<typeof setInterval> | null { return this._questionCleanupTimer; }
+  get schedulerService(): SchedulerService | null { return this._schedulerService; }
 
   setProjectName(name: string): void {
     this._projectName = name;
@@ -121,7 +124,16 @@ class PluginStateManager {
     this._fileCompletionHandler = handler;
   }
 
+  setSchedulerService(service: SchedulerService): void {
+    this._schedulerService = service;
+  }
+
   disconnect(): void {
+    // Stop the scheduler first
+    if (this._schedulerService) {
+      this._schedulerService.stop();
+      this._schedulerService = null;
+    }
     for (const [_, timer] of this.activeToolTimers) {
       clearInterval(timer);
     }

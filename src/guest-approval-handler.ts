@@ -100,7 +100,10 @@ _Reply \`deny\` or \`0\` to reject_`;
     const trimmed = replyText.trim().toLowerCase();
     const mapping = threadMappingStore.getBySessionId(sessionId);
 
-    if (trimmed === "0" || trimmed === "deny" || trimmed === "no") {
+    const approveMatch = trimmed.match(/^approve\s+(\d)$/);
+    const effectiveChoice = approveMatch ? approveMatch[1] : trimmed;
+
+    if (effectiveChoice === "0" || effectiveChoice === "deny" || effectiveChoice === "no") {
       this.pendingApprovals.delete(sessionId);
       await this.mmClient.createPost(
         channelId,
@@ -111,7 +114,7 @@ _Reply \`deny\` or \`0\` to reject_`;
       return { approved: false, message: "Request denied." };
     }
 
-    if (trimmed === "1") {
+    if (effectiveChoice === "1") {
       this.pendingApprovals.delete(sessionId);
       await this.mmClient.createPost(
         channelId,
@@ -122,7 +125,7 @@ _Reply \`deny\` or \`0\` to reject_`;
       return { approved: true, post: pending.originalPost, message: "Message approved." };
     }
 
-    if (trimmed === "2") {
+    if (effectiveChoice === "2") {
       this.pendingApprovals.delete(sessionId);
       if (mapping) {
         const approvedUsers = mapping.approvedUsers || [];
@@ -141,7 +144,7 @@ _Reply \`deny\` or \`0\` to reject_`;
       return { approved: true, post: pending.originalPost, message: "User approved for thread." };
     }
 
-    if (trimmed === "3") {
+    if (effectiveChoice === "3") {
       this.pendingApprovals.delete(sessionId);
       if (mapping) {
         mapping.approveAllUsers = true;
