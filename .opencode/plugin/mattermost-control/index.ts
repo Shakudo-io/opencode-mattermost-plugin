@@ -640,6 +640,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         : `[Reply-To: post=${post.id} channel=${targetChannelId}]`;
       
       let contextPrefix = "";
+      let contextFileParts: Array<{ type: "file"; mime: string; filename: string; url: string }> = [];
       if (isGroupDm && threadRootPostId && botUser) {
         try {
           log.info(`[GroupDM] Building thread context for thread ${threadRootPostId}`);
@@ -649,6 +650,18 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             threadContext = await summarizeContextWithHaiku(client, targetSessionId, threadContext);
             contextPrefix = formatContextForPrompt(threadContext, userSession.mattermostUsername || "user");
             log.info(`[GroupDM] Injecting ${threadContext.wasSummarized ? "summarized" : "full"} context (${threadContext.messages.length} messages)`);
+            
+            if (threadContext.allFileIds.length > 0 && fileHandler) {
+              log.info(`[GroupDM] Processing ${threadContext.allFileIds.length} file attachment(s) from thread context`);
+              const { fileParts: ctxFileParts, textFilePaths: ctxTextPaths } = await fileHandler.processInboundAttachmentsAsFileParts(threadContext.allFileIds);
+              contextFileParts = ctxFileParts;
+              if (ctxTextPaths.length > 0) {
+                contextPrefix += `\n[Context attachments downloaded: ${ctxTextPaths.join(", ")}]`;
+              }
+              if (ctxFileParts.length > 0) {
+                log.info(`[GroupDM] Processed ${ctxFileParts.length} context file(s) as FileParts`);
+              }
+            }
           }
         } catch (e) {
           log.error(`[GroupDM] Failed to build context: ${e}`);
@@ -668,9 +681,10 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         log.debug(`[ModelSelection] Using model ${selectedModel.providerID}/${selectedModel.modelID} for session ${shortId}`);
       }
       
+      const allFileParts = [...contextFileParts, ...inboundFileParts];
       const promptParts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; filename: string; url: string }> = [
         { type: "text", text: promptMessage },
-        ...inboundFileParts,
+        ...allFileParts,
       ];
 
       await client.session.promptAsync({

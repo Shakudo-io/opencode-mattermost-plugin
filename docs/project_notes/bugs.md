@@ -1,5 +1,33 @@
 # Bug Log
 
+## 2026-01-22: Thread context missing when session created from existing thread (v0.3.24 → v0.3.25)
+
+**Problem:** When a session is created from an existing Mattermost thread (user's message is the root), the LLM doesn't receive the thread context. It says "I need to understand what task you're referring to" even though the original question is visible in the thread.
+
+**Specific case:** https://mattermost.dev.hyperplane.dev/shakudo-internal/pl/okqzw6k81p8qxnqg8b9f7e9azh
+- Christine posted asking about contract modifications (root post)
+- shakudobabyagi responded with advice
+- Yevgeniy @mentioned Kaji: "@kaji can you please do this for @christine"
+- Session was created, but bot didn't see Christine's original question
+
+**Root Cause:** In `src/context-builder.ts`, the `buildThreadContext()` function unconditionally filtered out the root post:
+```typescript
+if (post.id === threadRootPostId) return false;  // Always excluded root
+```
+The comment said "usually just session info" - true when the BOT creates the thread (rocket emoji announcement), but FALSE when a session is created in an EXISTING user thread.
+
+**Fix:** Only exclude root post if it's a bot message:
+```typescript
+if (post.id === threadRootPostId && post.user_id === botUserId) return false;
+```
+
+**Files Changed:**
+- `src/context-builder.ts` - Changed filter condition at line ~77
+
+**Prevention:** When filtering posts for context, consider the different thread creation scenarios. Don't assume root post is always bot-generated session info.
+
+---
+
 ## 2026-01-22: Question timeout - user reply ignored after ~105 minutes (v0.3.23 → v0.3.24)
 
 **Problem:** User replied "1" to a question ~105 minutes after it was asked, but the response wasn't processed. The AI had continued without the answer.

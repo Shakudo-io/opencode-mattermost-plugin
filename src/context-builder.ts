@@ -20,6 +20,7 @@ export interface ThreadMessage {
   username: string;
   message: string;
   timestamp: number;
+  fileIds?: string[];
 }
 
 export interface ThreadContext {
@@ -27,6 +28,7 @@ export interface ThreadContext {
   totalCharacters: number;
   wasSummarized: boolean;
   summary?: string;
+  allFileIds: string[];
 }
 
 /**
@@ -54,7 +56,7 @@ export async function buildThreadContext(
     
     if (!postList.order || postList.order.length === 0) {
       log.info(`[ContextBuilder] No posts found in thread`);
-      return { messages: [], totalCharacters: 0, wasSummarized: false };
+      return { messages: [], totalCharacters: 0, wasSummarized: false, allFileIds: [] };
     }
     
     // Sort posts by create_at (oldest first), then take the most recent ones
@@ -67,14 +69,17 @@ export async function buildThreadContext(
     // Filter out:
     // 1. Bot messages
     // 2. The current post (the @mention we're responding to)
-    // 3. The root post (usually just session info)
+    // 3. The root post ONLY if it's a bot message (session announcement)
+    //    - If root is a user message (existing thread), include it for context
     const relevantPosts: Post[] = sortedPostIds
       .map(id => postList.posts[id])
       .filter((post): post is Post => {
         if (!post) return false;
         if (post.user_id === botUserId) return false;
         if (post.id === currentPostId) return false;
-        if (post.id === threadRootPostId) return false;
+        // Only exclude root post if it's from the bot (session announcement)
+        // User-created threads should have their root post included for context
+        if (post.id === threadRootPostId && post.user_id === botUserId) return false;
         return true;
       });
     
@@ -100,26 +105,31 @@ export async function buildThreadContext(
         }
       }
       
+      const fileIds = post.file_ids && post.file_ids.length > 0 ? post.file_ids : undefined;
+      
       messages.push({
         userId: post.user_id,
         username,
         message: post.message,
         timestamp: post.create_at,
+        fileIds,
       });
     }
     
     const totalCharacters = messages.reduce((sum, m) => sum + m.message.length, 0);
+    const allFileIds = messages.flatMap(m => m.fileIds || []);
     
-    log.info(`[ContextBuilder] Built context with ${messages.length} messages, ${totalCharacters} chars`);
+    log.info(`[ContextBuilder] Built context with ${messages.length} messages, ${totalCharacters} chars, ${allFileIds.length} files`);
     
     return {
       messages,
       totalCharacters,
       wasSummarized: false,
+      allFileIds,
     };
   } catch (error) {
     log.error(`[ContextBuilder] Error building thread context: ${error}`);
-    return { messages: [], totalCharacters: 0, wasSummarized: false };
+    return { messages: [], totalCharacters: 0, wasSummarized: false, allFileIds: [] };
   }
 }
 
@@ -212,10 +222,18 @@ export function formatContextForPrompt(
   if (context.wasSummarized && context.summary) {
     contextBlock = `[Previous conversation summary]
 ${context.summary}`;
+    if (context.allFileIds.length > 0) {
+      contextBlock += `\n[Note: ${context.allFileIds.length} file attachment(s) from this conversation are included below]`;
+    }
   } else {
-    // Format individual messages
     const formattedMessages = context.messages
-      .map(m => `@${m.username}: ${m.message}`)
+      .map(m => {
+        let text = `@${m.username}: ${m.message}`;
+        if (m.fileIds && m.fileIds.length > 0) {
+          text += ` [${m.fileIds.length} attachment(s)]`;
+        }
+        return text;
+      })
       .join("\n\n");
     
     contextBlock = `[Previous messages in this thread]
