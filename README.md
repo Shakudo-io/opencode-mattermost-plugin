@@ -872,6 +872,134 @@ If you installed a new version but the old code is still running:
 3. Follow the [Updating the Plugin](#updating-the-plugin) section above
 4. **You must restart OpenCode completely** - disconnect/reconnect only refreshes the WebSocket, not the plugin code
 
+### Bot not responding to DMs
+
+If your bot is connected but not responding to messages, check these common issues:
+
+#### 1. Wrong Owner User ID
+
+If you're using `MATTERMOST_OWNER_USER_ID` for multi-user setups, ensure it's set to your **actual Mattermost user ID**, not someone else's or a non-existent ID.
+
+**Symptoms:**
+- Plugin log shows: `Ignoring 1:1 DM from non-owner user <your-user-id>`
+- Bot appears online but never responds
+
+**Fix:**
+```bash
+# Find your user ID (ask admin or check Mattermost profile API)
+# Then update your environment:
+export MATTERMOST_OWNER_USER_ID="your-actual-user-id"
+```
+
+#### 2. OpenCode Version Compatibility
+
+Some OpenCode versions have plugin loading issues in server mode. If plugins aren't loading:
+
+**Symptoms:**
+- `opencode serve` starts but plugin log shows no activity
+- No "Connected to Mattermost" message in logs
+
+**Fix:**
+Try downgrading to a known working version:
+```bash
+npm install -g opencode-ai@1.1.28
+```
+
+#### 3. Plugins Only Load When Session Created
+
+**Critical:** Plugins don't load when `opencode serve` starts—they only initialize when a session is created.
+
+**Symptoms:**
+- Server starts successfully
+- Plugin log is empty or shows no connection
+- Works fine with `opencode` (non-server mode)
+
+**Fix:**
+After starting the server, create a session to bootstrap plugin loading:
+```bash
+# Start server
+opencode serve --port 4096
+
+# In another terminal, create a session to trigger plugin load
+curl -s -X POST http://localhost:4096/session \
+  -H "Content-Type: application/json" \
+  -d '{"directory": "/path/to/your/project"}'
+```
+
+**Startup script example:**
+```bash
+#!/bin/bash
+# start-opencode-with-plugin.sh
+
+PORT="${OPENCODE_SERVER_PORT:-4096}"
+
+# Kill existing and start fresh
+pkill -f opencode 2>/dev/null || true
+sleep 2
+
+# Start server
+cd /your/project/directory
+nohup opencode serve --port $PORT > /tmp/opencode-server.log 2>&1 &
+echo "Started OpenCode server on port $PORT"
+
+# Wait for server
+for i in {1..30}; do
+  curl -s http://localhost:$PORT/ > /dev/null 2>&1 && break
+  sleep 1
+done
+
+# Bootstrap plugins by creating a session
+curl -s -X POST http://localhost:$PORT/session \
+  -H "Content-Type: application/json" \
+  -d '{"directory": "/your/project/directory"}' > /dev/null 2>&1
+
+echo "Created session to bootstrap plugins"
+
+# Verify
+sleep 3
+if grep -q "Connected to Mattermost" /tmp/opencode-mattermost-plugin.log 2>/dev/null; then
+  echo "✓ Plugin connected successfully!"
+else
+  echo "⚠ Check /tmp/opencode-mattermost-plugin.log for issues"
+fi
+```
+
+#### 4. Missing Dependencies
+
+If you see import errors in the plugin log:
+
+**Fix:**
+```bash
+cd ~/.config/opencode
+bun add axios  # or other missing packages
+```
+
+### Verifying Plugin is Working
+
+Check these in order:
+
+1. **Server running:**
+   ```bash
+   curl http://localhost:4096/
+   ```
+
+2. **Plugin log exists and shows connection:**
+   ```bash
+   tail /tmp/opencode-mattermost-plugin.log
+   # Should show: "Connected to Mattermost as @your-bot"
+   ```
+
+3. **Sessions discovered:**
+   ```bash
+   grep "session discovered" /tmp/opencode-mattermost-plugin.log
+   ```
+
+4. **Test message received:**
+   Send a DM to the bot and check logs for:
+   - `Ignoring 1:1 DM from non-owner` = Owner ID mismatch
+   - `Processing DM from` = Message being handled
+   - No log entry = WebSocket not receiving events
+
 ## Development
 
 ### Setup
