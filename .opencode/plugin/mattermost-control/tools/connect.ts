@@ -349,6 +349,9 @@ function setupWebSocketListeners(
     log.info("Received hello event - connection authenticated");
   });
 
+  const processedPostIds = new Set<string>();
+  const POST_DEDUP_TTL_MS = 5000;
+  
   wsClient.on("posted", async (event: WebSocketEvent) => {
     if (!PluginState.isConnected) return;
     
@@ -358,6 +361,13 @@ function setupWebSocketListeners(
     try {
       const postData = typeof event.data.post === "string" ? JSON.parse(event.data.post) : event.data.post;
       if (postData.user_id === botUserId) return;
+
+      if (processedPostIds.has(postData.id)) {
+        log.debug(`[Dedup] Ignoring duplicate event for post ${postData.id}`);
+        return;
+      }
+      processedPostIds.add(postData.id);
+      setTimeout(() => processedPostIds.delete(postData.id), POST_DEDUP_TTL_MS);
 
       const channel = await mmClient.getChannel(postData.channel_id);
       
