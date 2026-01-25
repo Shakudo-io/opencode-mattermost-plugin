@@ -50,6 +50,7 @@ export class CommandHandler {
     this.commands.set("help", this.handleHelp.bind(this));
     this.commands.set("models", this.handleModels.bind(this));
     this.commands.set("model", this.handleModel.bind(this));
+    this.commands.set("costs", this.handleCosts.bind(this));
   }
 
   private cachedModels: ProviderModel[] = [];
@@ -298,6 +299,7 @@ export class CommandHandler {
       `| \`${this.commandPrefix}sessions\` | List available OpenCode sessions |`,
       `| \`${this.commandPrefix}use <id>\` | Switch to a different session |`,
       `| \`${this.commandPrefix}current\` | Show currently targeted session |`,
+      `| \`${this.commandPrefix}costs\` | Show LLM costs for all active sessions |`,
       `| \`${this.commandPrefix}models\` | List available AI models (use in thread) |`,
       `| \`${this.commandPrefix}model\` | Show current model for this session |`,
       `| \`${this.commandPrefix}reject\` | Skip/reject a pending AI question |`,
@@ -481,6 +483,97 @@ export class CommandHandler {
         `Use \`${this.commandPrefix}models\` to change.`,
       ].join("\n"),
     };
+  }
+
+  private async handleCosts(
+    _command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { registry, opencodeClient, threadMappingStore } = context;
+
+    if (!opencodeClient) {
+      return {
+        success: false,
+        message: "OpenCode client not available.",
+      };
+    }
+
+    try {
+      await registry.refresh();
+    } catch (e) {
+      log.warn("[CommandHandler] Failed to refresh sessions:", e);
+    }
+
+    const sessions = registry.listAvailable();
+
+    if (sessions.length === 0) {
+      return {
+        success: true,
+        message: "No active OpenCode sessions found.",
+      };
+    }
+
+    const sessionCosts: Array<{
+      session: OpenCodeSessionInfo;
+      cost: number;
+      threadLink: string | null;
+    }> = [];
+
+    for (const session of sessions) {
+      let totalCost = 0;
+      try {
+        const messagesResult = await opencodeClient.session.messages({ path: { id: session.id } });
+        const messages = messagesResult.data || [];
+        for (const message of messages) {
+          if (message.info.role === "assistant") {
+            totalCost += (message.info as any).cost || 0;
+          }
+        }
+      } catch (e) {
+        log.debug(`[CommandHandler] Could not fetch messages for session ${session.shortId}: ${e}`);
+      }
+
+      const mapping = threadMappingStore?.getBySessionId(session.id);
+      const threadLink = mapping ? `/_redirect/pl/${mapping.threadRootPostId}` : null;
+
+      sessionCosts.push({ session, cost: totalCost, threadLink });
+    }
+
+    sessionCosts.sort((a, b) => b.cost - a.cost);
+
+    const grandTotal = sessionCosts.reduce((sum, sc) => sum + sc.cost, 0);
+
+    const lines: string[] = [
+      `:moneybag: **Session Costs**`,
+      "",
+      `| Session | Title | Cost |`,
+      `|---------|-------|------|`,
+    ];
+
+    for (const { session, cost, threadLink } of sessionCosts) {
+      const title = this.truncateString(session.title || session.projectName, 40);
+      const costStr = this.formatCost(cost);
+      const sessionLink = threadLink 
+        ? `[\`${session.shortId}\`](${threadLink})`
+        : `\`${session.shortId}\``;
+      lines.push(`| ${sessionLink} | ${title} | ${costStr} |`);
+    }
+
+    lines.push(`| | **Total** | **${this.formatCost(grandTotal)}** |`);
+    lines.push("");
+    lines.push(`_${sessions.length} active session(s)_`);
+
+    return {
+      success: true,
+      message: lines.join("\n"),
+    };
+  }
+
+  private formatCost(cost: number): string {
+    if (cost >= 1) return `$${cost.toFixed(2)}`;
+    if (cost >= 0.01) return `$${cost.toFixed(2)}`;
+    if (cost >= 0.001) return `$${cost.toFixed(3)}`;
+    return `$${cost.toFixed(4)}`;
   }
 
   async handleModelSelection(
