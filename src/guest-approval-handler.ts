@@ -86,15 +86,29 @@ _Reply \`deny\` or \`0\` to reject_`;
     return this.pendingApprovals.get(sessionId);
   }
 
+  /**
+   * Check if a message looks like a guest approval response.
+   * Used to determine if owner's message should be interpreted as approval or passed through as prompt.
+   */
+  looksLikeApprovalResponse(text: string): boolean {
+    const trimmed = text.trim().toLowerCase();
+    // Explicit approval syntax: "approve 1", "approve 2", "approve 3"
+    if (/^approve\s+[0-3]$/i.test(trimmed)) return true;
+    // Simple choices: "0", "1", "2", "3", "deny", "no"
+    if (/^[0-3]$/.test(trimmed)) return true;
+    if (trimmed === "deny" || trimmed === "no") return true;
+    return false;
+  }
+
   async handleOwnerReply(
     sessionId: string,
     replyText: string,
     threadMappingStore: ThreadMappingStore,
     channelId: string
-  ): Promise<{ approved: boolean; post?: Post; message: string }> {
+  ): Promise<{ approved: boolean; post?: Post; message: string; wasApprovalResponse: boolean }> {
     const pending = this.pendingApprovals.get(sessionId);
     if (!pending) {
-      return { approved: false, message: "No pending approval request found." };
+      return { approved: false, message: "No pending approval request found.", wasApprovalResponse: false };
     }
 
     const trimmed = replyText.trim().toLowerCase();
@@ -111,7 +125,7 @@ _Reply \`deny\` or \`0\` to reject_`;
         pending.threadRootPostId
       );
       log.info(`[GuestApproval] Denied request from @${pending.guestUsername} in session ${sessionId.substring(0, 8)}`);
-      return { approved: false, message: "Request denied." };
+      return { approved: false, message: "Request denied.", wasApprovalResponse: true };
     }
 
     if (effectiveChoice === "1") {
@@ -122,7 +136,7 @@ _Reply \`deny\` or \`0\` to reject_`;
         pending.threadRootPostId
       );
       log.info(`[GuestApproval] Approved single message from @${pending.guestUsername} in session ${sessionId.substring(0, 8)}`);
-      return { approved: true, post: pending.originalPost, message: "Message approved." };
+      return { approved: true, post: pending.originalPost, message: "Message approved.", wasApprovalResponse: true };
     }
 
     if (effectiveChoice === "2") {
@@ -141,7 +155,7 @@ _Reply \`deny\` or \`0\` to reject_`;
         pending.threadRootPostId
       );
       log.info(`[GuestApproval] Approved @${pending.guestUsername} for all future messages in session ${sessionId.substring(0, 8)}`);
-      return { approved: true, post: pending.originalPost, message: "User approved for thread." };
+      return { approved: true, post: pending.originalPost, message: "User approved for thread.", wasApprovalResponse: true };
     }
 
     if (effectiveChoice === "3") {
@@ -156,10 +170,12 @@ _Reply \`deny\` or \`0\` to reject_`;
         pending.threadRootPostId
       );
       log.info(`[GuestApproval] Approved all users for session ${sessionId.substring(0, 8)}`);
-      return { approved: true, post: pending.originalPost, message: "All users approved for thread." };
+      return { approved: true, post: pending.originalPost, message: "All users approved for thread.", wasApprovalResponse: true };
     }
 
-    return { approved: false, message: "Invalid response. Reply with 1, 2, 3, or deny." };
+    // Message doesn't look like an approval response - let it pass through as a regular prompt
+    log.info(`[GuestApproval] Owner message "${replyText.slice(0, 50)}..." is not an approval response, passing through as prompt`);
+    return { approved: false, message: "Not an approval response.", wasApprovalResponse: false };
   }
 
   isUserApproved(

@@ -306,7 +306,6 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             // Fall through to question handler below
           } else if (looksLikeGuestApprovalOnly) {
             log.info(`[CollisionHandler] Both pending but message "${trimmed}" is guest approval syntax - routing to guest approval`);
-            // Process guest approval
             const approvalResult = await guestApprovalHandler.handleOwnerReply(
               routeResult.sessionId,
               promptText,
@@ -314,16 +313,18 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
               post.channel_id
             );
             
-            if (approvalResult.approved && approvalResult.post) {
-              log.info(`[GuestApproval] Processing approved guest message`);
-              await handleThreadPrompt({
-                sessionId: routeResult.sessionId,
-                threadRootPostId: routeResult.threadRootPostId,
-                promptText: approvalResult.post.message,
-                fileIds: approvalResult.post.file_ids,
-              }, userSession, approvalResult.post);
+            if (approvalResult.wasApprovalResponse) {
+              if (approvalResult.approved && approvalResult.post) {
+                log.info(`[GuestApproval] Processing approved guest message`);
+                await handleThreadPrompt({
+                  sessionId: routeResult.sessionId,
+                  threadRootPostId: routeResult.threadRootPostId,
+                  promptText: approvalResult.post.message,
+                  fileIds: approvalResult.post.file_ids,
+                }, userSession, approvalResult.post);
+              }
+              return;
             }
-            return;
           } else {
             // Ambiguous text - could be custom answer or unrecognized. Ask user to clarify.
             log.info(`[CollisionHandler] Both pending, message "${trimmed}" is ambiguous - asking user to clarify`);
@@ -338,7 +339,6 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             return;
           }
         } else if (hasGuestApproval) {
-          // Only guest approval pending - handle normally
           const approvalResult = await guestApprovalHandler.handleOwnerReply(
             routeResult.sessionId,
             promptText,
@@ -346,16 +346,19 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             post.channel_id
           );
           
-          if (approvalResult.approved && approvalResult.post) {
-            log.info(`[GuestApproval] Processing approved guest message`);
-            await handleThreadPrompt({
-              sessionId: routeResult.sessionId,
-              threadRootPostId: routeResult.threadRootPostId,
-              promptText: approvalResult.post.message,
-              fileIds: approvalResult.post.file_ids,
-            }, userSession, approvalResult.post);
+          if (approvalResult.wasApprovalResponse) {
+            if (approvalResult.approved && approvalResult.post) {
+              log.info(`[GuestApproval] Processing approved guest message`);
+              await handleThreadPrompt({
+                sessionId: routeResult.sessionId,
+                threadRootPostId: routeResult.threadRootPostId,
+                promptText: approvalResult.post.message,
+                fileIds: approvalResult.post.file_ids,
+              }, userSession, approvalResult.post);
+            }
+            return;
           }
-          return;
+          log.info(`[GuestApproval] Owner message not an approval response, processing as regular prompt`);
         }
         
         // Question handler (either only question pending, or collision where we decided to prioritize question)
