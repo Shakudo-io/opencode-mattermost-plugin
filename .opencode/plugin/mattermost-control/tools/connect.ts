@@ -98,6 +98,16 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
         await notifications.notifyStatus(session, { type: "waiting", details: "Permission denied" });
       },
       onCancel: async (session) => {
+        // Call OpenCode abort API to actually stop the session
+        const sessionId = session.targetOpenCodeSessionId;
+        if (sessionId) {
+          try {
+            await ctx.client.session.abort({ path: { id: sessionId } });
+            log.info(`[ReactionHandler] Aborted session ${sessionId.substring(0, 8)} via 🛑 reaction`);
+          } catch (e) {
+            log.error(`[ReactionHandler] Failed to abort session: ${e}`);
+          }
+        }
         session.isProcessing = false;
         await notifications.notifyStatus(session, { type: "idle", details: "Operation cancelled" });
       },
@@ -371,15 +381,22 @@ function setupWebSocketListeners(
 
       const channel = await mmClient.getChannel(postData.channel_id);
       
+      // Check if channel type is allowed
+      const allowedTypes = config.sessions.allowedChannelTypes;
+      if (!allowedTypes.includes(channel.type as "D" | "G" | "O" | "P")) {
+        log.debug(`Ignoring message from disallowed channel type '${channel.type}' (allowed: ${allowedTypes.join(",")})`);
+        return;
+      }
+      
       if (channel.type === "D") {
         if (config.mattermost.ownerUserId && postData.user_id !== config.mattermost.ownerUserId) {
           log.debug(`Ignoring 1:1 DM from non-owner user ${postData.user_id}`);
           return;
         }
-      } else if (channel.type === "G") {
+      } else if (channel.type === "G" || channel.type === "O" || channel.type === "P") {
         const botUser = PluginState.botUser;
         if (!botUser) {
-          log.error(`[GroupDM] Bot user not available`);
+          log.error(`[Channel] Bot user not available`);
           return;
         }
         
@@ -388,7 +405,7 @@ function setupWebSocketListeners(
         
         const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
         if (isOwner && sessionOwnershipHandler?.hasPendingConfirmation(channel.id, threadRootId, postData.user_id)) {
-          log.info(`[GroupDM] Processing ownership confirmation reply from @${postData.user_id}`);
+          log.info(`[Channel] Processing ownership confirmation reply from @${postData.user_id}`);
           const pending = sessionOwnershipHandler.getPendingConfirmation(channel.id, threadRootId);
           const confirmResult = await sessionOwnershipHandler.handleReply(
             channel.id,
@@ -412,9 +429,8 @@ function setupWebSocketListeners(
         
         if (isOwner && mappingForApproval && guestApprovalHandler?.hasPendingApproval(mappingForApproval.sessionId)) {
           const trimmedReply = postData.message.trim().toLowerCase();
-          // Check if this looks like an approval response (1, 2, 3, deny, 0, no)
           if (/^[0-3]$/.test(trimmedReply) || trimmedReply === "deny" || trimmedReply === "no") {
-            log.info(`[GroupDM] Processing guest approval reply from owner: "${trimmedReply}"`);
+            log.info(`[Channel] Processing guest approval reply from owner: "${trimmedReply}"`);
             const result = await guestApprovalHandler.handleOwnerReply(
               mappingForApproval.sessionId,
               postData.message.trim(),
@@ -432,7 +448,7 @@ function setupWebSocketListeners(
         
         const mentioned = isBotMentioned(postData.message, botUser.username, botUser.id);
         if (!mentioned) {
-          log.debug(`[GroupDM] Skipping message - bot not @mentioned (channel: ${channel.id})`);
+          log.debug(`[Channel] Skipping message - bot not @mentioned (channel: ${channel.id})`);
           return;
         }
         
@@ -449,10 +465,10 @@ function setupWebSocketListeners(
               const ownerUser = await mmClient.getUserById(postData.user_id);
               ownerUsername = ownerUser.username;
             } catch (e) {
-              log.warn(`[GroupDM] Could not fetch owner username: ${e}`);
+              log.warn(`[Channel] Could not fetch owner username: ${e}`);
             }
             
-            log.info(`[GroupDM] Owner @mentioned bot in unmapped thread, requesting ownership confirmation`);
+            log.info(`[Channel] Owner @mentioned bot in unmapped thread, requesting ownership confirmation`);
             await sessionOwnershipHandler.requestOwnershipConfirmation(
               postData,
               ownerUsername,
@@ -461,17 +477,17 @@ function setupWebSocketListeners(
             );
             return;
           }
-          log.info(`[GroupDM] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
+          log.info(`[Channel] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
         } else {
           if (!mapping) {
-            log.debug(`[GroupDM] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);
+            log.debug(`[Channel] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);
             return;
           }
           
           if (guestApprovalHandler?.isUserApproved(postData.user_id, mapping)) {
-            log.info(`[GroupDM] Bot @mentioned by approved guest ${postData.user_id}, processing (channel: ${channel.id})`);
+            log.info(`[Channel] Bot @mentioned by approved guest ${postData.user_id}, processing (channel: ${channel.id})`);
           } else {
-            log.info(`[GroupDM] Bot @mentioned by non-approved guest ${postData.user_id}, requesting approval (channel: ${channel.id})`);
+            log.info(`[Channel] Bot @mentioned by non-approved guest ${postData.user_id}, requesting approval (channel: ${channel.id})`);
             
             const mmClient = PluginState.mmClient;
             if (!mmClient || !guestApprovalHandler) return;
@@ -481,7 +497,7 @@ function setupWebSocketListeners(
               const guestUser = await mmClient.getUserById(postData.user_id);
               guestUsername = guestUser.username;
             } catch (e) {
-              log.warn(`[GroupDM] Could not fetch guest username: ${e}`);
+              log.warn(`[Channel] Could not fetch guest username: ${e}`);
             }
             
             await guestApprovalHandler.requestApproval(

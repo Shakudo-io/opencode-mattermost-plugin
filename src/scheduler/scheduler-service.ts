@@ -22,6 +22,13 @@ export class SchedulerService {
   private promptExecutor: PromptExecutor | null = null;
   private sessionChecker: SessionChecker | null = null;
   private started: boolean = false;
+  
+  /**
+   * Track sessions currently running scheduled tasks.
+   * Event handlers should skip streaming updates for these sessions
+   * to prevent responses from being routed to wrong threads.
+   */
+  private runningScheduledSessions: Set<string> = new Set();
 
   constructor(config: SchedulerServiceConfig = {}) {
     this.store = new ScheduleStore();
@@ -35,6 +42,10 @@ export class SchedulerService {
 
   setSessionChecker(checker: SessionChecker): void {
     this.sessionChecker = checker;
+  }
+
+  isRunningScheduledTask(sessionId: string): boolean {
+    return this.runningScheduledSessions.has(sessionId);
   }
 
   async start(): Promise<void> {
@@ -133,6 +144,9 @@ export class SchedulerService {
       }
     }
 
+    this.runningScheduledSessions.add(schedule.sessionId);
+    log.debug(`[SchedulerService] Marked session ${schedule.sessionId.slice(0, 8)} as running scheduled task`);
+    
     try {
       const prefixedPrompt = `[Scheduled Task: ${schedule.name}]\n${schedule.prompt}\n\n[Important: Format your response for a Mattermost DM. Keep it concise and actionable.]`;
       
@@ -157,6 +171,9 @@ export class SchedulerService {
         `Schedule "${schedule.name}" failed: ${errorMsg}`
       );
       this.store.updateLastRun(schedule.id, false, errorMsg);
+    } finally {
+      this.runningScheduledSessions.delete(schedule.sessionId);
+      log.debug(`[SchedulerService] Unmarked session ${schedule.sessionId.slice(0, 8)} from running scheduled task`);
     }
   }
 

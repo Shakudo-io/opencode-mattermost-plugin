@@ -32,9 +32,19 @@ export interface EndedSessionRoute {
   errorMessage: string;
 }
 
+export interface MergedSessionRoute {
+  type: "merged_session";
+  sessionId: string;
+  threadRootPostId: string;
+  mergedInto: string;
+  errorMessage: string;
+  redirectLink?: string;
+}
+
 export type InboundRouteResult =
   | ThreadPromptRoute
   | MainDmCommandRoute
   | MainDmPromptRoute
   | UnknownThreadRoute
-  | EndedSessionRoute;
+  | EndedSessionRoute
+  | MergedSessionRoute;

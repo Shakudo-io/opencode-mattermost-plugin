@@ -33,11 +33,13 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 - **Shared Bot Account**: Multiple users can run separate OpenCode instances with the same bot
 - **Per-User Sessions**: Each user's sessions are isolated
 
-### Group DM Support
-- **Selective Response**: In group DMs, the bot only responds when explicitly @mentioned (e.g., `@opencode-bot help me with this`)
-- **Thread Context Injection**: When responding in group DMs, the bot automatically includes context from the last 5 messages in the thread
+### Channel Support (Group DMs, Public & Private Channels)
+- **Any Channel Type**: Bot works in 1:1 DMs, Group DMs, Public channels (`O`), and Private channels (`P`)
+- **Selective Response**: In channels (non-1:1 DM), the bot only responds when explicitly @mentioned (e.g., `@opencode-bot help me with this`)
+- **Thread Context Injection**: When responding in channels, the bot automatically includes context from the last 5 messages in the thread
 - **Smart Context Summarization**: If thread context exceeds 8K characters, it's automatically summarized using Claude Haiku to stay within token limits
-- **1:1 DM Behavior Unchanged**: Direct messages (not group DMs) continue to respond to all messages without requiring @mention
+- **1:1 DM Behavior Unchanged**: Direct messages respond to all messages without requiring @mention
+- **Configurable Channel Types**: Use `OPENCODE_MM_ALLOWED_CHANNEL_TYPES` to restrict which channel types the bot responds to
 
 ### Emoji Commands
 React to any bot message with these emojis:
@@ -249,6 +251,7 @@ export OPENCODE_MM_SESSION_TIMEOUT="3600000"     # 1 hour in ms
 export OPENCODE_MM_MAX_SESSIONS="50"             # max concurrent sessions
 export OPENCODE_MM_ALLOWED_USERS=""              # comma-separated user IDs (empty = all)
 export OPENCODE_MM_AUTO_CREATE_SESSION="true"    # auto-create session from main DM
+export OPENCODE_MM_ALLOWED_CHANNEL_TYPES="D,G,O,P"  # allowed channel types (D=DM, G=Group, O=Public, P=Private)
 
 # Multi-user / Owner filtering
 export MATTERMOST_OWNER_USER_ID=""               # Only respond to DMs from this user ID
@@ -376,6 +379,7 @@ When connected, you can manage multiple OpenCode sessions via DM commands:
 | `!sessions` | List all available OpenCode sessions with thread links |
 | `!models` | List available models grouped by provider, select by number |
 | `!model` | Show the currently selected model for this session |
+| `!merge <url>` | Merge another thread's conversation into the current session |
 | `!help` | Display available commands and thread workflow |
 
 **Example:**
@@ -418,12 +422,77 @@ Bot: ✅ Model set to claude-sonnet-4-20250514 (Anthropic) for this session.
 
 The selected model persists for the session thread. Use `!model` to check the current selection.
 
-### Group DM Usage
+### Thread Merging
 
-The bot can participate in group direct messages (conversations with multiple people). In group DMs, the bot uses **selective response** - it only responds when explicitly @mentioned.
+Merge the context from one thread into another using the `!merge` command. This is useful when you want to continue a conversation from a different session thread while preserving its context.
+
+**Usage:**
+```
+!merge https://mattermost.example.com/team/pl/postid123
+```
 
 **How it works:**
-1. Add the bot to a group DM with other users
+1. Copy the URL of the thread you want to merge (source thread)
+2. Go to the thread you want to merge INTO (destination thread)
+3. Type `!merge <url>` with the source thread URL
+4. The source thread's conversation is summarized using AI and injected into the destination thread
+5. The source thread is marked as "merged" and locked
+
+**Example:**
+```
+[In destination thread]
+You: !merge https://mattermost.dev.hyperplane.dev/shakudo/pl/abc123xyz
+
+Bot: 🔀 **Merged Thread Context**
+
+     Merged conversation from [my-project (ses_abc1)](link):
+
+     ---
+     
+     **Summary:**
+     - User requested implementation of a REST API for user management
+     - Discussed authentication approach (JWT tokens)
+     - Created User model with email, password, and role fields
+     - TODO: Implement password hashing and token refresh
+     
+     ---
+     _Merged by @alice at 2026-01-26 15:30_
+```
+
+**Source thread after merge:**
+```
+Bot: 🔒 **Thread Merged**
+
+     This conversation has been merged into another thread.
+     Continue the conversation [here](link).
+
+     _Merged at 2026-01-26 15:30_
+```
+
+**Restrictions:**
+- Can only merge threads from the same OpenCode instance
+- Cannot merge a thread into itself
+- Cannot merge an already-merged thread
+- Must have an active session in the destination thread
+
+**What gets preserved:**
+- AI-generated summary of key decisions and context
+- Requirements and constraints discussed
+- Actions taken and their outcomes
+- Unfinished work and next steps
+
+### Channel Usage (Group DMs, Public & Private Channels)
+
+The bot can participate in any channel it's a member of: Group DMs, Public channels, and Private channels. In these channels, the bot uses **selective response** - it only responds when explicitly @mentioned.
+
+**Supported channel types:**
+- `D` - 1:1 Direct Messages (no @mention required)
+- `G` - Group Direct Messages (@mention required)
+- `O` - Public Channels (@mention required)
+- `P` - Private Channels (@mention required)
+
+**How it works:**
+1. Add the bot to a channel (Group DM, public, or private channel)
 2. @mention the bot when you want it to respond: `@opencode-bot explain this error`
 3. The bot automatically includes context from recent messages in the thread
 4. Messages without @mention are silently ignored
@@ -442,11 +511,24 @@ Bot: [Responds with explanation, having read the context from Alice and Bob's me
 - If the context is too long (>8K characters), it's automatically summarized using Claude Haiku
 - This ensures the bot has relevant context without consuming excessive tokens
 
+**Restricting channel types:**
+You can limit which channel types the bot responds to using the `OPENCODE_MM_ALLOWED_CHANNEL_TYPES` environment variable:
+```bash
+# Only allow DMs and Group DMs (no public/private channels)
+export OPENCODE_MM_ALLOWED_CHANNEL_TYPES="D,G"
+
+# Only allow DMs (default 1:1 behavior)
+export OPENCODE_MM_ALLOWED_CHANNEL_TYPES="D"
+
+# All channel types (default)
+export OPENCODE_MM_ALLOWED_CHANNEL_TYPES="D,G,O,P"
+```
+
 **Note:** In regular 1:1 DMs, the bot responds to all messages without requiring @mention.
 
-### Guest Approval in Group DMs
+### Guest Approval in Channels
 
-When multiple users are in a group DM with the bot, each OpenCode instance only processes messages from its owner (the user who owns the session). If another user @mentions the bot, the thread owner must approve the request.
+When multiple users are in a channel with the bot, each OpenCode instance only processes messages from its owner (the user who owns the session). If another user @mentions the bot, the thread owner must approve the request.
 
 **How it works:**
 1. User A (thread owner) creates a session by @mentioning the bot
@@ -471,13 +553,13 @@ When multiple users are in a group DM with the bot, each OpenCode instance only 
 **Approval options:**
 - **1 (Once)**: Approve this single message, future messages from this user still require approval
 - **2 (User)**: Permanently approve this user - their future @mentions are processed automatically
-- **3 (All)**: Approve all users - any user in the group DM can send prompts without approval
+- **3 (All)**: Approve all users - any user in the channel can send prompts without approval
 
 **Persistence:** User approvals (option 2) and "approve all" settings (option 3) are stored in the thread mapping and persist across sessions.
 
 **Example flow:**
 ```
-[Group DM: Alice, Bob, opencode-bot]
+[Channel: #engineering with Alice, Bob, opencode-bot]
 
 Alice: @opencode-bot analyze this code
 Bot: [Creates session, responds to Alice]
@@ -715,6 +797,7 @@ opencode attach http://localhost:4096
 | `MonitorService` | Session event monitoring and DM alerts |
 | `QuestionHandler` | AI question tool support with user responses |
 | `ContextBuilder` | Builds thread context for group DMs, with optional Haiku summarization |
+| `MergeHandler` | Thread merging with AI summarization and source thread locking |
 
 ## Project Structure
 
@@ -743,6 +826,7 @@ opencode-mattermost-plugin/
     ├── context-builder.ts            # Group DM context building & summarization
     ├── file-handler.ts               # File uploads/downloads
     ├── logger.ts                     # File-based logging
+    ├── merge-handler.ts              # Thread merging with AI summarization
     ├── message-router.ts             # Thread-aware message routing
     ├── monitor-service.ts            # Session monitoring and alerts
     ├── notification-service.ts       # Status notifications

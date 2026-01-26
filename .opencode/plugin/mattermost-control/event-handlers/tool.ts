@@ -5,12 +5,23 @@
 import { PluginState } from "../state.js";
 import { startActiveToolTimer, stopActiveToolTimer, updateResponseStream } from "../timers.js";
 import { handleMonitorAlert } from "../../../../src/monitor-service.js";
+import { log } from "../../../../src/logger.js";
+
+function isScheduledTaskSession(sessionId: string): boolean {
+  const scheduler = PluginState.schedulerService;
+  return scheduler?.isRunningScheduledTask(sessionId) ?? false;
+}
 
 export async function handleToolExecuteBefore(input: any): Promise<void> {
   if (!PluginState.isConnected) return;
   
   const toolSessionId = input.sessionID || input.session?.id;
   if (!toolSessionId) return;
+  
+  if (isScheduledTaskSession(toolSessionId)) {
+    log.debug(`[ScheduledTask] Suppressing tool.execute.before for scheduled task session ${toolSessionId.substring(0, 8)}`);
+    return;
+  }
   
   const ctx = PluginState.activeResponseContexts.get(toolSessionId);
   if (!ctx) return;
@@ -26,6 +37,12 @@ export async function handleToolExecuteBefore(input: any): Promise<void> {
 
 export async function handleToolExecuteAfter(input: any): Promise<void> {
   const toolSessionId = input.sessionID || input.session?.id;
+
+  // Skip all tool.execute.after processing for scheduled task sessions
+  if (toolSessionId && isScheduledTaskSession(toolSessionId)) {
+    log.debug(`[ScheduledTask] Suppressing tool.execute.after for scheduled task session ${toolSessionId.substring(0, 8)}`);
+    return;
+  }
 
   // Handle question tool specially for monitoring
   if (input.tool === "question" && toolSessionId) {

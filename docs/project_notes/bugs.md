@@ -1,5 +1,29 @@
 # Bug Log
 
+## 2026-01-26: Scheduled task responses routed to wrong thread (v0.3.32 → v0.3.33)
+
+**Problem:** A scheduled job (`functional-standup-reminder`) response appeared in an unrelated session/thread instead of being sent as a direct DM. The scheduled task's streaming updates were routed through existing `activeResponseContexts` to whatever thread happened to be mapped to that session.
+
+**Specific case:** Scheduled task ran on session that had an existing Mattermost thread mapping, causing intermediate streaming events (`message.part.updated`, `session.idle`, etc.) to post to that thread instead of being suppressed.
+
+**Root Cause:** The scheduler uses `ctx.client.session.prompt()` which is synchronous but OpenCode still emits streaming events. Event handlers route responses via `PluginState.activeResponseContexts.get(sessionId)` - if the session has an existing context from a prior user interaction, events get routed there. The scheduler's final `sendEphemeralAlert()` correctly sends results as a fresh DM, but intermediate streaming updates polluted unrelated threads.
+
+**Fix:** Added `isRunningScheduledTask()` check to all event handlers. When a session is running a scheduled task, all streaming events are suppressed:
+
+1. `SchedulerService` tracks running sessions in `runningScheduledSessions: Set<string>`
+2. `isRunningScheduledTask(sessionId)` method added to check if session should be isolated
+3. All event handlers (`message.ts`, `session.ts`, `tool.ts`, `todo.ts`, `compaction.ts`, `question.ts`, `file.ts`, `permission.ts`) now check this before routing
+
+**Files Changed:**
+- `src/scheduler/scheduler-service.ts` - Already had the tracking set and method (added in previous iteration)
+- `.opencode/plugin/mattermost-control/event-handlers/*.ts` - All 8 handlers updated to check `isScheduledTaskSession()`
+
+**Prevention:** When adding new execution contexts (scheduled tasks, background jobs, etc.), ensure streaming event handlers are aware and can isolate those contexts from user-facing threads.
+
+**Verified:** TypeScript compiles, published v0.3.33
+
+---
+
 ## 2026-01-22: Thread context missing when session created from existing thread (v0.3.24 → v0.3.25)
 
 **Problem:** When a session is created from an existing Mattermost thread (user's message is the root), the LLM doesn't receive the thread context. It says "I need to understand what task you're referring to" even though the original question is visible in the thread.

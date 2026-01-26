@@ -18,7 +18,7 @@ export const ThreadSessionMappingSchema = z.object({
   projectName: z.string().min(1),
   directory: z.string().min(1),
   sessionTitle: z.string().optional(),
-  status: z.enum(["active", "ended", "disconnected", "orphaned"]),
+  status: z.enum(["active", "ended", "disconnected", "orphaned", "merged"]),
   createdAt: z.string().datetime(),
   lastActivityAt: z.string().datetime(),
   endedAt: z.string().datetime().optional(),
@@ -26,6 +26,8 @@ export const ThreadSessionMappingSchema = z.object({
   pendingModelSelection: z.boolean().optional(),
   approvedUsers: z.array(z.string()).optional(),
   approveAllUsers: z.boolean().optional(),
+  mergedInto: z.string().optional(),
+  mergedAt: z.string().datetime().optional(),
 });
 
 export const ThreadMappingFileSchema = z.object({

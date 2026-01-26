@@ -6,11 +6,21 @@ import { PluginState } from "../state.js";
 import { formatFullResponse } from "../formatters.js";
 import { log } from "../../../../src/logger.js";
 
+function isScheduledTaskSession(sessionId: string): boolean {
+  const scheduler = PluginState.schedulerService;
+  return scheduler?.isRunningScheduledTask(sessionId) ?? false;
+}
+
 export async function handleSessionCompacted(event: any): Promise<void> {
   const eventSessionId = event.properties?.sessionID;
   const { mmClient, streamer } = PluginState;
   
   if (!eventSessionId || !mmClient || !streamer) return;
+  
+  if (isScheduledTaskSession(eventSessionId)) {
+    log.debug(`[ScheduledTask] Suppressing session.compacted for scheduled task session ${eventSessionId.substring(0, 8)}`);
+    return;
+  }
   
   log.info(`[Compaction] Session ${eventSessionId.substring(0, 8)} compacted`);
   const props = event.properties || {};

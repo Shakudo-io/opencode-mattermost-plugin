@@ -155,7 +155,7 @@ export interface PostedEvent {
   event_name?: string;
 }
 
-export type ThreadMappingStatus = "active" | "ended" | "disconnected" | "orphaned";
+export type ThreadMappingStatus = "active" | "ended" | "disconnected" | "orphaned" | "merged";
 
 export interface ModelSelection {
   providerID: string;
@@ -181,6 +181,8 @@ export interface ThreadSessionMapping {
   pendingModelSelection?: boolean;
   approvedUsers?: string[];
   approveAllUsers?: boolean;
+  mergedInto?: string;
+  mergedAt?: string;
 }
 
 export interface ThreadRootPostContent {

@@ -5,7 +5,8 @@ import type {
   MainDmCommandRoute, 
   MainDmPromptRoute, 
   UnknownThreadRoute, 
-  EndedSessionRoute 
+  EndedSessionRoute,
+  MergedSessionRoute,
 } from "./models/routing.js";
 
 export type MessageType = "command" | "prompt";
@@ -83,6 +84,16 @@ export class MessageRouter {
           threadRootPostId,
           errorMessage: "This session is disconnected. Please wait for reconnection or start a new session.",
         } as EndedSessionRoute;
+      }
+      
+      if (mapping.status === "merged") {
+        return {
+          type: "merged_session",
+          sessionId: mapping.sessionId,
+          threadRootPostId,
+          mergedInto: mapping.mergedInto || "",
+          errorMessage: "This thread has been merged into another session.",
+        } as MergedSessionRoute;
       }
       
       return {

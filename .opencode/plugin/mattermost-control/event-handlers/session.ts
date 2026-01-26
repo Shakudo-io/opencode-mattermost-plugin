@@ -8,12 +8,17 @@ import { stopActiveToolTimer, stopResponseTimer } from "../timers.js";
 import { handleMonitorAlert } from "../../../../src/monitor-service.js";
 import { log } from "../../../../src/logger.js";
 
+function isScheduledTaskSession(sessionId: string): boolean {
+  const scheduler = PluginState.schedulerService;
+  return scheduler?.isRunningScheduledTask(sessionId) ?? false;
+}
+
 export async function handleSessionIdle(event: any): Promise<void> {
   const eventSessionId = event.properties?.sessionID;
   
-  // Handle monitor alerts
+  // Handle monitor alerts (skip for scheduled tasks - they don't need idle alerts)
   log.debug(`[Monitor] session.idle event: sessionId=${eventSessionId}`);
-  if (eventSessionId) {
+  if (eventSessionId && !isScheduledTaskSession(eventSessionId)) {
     const activeSessionIds = Array.from(PluginState.activeResponseContexts.keys());
     await handleMonitorAlert(eventSessionId, "session.idle", undefined, activeSessionIds[0]);
   }
@@ -23,6 +28,12 @@ export async function handleSessionIdle(event: any): Promise<void> {
   if (!isConnected || !streamer || !notifications) return;
   
   if (!eventSessionId) return;
+  
+  // Skip stream finalization for scheduled task sessions
+  if (isScheduledTaskSession(eventSessionId)) {
+    log.debug(`[ScheduledTask] Suppressing session.idle finalization for scheduled task session ${eventSessionId.substring(0, 8)}`);
+    return;
+  }
   
   const ctx = PluginState.activeResponseContexts.get(eventSessionId);
   if (!ctx) return;
@@ -56,6 +67,12 @@ export async function handleSessionIdle(event: any): Promise<void> {
 export async function handleSessionStatus(event: any): Promise<void> {
   const eventSessionId = event.properties?.sessionID;
   if (!eventSessionId || !PluginState.isConnected) return;
+  
+  // Skip status updates for scheduled task sessions
+  if (isScheduledTaskSession(eventSessionId)) {
+    log.debug(`[ScheduledTask] Suppressing session.status for scheduled task session ${eventSessionId.substring(0, 8)}`);
+    return;
+  }
   
   const status = event.properties?.status as { type: string; attempt?: number; maxAttempts?: number; error?: string } | undefined;
   const ctx = PluginState.activeResponseContexts.get(eventSessionId);

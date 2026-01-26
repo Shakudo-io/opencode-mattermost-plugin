@@ -215,6 +215,24 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         return;
       }
       
+      case "merged_session": {
+        const destMapping = routeResult.mergedInto 
+          ? threadMappingStore?.getBySessionId(routeResult.mergedInto)
+          : null;
+        
+        const baseUrl = config.mattermost.baseUrl.replace(/\/api\/v4$/, "");
+        const redirectLink = destMapping 
+          ? `[here](${baseUrl}/_redirect/pl/${destMapping.threadRootPostId})`
+          : "another thread";
+        
+        await mmClient.createPost(
+          post.channel_id,
+          `:lock: **Thread Merged**\n\nThis thread has been merged into ${redirectLink}.\nPlease continue the conversation there.`,
+          routeResult.threadRootPostId
+        );
+        return;
+      }
+      
       case "thread_prompt": {
         const promptText = routeResult.promptText.trim();
         

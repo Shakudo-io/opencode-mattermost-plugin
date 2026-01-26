@@ -7,9 +7,24 @@ import { formatFullResponse } from "../formatters.js";
 import { updateResponseStream } from "../timers.js";
 import { log } from "../../../../src/logger.js";
 
+/**
+ * Check if a session is running a scheduled task.
+ * If so, streaming updates should be suppressed to prevent routing to wrong threads.
+ */
+function isScheduledTaskSession(sessionId: string): boolean {
+  const scheduler = PluginState.schedulerService;
+  return scheduler?.isRunningScheduledTask(sessionId) ?? false;
+}
+
 export async function handleMessageUpdated(event: any): Promise<void> {
   const msgInfo = event.properties?.info;
   if (msgInfo?.role !== "assistant" || !msgInfo?.sessionID) return;
+  
+  // Skip streaming updates for scheduled task sessions to prevent routing to wrong threads
+  if (isScheduledTaskSession(msgInfo.sessionID)) {
+    log.debug(`[ScheduledTask] Suppressing message.updated for scheduled task session ${msgInfo.sessionID.substring(0, 8)}`);
+    return;
+  }
   
   const ctx = PluginState.activeResponseContexts.get(msgInfo.sessionID);
   if (!ctx) return;
@@ -46,6 +61,12 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
   const sessionId = part?.sessionID || event.properties?.sessionID;
   
   if (!sessionId) return;
+  
+  // Skip streaming updates for scheduled task sessions
+  if (isScheduledTaskSession(sessionId)) {
+    log.debug(`[ScheduledTask] Suppressing message.part.updated for scheduled task session ${sessionId.substring(0, 8)}`);
+    return;
+  }
   
   const ctx = PluginState.activeResponseContexts.get(sessionId);
   if (!ctx) return;

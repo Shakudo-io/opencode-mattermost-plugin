@@ -34,6 +34,7 @@ const SessionsConfigSchema = z.object({
   timeout: z.number().default(3600000),
   maxSessions: z.number().default(50),
   allowedUsers: z.array(z.string()).default([]),
+  allowedChannelTypes: z.array(z.enum(["D", "G", "O", "P"])).default(["D", "G", "O", "P"]),
 });
 
 const SessionSelectionConfigSchema = z.object({
@@ -131,6 +132,7 @@ export function loadConfig(): PluginConfig {
       timeout: parseInt(process.env.OPENCODE_MM_SESSION_TIMEOUT || "") || 3600000,
       maxSessions: parseInt(process.env.OPENCODE_MM_MAX_SESSIONS || "") || 50,
       allowedUsers: process.env.OPENCODE_MM_ALLOWED_USERS?.split(",").filter(Boolean) || [],
+      allowedChannelTypes: (process.env.OPENCODE_MM_ALLOWED_CHANNEL_TYPES?.split(",").filter(Boolean) as ("D" | "G" | "O" | "P")[]) || ["D", "G", "O", "P"],
     },
     files: {
       tempDir: process.env.OPENCODE_MM_TEMP_DIR || "/tmp/opencode-mm-plugin",

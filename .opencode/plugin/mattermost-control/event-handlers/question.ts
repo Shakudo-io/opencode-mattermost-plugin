@@ -7,6 +7,11 @@ import { formatFullResponse } from "../formatters.js";
 import type { QuestionRequest } from "../../../../src/question-handler.js";
 import { log } from "../../../../src/logger.js";
 
+function isScheduledTaskSession(sessionId: string): boolean {
+  const scheduler = PluginState.schedulerService;
+  return scheduler?.isRunningScheduledTask(sessionId) ?? false;
+}
+
 export async function handleQuestionAsked(event: any): Promise<void> {
   const { questionHandler, threadMappingStore, streamer, isConnected } = PluginState;
   
@@ -14,6 +19,12 @@ export async function handleQuestionAsked(event: any): Promise<void> {
   
   const props = event.properties;
   const eventSessionId = props?.sessionID;
+  
+  // Skip question handling for scheduled task sessions - they can't ask questions via DM
+  if (eventSessionId && isScheduledTaskSession(eventSessionId)) {
+    log.debug(`[ScheduledTask] Suppressing question.asked for scheduled task session ${eventSessionId.substring(0, 8)}`);
+    return;
+  }
   
   log.info(`[QuestionHandler] question.asked event: sessionId=${eventSessionId}, requestId=${props?.id}`);
   
