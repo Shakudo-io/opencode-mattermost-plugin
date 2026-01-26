@@ -159,6 +159,12 @@ Use `mattermost_status` to confirm the connection is active.
 | `mattermost_monitor` | Monitor session for events (permission, idle, question) |
 | `mattermost_unmonitor` | Stop monitoring a session |
 | `mattermost_send_file` | Upload a file to the current Mattermost thread |
+| `mattermost_schedule_add` | Create a scheduled task with cron expression |
+| `mattermost_schedule_list` | List all scheduled tasks |
+| `mattermost_schedule_remove` | Delete a scheduled task |
+| `mattermost_schedule_enable` | Enable a disabled scheduled task |
+| `mattermost_schedule_disable` | Disable a scheduled task |
+| `mattermost_schedule_run` | Run a scheduled task immediately |
 
 ### 6. Handling DMs
 
@@ -379,7 +385,10 @@ When connected, you can manage multiple OpenCode sessions via DM commands:
 | `!sessions` | List all available OpenCode sessions with thread links |
 | `!models` | List available models grouped by provider, select by number |
 | `!model` | Show the currently selected model for this session |
+| `!costs` | Show LLM token usage and costs for the current session |
+| `!stop` | Cancel the current processing operation |
 | `!merge <url>` | Merge another thread's conversation into the current session |
+| `!reject` | Skip/cancel a pending AI question |
 | `!help` | Display available commands and thread workflow |
 
 **Example:**
@@ -421,6 +430,23 @@ Bot: ✅ Model set to claude-sonnet-4-20250514 (Anthropic) for this session.
 ```
 
 The selected model persists for the session thread. Use `!model` to check the current selection.
+
+### Cost Tracking
+
+Monitor LLM token usage and costs for your session using the `!costs` command:
+
+```
+You: !costs
+Bot: 💰 Session Costs (ses_abc1)
+
+     Total Cost: $0.47
+     Input Tokens: 125,432
+     Output Tokens: 8,291
+     
+     Model: claude-sonnet-4-20250514
+```
+
+The status indicator also shows running costs during responses: `💰 $0.45 (+$0.03) | 125K tok`
 
 ### Thread Merging
 
@@ -480,6 +506,44 @@ Bot: 🔒 **Thread Merged**
 - Requirements and constraints discussed
 - Actions taken and their outcomes
 - Unfinished work and next steps
+
+### File Path Completion (`!!`)
+
+Reference files directly in your prompts using the `!!` prefix. The bot will automatically find and include matching files from your project.
+
+**Usage:**
+```
+You: Look at !!src/config and tell me what settings are available
+Bot: [Finds src/config.ts or similar, includes content, then responds]
+```
+
+**How it works:**
+1. Type `!!` followed by a partial file path (e.g., `!!src/resp`)
+2. The bot searches for matching files in your project
+3. If exact match: file content is automatically included
+4. If multiple matches: bot prompts you to select from options
+
+**Example with fuzzy matching:**
+```
+You: Check !!handler for bugs
+
+Bot: 🔍 Multiple files match "handler". Select one or more:
+
+     1. src/command-handler.ts
+     2. src/file-handler.ts
+     3. src/question-handler.ts
+     4. src/reaction-handler.ts
+
+     Reply with number(s) separated by commas (e.g., "1,3")
+
+You: 1,2
+Bot: [Includes both files and processes the original request]
+```
+
+**Notes:**
+- `!!` references inside code blocks are ignored
+- You can include multiple `!!` references in one message
+- Works with partial paths and fuzzy matching
 
 ### Channel Usage (Group DMs, Public & Private Channels)
 
@@ -670,6 +734,66 @@ Use `!use ses_4426` in DM to connect to this session.
 - `targetUser` - Mattermost username to notify (required if not connected)
 - `persistent` - Keep monitoring after each alert (default: true). Set to false for one-time alerts.
 
+### Scheduled Tasks
+
+Create cron-based scheduled tasks that run prompts at specified times and DM you the results. Useful for automated reports, periodic checks, or recurring tasks.
+
+**Available tools:**
+
+| Tool | Description |
+|------|-------------|
+| `mattermost_schedule_add` | Create a new scheduled task |
+| `mattermost_schedule_list` | List all scheduled tasks |
+| `mattermost_schedule_remove` | Delete a scheduled task |
+| `mattermost_schedule_enable` | Enable a disabled task |
+| `mattermost_schedule_disable` | Disable a task without deleting |
+| `mattermost_schedule_run` | Run a task immediately for testing |
+
+**Example - Daily status report:**
+```
+> mattermost_schedule_add name="morning-status" cron="0 9 * * *" prompt="Give me a summary of pending PRs and open issues" timezone="America/New_York"
+
+✅ Schedule created: morning-status
+   Cron: 0 9 * * * (America/New_York)
+   Next run: 2026-01-27 09:00:00
+```
+
+**Example - Periodic health check:**
+```
+> mattermost_schedule_add name="health-check" cron="0 */4 * * *" prompt="Check if all services are running and report any issues"
+
+✅ Schedule created: health-check
+   Cron: 0 */4 * * * (UTC)
+   Next run: 2026-01-26 20:00:00
+```
+
+**Cron expression examples:**
+- `0 9 * * *` - Every day at 9am
+- `0 9,17 * * 1-5` - 9am and 5pm on weekdays
+- `0 */4 * * *` - Every 4 hours
+- `30 8 * * 1` - Every Monday at 8:30am
+
+**Managing schedules:**
+```
+> mattermost_schedule_list
+📋 Scheduled Tasks (2)
+
+   1. ✅ morning-status
+      Cron: 0 9 * * * (America/New_York)
+      Next: 2026-01-27 09:00:00
+
+   2. ✅ health-check
+      Cron: 0 */4 * * * (UTC)
+      Next: 2026-01-26 20:00:00
+
+> mattermost_schedule_disable name="health-check"
+✅ Schedule disabled: health-check
+
+> mattermost_schedule_run name="morning-status"
+🚀 Running schedule: morning-status
+[Results are sent to your DM]
+```
+
 ### Multi-Session Setup (Shared Server)
 
 When controlling multiple OpenCode sessions via Mattermost, you need to run them on a **shared server** so that events (like incoming prompts) are visible across all TUIs.
@@ -798,6 +922,10 @@ opencode attach http://localhost:4096
 | `QuestionHandler` | AI question tool support with user responses |
 | `ContextBuilder` | Builds thread context for group DMs, with optional Haiku summarization |
 | `MergeHandler` | Thread merging with AI summarization and source thread locking |
+| `FileCompletionHandler` | `!!` file path completion with fuzzy matching |
+| `GuestApprovalHandler` | Cross-user approval for shared channel sessions |
+| `SessionOwnershipHandler` | Ownership confirmation for group DM sessions |
+| `SchedulerService` | Cron-based scheduled task execution |
 
 ## Project Structure
 
@@ -821,10 +949,15 @@ opencode-mattermost-plugin/
     │   ├── index.ts                  # TypeScript types
     │   ├── thread-mapping.ts         # Thread mapping Zod schemas
     │   └── routing.ts                # Message routing types
+    ├── scheduler/
+    │   ├── schedule-store.ts         # Schedule persistence
+    │   └── scheduler-service.ts      # Cron job execution
     ├── command-handler.ts            # !command processing
     ├── config.ts                     # Configuration loading
     ├── context-builder.ts            # Group DM context building & summarization
+    ├── file-completion-handler.ts    # !! file path completion
     ├── file-handler.ts               # File uploads/downloads
+    ├── guest-approval-handler.ts     # Cross-user approval for channels
     ├── logger.ts                     # File-based logging
     ├── merge-handler.ts              # Thread merging with AI summarization
     ├── message-router.ts             # Thread-aware message routing
@@ -835,6 +968,7 @@ opencode-mattermost-plugin/
     ├── reaction-handler.ts           # Emoji reaction handling
     ├── response-streamer.ts          # Streams responses to MM
     ├── session-manager.ts            # User session management
+    ├── session-ownership-handler.ts  # Group DM ownership confirmation
     ├── status-indicator.ts           # Real-time status display
     ├── thread-manager.ts             # Thread lifecycle management
     └── todo-manager.ts               # Todo list tracking
