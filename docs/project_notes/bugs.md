@@ -1,5 +1,43 @@
 # Bug Log
 
+## 2026-01-26: Non-DM channel session creation fails after ownership confirmation (v0.3.36 → v0.3.37)
+
+**Problem:** User @mentions bot in a public/private channel thread, bot asks for ownership confirmation, user replies "yes", but then gets error: "This thread is not associated with any OpenCode session."
+
+**Specific case:** https://mattermost.dev.hyperplane.dev/shakudo-internal/pl/cqm6if39c3yu98e5gtw1ifcq9h
+- User @mentioned bot in channel (type `O` or `P`)
+- Bot asked: "Would you like to create a new OpenCode session?"
+- User replied "yes"
+- Session was created, but routing returned `type=unknown_thread`
+
+**Root Cause:** In `.opencode/plugin/mattermost-control/index.ts`, the `unknown_thread` case only handled `_ownershipConfirmed` flag for Group DMs (`channel.type === "G"`), but NOT for public channels (`O`) or private channels (`P`).
+
+```typescript
+// OLD - only handled Group DMs
+if (channel.type === "G") {
+  if ((post as any)._ownershipConfirmed) { /* create session */ }
+}
+```
+
+When ownership is confirmed in a public/private channel, the code fell through to the error message instead of creating the session.
+
+**Fix:** Extended the condition to include all non-DM channel types:
+```typescript
+// NEW - handles Group DM, Public, and Private channels
+if (channel.type === "G" || channel.type === "O" || channel.type === "P") {
+  if ((post as any)._ownershipConfirmed) { /* create session */ }
+}
+```
+
+**Files Changed:**
+- `.opencode/plugin/mattermost-control/index.ts` - Line 159: Extended channel type check
+
+**Prevention:** When adding channel-specific behavior, always consider ALL non-DM channel types: `G` (Group DM), `O` (Public), and `P` (Private). The ownership confirmation flow applies to all of these.
+
+**Verified:** TypeScript compiles, published v0.3.37
+
+---
+
 ## 2026-01-26: Scheduled task responses routed to wrong thread (v0.3.32 → v0.3.33)
 
 **Problem:** A scheduled job (`functional-standup-reminder`) response appeared in an unrelated session/thread instead of being sent as a direct DM. The scheduled task's streaming updates were routed through existing `activeResponseContexts` to whatever thread happened to be mapped to that session.

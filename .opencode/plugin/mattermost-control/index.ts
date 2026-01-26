@@ -156,11 +156,12 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         const channel = await mmClient.getChannel(post.channel_id);
         const threadRootPostId = routeResult.threadRootPostId;
         
-        if (channel.type === "G") {
+        // Handle ownership confirmation for non-DM channels (Group DM, Public, Private)
+        if (channel.type === "G" || channel.type === "O" || channel.type === "P") {
           // Check if this post was already confirmed via _ownershipConfirmed flag
           // This flag is set by connect.ts when user replies "yes" to ownership confirmation
           if ((post as any)._ownershipConfirmed) {
-            log.info(`[SessionOwnership] Post has _ownershipConfirmed flag, creating session in group DM channel ${post.channel_id}`);
+            log.info(`[SessionOwnership] Post has _ownershipConfirmed flag, creating session in ${channel.type === "G" ? "group DM" : channel.type === "O" ? "public" : "private"} channel ${post.channel_id}`);
             const newSession = await createNewSessionFromDm(userSession, post);
             if (newSession) {
               await handleThreadPrompt({
