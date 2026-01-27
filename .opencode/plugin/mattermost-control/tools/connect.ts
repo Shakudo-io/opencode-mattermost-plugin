@@ -424,9 +424,10 @@ function setupWebSocketListeners(
           );
           
           if (confirmResult.confirmed && pending?.originalPost) {
-            log.info(`[SessionOwnership] User confirmed, creating session directly`);
+            log.info(`[SessionOwnership] User confirmed with approval policy: ${confirmResult.approvalPolicy || 'none'}`);
             const originalPost = pending.originalPost;
             (originalPost as any)._ownershipConfirmed = true;
+            (originalPost as any)._approvalPolicy = confirmResult.approvalPolicy || "none";
             await handleUserMessage(originalPost);
           }
           return;

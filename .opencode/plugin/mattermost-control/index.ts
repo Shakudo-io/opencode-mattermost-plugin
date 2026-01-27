@@ -177,7 +177,6 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             return;
           }
           
-          // Legacy path: check for pending confirmation (shouldn't normally be hit anymore)
           const { sessionOwnershipHandler } = PluginState;
           if (sessionOwnershipHandler?.hasPendingConfirmation(post.channel_id, threadRootPostId, post.user_id)) {
             const confirmResult = await sessionOwnershipHandler.handleReply(
@@ -187,8 +186,11 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             );
             
             if (confirmResult.confirmed && confirmResult.post) {
-              log.info(`[SessionOwnership] User confirmed, creating session`);
-              const newSession = await createNewSessionFromDm(userSession, confirmResult.post);
+              log.info(`[SessionOwnership] User confirmed with approval policy: ${confirmResult.approvalPolicy || 'none'}`);
+              const postWithPolicy = confirmResult.post as any;
+              postWithPolicy._ownershipConfirmed = true;
+              postWithPolicy._approvalPolicy = confirmResult.approvalPolicy || "none";
+              const newSession = await createNewSessionFromDm(userSession, postWithPolicy);
               if (newSession) {
                 await handleThreadPrompt({
                   sessionId: newSession.sessionId,
@@ -531,7 +533,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     userSession: UserSession,
     post: Post
   ): Promise<{ sessionId: string; threadRootPostId: string } | null> {
-    const { mmClient, threadManager, openCodeSessionRegistry } = PluginState;
+    const { mmClient, threadManager, openCodeSessionRegistry, threadMappingStore } = PluginState;
     if (!mmClient || !threadManager) return null;
     
     try {
@@ -564,6 +566,24 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         post.channel_id,
         userSession.mattermostUsername
       );
+      
+      const approvalPolicy = (post as any)._approvalPolicy as string | undefined;
+      if (approvalPolicy && threadMappingStore) {
+        const updatedMapping = threadMappingStore.getBySessionId(result.data.id);
+        if (updatedMapping) {
+          if (approvalPolicy === "approve_all") {
+            updatedMapping.approveAllUsers = true;
+            log.info(`[CreateSession] Applied approve_all policy to session ${sessionInfo.shortId}`);
+          } else if (approvalPolicy === "approve_sender") {
+            updatedMapping.approvedUsers = updatedMapping.approvedUsers || [];
+            if (!updatedMapping.approvedUsers.includes(post.user_id)) {
+              updatedMapping.approvedUsers.push(post.user_id);
+            }
+            log.info(`[CreateSession] Applied approve_sender policy to session ${sessionInfo.shortId}`);
+          }
+          threadMappingStore.update(updatedMapping);
+        }
+      }
       
       await openCodeSessionRegistry?.refresh();
       

@@ -1,6 +1,10 @@
 import { log } from "./logger.js";
 import type { Post } from "./models/index.js";
 
+export type ConfirmationStep = "confirm_create" | "select_approval";
+
+export type ApprovalPolicy = "none" | "approve_sender" | "approve_all";
+
 export interface PendingOwnershipConfirmation {
   requestPostId: string;
   userId: string;
@@ -9,6 +13,7 @@ export interface PendingOwnershipConfirmation {
   threadRootPostId: string;
   channelId: string;
   createdAt: Date;
+  step: ConfirmationStep;
 }
 
 export interface ExistingSessionOwner {
@@ -110,6 +115,7 @@ _Request expires in 5 minutes_`;
       threadRootPostId,
       channelId,
       createdAt: new Date(),
+      step: "confirm_create",
     };
 
     this.pendingConfirmations.set(key, pending);
@@ -153,7 +159,7 @@ _Request expires in 5 minutes_`;
     channelId: string,
     threadRootPostId: string,
     replyText: string
-  ): Promise<{ confirmed: boolean; post?: Post; message: string }> {
+  ): Promise<{ confirmed: boolean; post?: Post; message: string; approvalPolicy?: ApprovalPolicy }> {
     const key = this.getKey(channelId, threadRootPostId);
     const pending = this.pendingConfirmations.get(key);
     if (!pending) {
@@ -162,24 +168,68 @@ _Request expires in 5 minutes_`;
 
     const trimmed = replyText.trim().toLowerCase();
 
-    if (trimmed === "yes" || trimmed === "y" || trimmed === "1") {
-      this.pendingConfirmations.delete(key);
-      log.info(`[SessionOwnership] @${pending.username} confirmed session creation for thread ${threadRootPostId.substring(0, 8)}`);
-      return { confirmed: true, post: pending.originalPost, message: "Session will be created." };
+    // Step 1: Confirm session creation
+    if (pending.step === "confirm_create") {
+      if (trimmed === "yes" || trimmed === "y") {
+        // Transition to step 2: ask about pre-approving users
+        pending.step = "select_approval";
+        pending.createdAt = new Date(); // Reset timeout
+        this.pendingConfirmations.set(key, pending);
+
+        const approvalMessage = `Great! **Do you want to pre-approve other people to use this session?**
+
+\`1\` - No pre-approval (only you can use this session initially)
+\`2\` - Pre-approve yourself only (same as 1 for now)
+\`3\` - Approve all users (anyone in this thread can send prompts)
+
+_Reply with a number (1, 2, or 3)_`;
+
+        await this.mmClient.createPost(
+          channelId,
+          approvalMessage,
+          threadRootPostId
+        );
+        log.info(`[SessionOwnership] @${pending.username} confirmed session creation, now asking for approval policy`);
+        return { confirmed: false, message: "Waiting for approval policy selection." };
+      }
+
+      if (trimmed === "no" || trimmed === "n") {
+        this.pendingConfirmations.delete(key);
+        await this.mmClient.createPost(
+          channelId,
+          `Got it. Ask someone else to @mention me to create a session for this thread.`,
+          threadRootPostId
+        );
+        log.info(`[SessionOwnership] @${pending.username} declined session creation for thread ${threadRootPostId.substring(0, 8)}`);
+        return { confirmed: false, message: "Session creation declined." };
+      }
+
+      return { confirmed: false, message: "Invalid response. Reply with yes or no." };
     }
 
-    if (trimmed === "no" || trimmed === "n" || trimmed === "0") {
+    // Step 2: Select approval policy
+    if (pending.step === "select_approval") {
+      let approvalPolicy: ApprovalPolicy;
+
+      if (trimmed === "1") {
+        approvalPolicy = "none";
+        log.info(`[SessionOwnership] @${pending.username} selected approval policy: none`);
+      } else if (trimmed === "2") {
+        approvalPolicy = "approve_sender";
+        log.info(`[SessionOwnership] @${pending.username} selected approval policy: approve_sender`);
+      } else if (trimmed === "3") {
+        approvalPolicy = "approve_all";
+        log.info(`[SessionOwnership] @${pending.username} selected approval policy: approve_all`);
+      } else {
+        return { confirmed: false, message: "Invalid response. Reply with 1, 2, or 3." };
+      }
+
       this.pendingConfirmations.delete(key);
-      await this.mmClient.createPost(
-        channelId,
-        `Got it. Ask someone else to @mention me to create a session for this thread.`,
-        threadRootPostId
-      );
-      log.info(`[SessionOwnership] @${pending.username} declined session creation for thread ${threadRootPostId.substring(0, 8)}`);
-      return { confirmed: false, message: "Session creation declined." };
+      log.info(`[SessionOwnership] @${pending.username} confirmed session creation with policy '${approvalPolicy}' for thread ${threadRootPostId.substring(0, 8)}`);
+      return { confirmed: true, post: pending.originalPost, message: "Session will be created.", approvalPolicy };
     }
 
-    return { confirmed: false, message: "Invalid response. Reply with yes or no." };
+    return { confirmed: false, message: "Invalid state." };
   }
 
   clearPendingConfirmation(channelId: string, threadRootPostId: string): void {
