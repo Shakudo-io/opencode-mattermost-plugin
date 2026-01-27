@@ -26,6 +26,7 @@ export const ThreadSessionMappingSchema = z.object({
   pendingModelSelection: z.boolean().optional(),
   approvedUsers: z.array(z.string()).optional(),
   approveAllUsers: z.boolean().optional(),
+  approveNextMessage: z.boolean().optional(),
   mergedInto: z.string().optional(),
   mergedAt: z.string().datetime().optional(),
 });

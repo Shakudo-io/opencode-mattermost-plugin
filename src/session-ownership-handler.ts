@@ -3,7 +3,7 @@ import type { Post } from "./models/index.js";
 
 export type ConfirmationStep = "confirm_create" | "select_approval";
 
-export type ApprovalPolicy = "none" | "approve_sender" | "approve_all";
+export type ApprovalPolicy = "none" | "approve_next" | "approve_all";
 
 export interface PendingOwnershipConfirmation {
   requestPostId: string;
@@ -179,8 +179,8 @@ _Request expires in 5 minutes_`;
         const approvalMessage = `Great! **Do you want to pre-approve other people to use this session?**
 
 \`1\` - No pre-approval (only you can use this session initially)
-\`2\` - Pre-approve yourself only (same as 1 for now)
-\`3\` - Approve all users (anyone in this thread can send prompts)
+\`2\` - Pre-approve the next message (one-time approval for the next person)
+\`3\` - Approve all subsequent messages (anyone can send prompts)
 
 _Reply with a number (1, 2, or 3)_`;
 
@@ -215,8 +215,8 @@ _Reply with a number (1, 2, or 3)_`;
         approvalPolicy = "none";
         log.info(`[SessionOwnership] @${pending.username} selected approval policy: none`);
       } else if (trimmed === "2") {
-        approvalPolicy = "approve_sender";
-        log.info(`[SessionOwnership] @${pending.username} selected approval policy: approve_sender`);
+        approvalPolicy = "approve_next";
+        log.info(`[SessionOwnership] @${pending.username} selected approval policy: approve_next`);
       } else if (trimmed === "3") {
         approvalPolicy = "approve_all";
         log.info(`[SessionOwnership] @${pending.username} selected approval policy: approve_all`);

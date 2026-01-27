@@ -181,6 +181,7 @@ export interface ThreadSessionMapping {
   pendingModelSelection?: boolean;
   approvedUsers?: string[];
   approveAllUsers?: boolean;
+  approveNextMessage?: boolean;
   mergedInto?: string;
   mergedAt?: string;
 }

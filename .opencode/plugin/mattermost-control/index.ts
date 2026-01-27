@@ -574,12 +574,9 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           if (approvalPolicy === "approve_all") {
             updatedMapping.approveAllUsers = true;
             log.info(`[CreateSession] Applied approve_all policy to session ${sessionInfo.shortId}`);
-          } else if (approvalPolicy === "approve_sender") {
-            updatedMapping.approvedUsers = updatedMapping.approvedUsers || [];
-            if (!updatedMapping.approvedUsers.includes(post.user_id)) {
-              updatedMapping.approvedUsers.push(post.user_id);
-            }
-            log.info(`[CreateSession] Applied approve_sender policy to session ${sessionInfo.shortId}`);
+          } else if (approvalPolicy === "approve_next") {
+            updatedMapping.approveNextMessage = true;
+            log.info(`[CreateSession] Applied approve_next policy to session ${sessionInfo.shortId}`);
           }
           threadMappingStore.update(updatedMapping);
         }

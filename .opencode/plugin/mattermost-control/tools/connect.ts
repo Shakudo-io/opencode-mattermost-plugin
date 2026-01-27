@@ -508,6 +508,9 @@ function setupWebSocketListeners(
           
           if (guestApprovalHandler?.isUserApproved(postData.user_id, mapping, PluginState.teamStore)) {
             log.info(`[Channel] Bot @mentioned by approved guest ${postData.user_id}, processing (channel: ${channel.id})`);
+            if (mapping.approveNextMessage && threadMappingStore) {
+              guestApprovalHandler.consumeNextMessageApproval(mapping, threadMappingStore);
+            }
           } else {
             log.info(`[Channel] Bot @mentioned by non-approved guest ${postData.user_id}, requesting approval (channel: ${channel.id})`);
             
