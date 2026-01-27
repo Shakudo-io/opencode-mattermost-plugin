@@ -464,8 +464,9 @@ function setupWebSocketListeners(
         
         const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
-        if (hasTeamAccess) {
-          if (!mapping) {
+        if (!mapping) {
+          // No existing session - only owner can create new sessions
+          if (isOwner) {
             const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
             const mmClient = PluginState.mmClient;
             if (!mmClient || !sessionOwnershipHandler) return;
@@ -478,7 +479,7 @@ function setupWebSocketListeners(
               log.warn(`[Channel] Could not fetch user username: ${e}`);
             }
             
-            log.info(`[Channel] Team user @mentioned bot in unmapped thread, requesting ownership confirmation`);
+            log.info(`[Channel] Owner @mentioned bot in unmapped thread, requesting ownership confirmation`);
             await sessionOwnershipHandler.requestOwnershipConfirmation(
               postData,
               userUsername,
@@ -486,8 +487,18 @@ function setupWebSocketListeners(
               channel.id
             );
             return;
+          } else {
+            // Team members and guests cannot create sessions - silently ignore
+            // (their own OpenCode instance may handle it)
+            log.debug(`[Channel] Non-owner @mention in unmapped thread - ignoring to allow other bots to handle (channel: ${channel.id})`);
+            return;
           }
-          log.info(`[Channel] Bot @mentioned by team user, processing message (channel: ${channel.id})`);
+        }
+        
+        // Existing session - check access permissions
+        if (hasTeamAccess) {
+          // Owner and team members can use existing sessions without approval
+          log.info(`[Channel] Bot @mentioned by ${isOwner ? 'owner' : 'team member'}, processing message (channel: ${channel.id})`);
         } else {
           if (!mapping) {
             log.debug(`[Channel] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);
