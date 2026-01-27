@@ -4,6 +4,7 @@ import type { UserSession } from "./session-manager.js";
 import type { ParsedCommand } from "./message-router.js";
 import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
 import type { TeamStore } from "./persistence/team-store.js";
+import type { QuestionHandler } from "./question-handler.js";
 import type { ModelSelection } from "./models/index.js";
 import { MergeHandler } from "./merge-handler.js";
 import { log } from "./logger.js";
@@ -22,6 +23,7 @@ export interface CommandContext {
   threadMappingStore?: ThreadMappingStore | null;
   teamStore?: TeamStore | null;
   ownerUserId?: string | null;
+  questionHandler?: QuestionHandler | null;
   opencodeClient?: any;
   sessionId?: string;
   threadRootPostId?: string;
@@ -59,6 +61,8 @@ export class CommandHandler {
     this.commands.set("stop", this.handleStop.bind(this));
     this.commands.set("merge", this.handleMerge.bind(this));
     this.commands.set("team", this.handleTeam.bind(this));
+    this.commands.set("reject", this.handleReject.bind(this));
+    this.commands.set("cancel", this.handleReject.bind(this)); // alias
   }
 
   private cachedModels: ProviderModel[] = [];
@@ -651,6 +655,50 @@ export class CommandHandler {
         message: `Failed to stop session: ${errorMsg}`,
       };
     }
+  }
+
+  private async handleReject(
+    _command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { sessionId, questionHandler } = context;
+
+    if (!sessionId) {
+      return {
+        success: false,
+        message: `Use \`${this.commandPrefix}reject\` inside a session thread to reject a pending question.`,
+      };
+    }
+
+    if (!questionHandler) {
+      return {
+        success: false,
+        message: "Question handler not available.",
+      };
+    }
+
+    if (!questionHandler.hasPendingQuestion(sessionId)) {
+      return {
+        success: false,
+        message: "No pending question to reject for this session.",
+      };
+    }
+
+    const questionInfo = questionHandler.getPendingQuestionInfo(sessionId);
+    questionHandler.cancelSessionQuestions(sessionId);
+
+    const questionHeader = questionInfo?.request.questions[0]?.header || "Unknown";
+    
+    return {
+      success: true,
+      message: [
+        `:x: **Question Rejected**`,
+        "",
+        `Skipped question: "${questionHeader}"`,
+        "",
+        "The AI will continue without your input (using default or making its own choice).",
+      ].join("\n"),
+    };
   }
 
   private async handleMerge(

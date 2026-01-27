@@ -126,6 +126,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           threadMappingStore,
           teamStore: PluginState.teamStore,
           ownerUserId: config.mattermost.ownerUserId,
+          questionHandler: PluginState.questionHandler,
           opencodeClient: client,
           channelId: post.channel_id,
         });
@@ -284,6 +285,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
               threadMappingStore,
               teamStore: PluginState.teamStore,
               ownerUserId: config.mattermost.ownerUserId,
+              questionHandler: PluginState.questionHandler,
               opencodeClient: client,
               sessionId: routeResult.sessionId,
               threadRootPostId: routeResult.threadRootPostId,
@@ -303,6 +305,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             threadMappingStore,
             teamStore: PluginState.teamStore,
             ownerUserId: config.mattermost.ownerUserId,
+            questionHandler: PluginState.questionHandler,
             opencodeClient: client,
             sessionId: routeResult.sessionId,
             threadRootPostId: routeResult.threadRootPostId,
