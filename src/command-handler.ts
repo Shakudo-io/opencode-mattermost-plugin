@@ -3,6 +3,7 @@ import type { OpenCodeSessionRegistry, OpenCodeSessionInfo } from "./opencode-se
 import type { UserSession } from "./session-manager.js";
 import type { ParsedCommand } from "./message-router.js";
 import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
+import type { TeamStore } from "./persistence/team-store.js";
 import type { ModelSelection } from "./models/index.js";
 import { MergeHandler } from "./merge-handler.js";
 import { log } from "./logger.js";
@@ -19,6 +20,8 @@ export interface CommandContext {
   registry: OpenCodeSessionRegistry;
   mmClient: MattermostClient;
   threadMappingStore?: ThreadMappingStore | null;
+  teamStore?: TeamStore | null;
+  ownerUserId?: string | null;
   opencodeClient?: any;
   sessionId?: string;
   threadRootPostId?: string;
@@ -55,6 +58,7 @@ export class CommandHandler {
     this.commands.set("costs", this.handleCosts.bind(this));
     this.commands.set("stop", this.handleStop.bind(this));
     this.commands.set("merge", this.handleMerge.bind(this));
+    this.commands.set("team", this.handleTeam.bind(this));
   }
 
   private cachedModels: ProviderModel[] = [];
@@ -309,6 +313,7 @@ export class CommandHandler {
       `| \`${this.commandPrefix}merge <url>\` | Merge another thread into this session |`,
       `| \`${this.commandPrefix}stop\` | Stop/abort the current session (use in thread) |`,
       `| \`${this.commandPrefix}reject\` | Skip/reject a pending AI question |`,
+      `| \`${this.commandPrefix}team\` | Manage team members (owner only) |`,
       `| \`${this.commandPrefix}help\` | Show this help message |`,
       "",
     ];
@@ -707,6 +712,213 @@ export class CommandHandler {
     return {
       success: result.success,
       message: result.message,
+    };
+  }
+
+  private async handleTeam(
+    command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { teamStore, ownerUserId, userSession, mmClient } = context;
+
+    if (!teamStore) {
+      return {
+        success: false,
+        message: "Team system not available.",
+      };
+    }
+
+    const isOwner = ownerUserId && userSession.mattermostUserId === ownerUserId;
+    if (!isOwner) {
+      return {
+        success: false,
+        message: "Only the owner can manage team members.",
+      };
+    }
+
+    const args = command.rawArgs.trim().split(/\s+/);
+    const subcommand = args[0]?.toLowerCase() || "";
+
+    if (!subcommand || subcommand === "list") {
+      return this.handleTeamList(teamStore);
+    }
+
+    if (subcommand === "add") {
+      const mention = args[1];
+      if (!mention) {
+        return {
+          success: false,
+          message: `**Usage:** \`${this.commandPrefix}team add @username\``,
+        };
+      }
+      return this.handleTeamAdd(teamStore, mmClient, mention, ownerUserId);
+    }
+
+    if (subcommand === "remove") {
+      const mention = args[1];
+      if (!mention) {
+        return {
+          success: false,
+          message: `**Usage:** \`${this.commandPrefix}team remove @username\``,
+        };
+      }
+      return this.handleTeamRemove(teamStore, mmClient, mention);
+    }
+
+    if (subcommand === "clear") {
+      return this.handleTeamClear(teamStore);
+    }
+
+    return {
+      success: false,
+      message: [
+        `:busts_in_silhouette: **Team Commands**`,
+        "",
+        `| Command | Description |`,
+        `|---------|-------------|`,
+        `| \`${this.commandPrefix}team\` | Show team members |`,
+        `| \`${this.commandPrefix}team add @user\` | Add a team member |`,
+        `| \`${this.commandPrefix}team remove @user\` | Remove a team member |`,
+        `| \`${this.commandPrefix}team clear\` | Remove all team members |`,
+        "",
+        "Team members can bypass guest approval and create sessions.",
+      ].join("\n"),
+    };
+  }
+
+  private handleTeamList(teamStore: TeamStore): CommandResult {
+    const members = teamStore.getMembers();
+    const config = teamStore.getConfig();
+
+    if (!config) {
+      return {
+        success: true,
+        message: "No team configured yet. Use `!team add @user` to add your first team member.",
+      };
+    }
+
+    const lines: string[] = [
+      `:busts_in_silhouette: **Team: ${config.name}**`,
+      "",
+    ];
+
+    if (members.length === 0) {
+      lines.push("_No team members yet._");
+      lines.push("");
+      lines.push(`Use \`${this.commandPrefix}team add @username\` to add members.`);
+    } else {
+      lines.push(`| Member | Added | Role |`);
+      lines.push(`|--------|-------|------|`);
+      
+      for (const member of members) {
+        const addedDate = new Date(member.addedAt).toLocaleDateString();
+        lines.push(`| @${member.username} | ${addedDate} | ${member.role} |`);
+      }
+      
+      lines.push("");
+      lines.push(`**${members.length}** team member(s)`);
+    }
+
+    lines.push("");
+    lines.push("Team members bypass guest approval and can create sessions.");
+
+    return {
+      success: true,
+      message: lines.join("\n"),
+    };
+  }
+
+  private async handleTeamAdd(
+    teamStore: TeamStore,
+    mmClient: MattermostClient,
+    mention: string,
+    addedBy: string
+  ): Promise<CommandResult> {
+    const username = mention.replace(/^@/, "");
+
+    try {
+      const user = await mmClient.getUserByUsername(username);
+      
+      if (teamStore.isOwner(user.id)) {
+        return {
+          success: false,
+          message: `@${username} is the owner, not a team member.`,
+        };
+      }
+
+      const added = teamStore.addMember(user.id, username, addedBy);
+      
+      if (!added) {
+        return {
+          success: false,
+          message: `@${username} is already a team member.`,
+        };
+      }
+
+      return {
+        success: true,
+        message: [
+          `:white_check_mark: **Team Member Added**`,
+          "",
+          `@${username} can now:`,
+          "- Bypass guest approval in channels",
+          "- Create sessions without confirmation",
+          "- Send prompts directly to the bot",
+        ].join("\n"),
+      };
+    } catch (e) {
+      log.error(`[CommandHandler] Failed to add team member @${username}:`, e);
+      return {
+        success: false,
+        message: `Could not find user @${username}. Make sure the username is correct.`,
+      };
+    }
+  }
+
+  private async handleTeamRemove(
+    teamStore: TeamStore,
+    mmClient: MattermostClient,
+    mention: string
+  ): Promise<CommandResult> {
+    const username = mention.replace(/^@/, "");
+
+    try {
+      const user = await mmClient.getUserByUsername(username);
+      const removed = teamStore.removeMember(user.id);
+      
+      if (!removed) {
+        return {
+          success: false,
+          message: `@${username} is not a team member.`,
+        };
+      }
+
+      return {
+        success: true,
+        message: `:white_check_mark: Removed @${username} from the team.`,
+      };
+    } catch (e) {
+      log.error(`[CommandHandler] Failed to remove team member @${username}:`, e);
+      return {
+        success: false,
+        message: `Could not find user @${username}. Make sure the username is correct.`,
+      };
+    }
+  }
+
+  private handleTeamClear(teamStore: TeamStore): CommandResult {
+    const count = teamStore.clearMembers();
+    
+    if (count === 0) {
+      return {
+        success: true,
+        message: "No team members to remove.",
+      };
+    }
+
+    return {
+      success: true,
+      message: `:white_check_mark: Removed **${count}** team member(s). Only the owner has access now.`,
     };
   }
 

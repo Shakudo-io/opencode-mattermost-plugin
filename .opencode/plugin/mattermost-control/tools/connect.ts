@@ -20,6 +20,7 @@ import { getSchedulerService } from "../../../../src/scheduler/scheduler-service
 import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
+import { TeamStore } from "../../../../src/persistence/team-store.js";
 import type { WebSocketEvent } from "../../../../src/models/index.js";
 
 export interface ConnectionContext {
@@ -176,6 +177,13 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     await scheduler.start();
     PluginState.setSchedulerService(scheduler);
     log.info(`[SchedulerService] Initialized with ${scheduler.getStats().enabled} active schedules`);
+
+    const teamStore = new TeamStore();
+    teamStore.load();
+    if (!teamStore.hasTeam() && config.mattermost.ownerUserId) {
+      teamStore.createTeam(config.mattermost.ownerUserId);
+    }
+    PluginState.setTeamStore(teamStore);
 
     PluginState.setConnected(
       mmClient,
@@ -402,9 +410,11 @@ function setupWebSocketListeners(
         
         const threadRootId = postData.root_id || postData.id;
         const isOwner = !config.mattermost.ownerUserId || postData.user_id === config.mattermost.ownerUserId;
+        const isTeamMember = PluginState.teamStore?.isMember(postData.user_id) || false;
+        const hasTeamAccess = isOwner || isTeamMember;
         
         const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
-        if (isOwner && sessionOwnershipHandler?.hasPendingConfirmation(channel.id, threadRootId, postData.user_id)) {
+        if (hasTeamAccess && sessionOwnershipHandler?.hasPendingConfirmation(channel.id, threadRootId, postData.user_id)) {
           log.info(`[Channel] Processing ownership confirmation reply from @${postData.user_id}`);
           const pending = sessionOwnershipHandler.getPendingConfirmation(channel.id, threadRootId);
           const confirmResult = await sessionOwnershipHandler.handleReply(
@@ -427,7 +437,7 @@ function setupWebSocketListeners(
         const guestApprovalHandler = PluginState.guestApprovalHandler;
         const mappingForApproval = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
-        if (isOwner && mappingForApproval && guestApprovalHandler?.hasPendingApproval(mappingForApproval.sessionId)) {
+        if (hasTeamAccess && mappingForApproval && guestApprovalHandler?.hasPendingApproval(mappingForApproval.sessionId)) {
           const trimmedReply = postData.message.trim().toLowerCase();
           if (/^[0-3]$/.test(trimmedReply) || trimmedReply === "deny" || trimmedReply === "no") {
             log.info(`[Channel] Processing guest approval reply from owner: "${trimmedReply}"`);
@@ -454,37 +464,37 @@ function setupWebSocketListeners(
         
         const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
-        if (isOwner) {
+        if (hasTeamAccess) {
           if (!mapping) {
             const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
             const mmClient = PluginState.mmClient;
             if (!mmClient || !sessionOwnershipHandler) return;
             
-            let ownerUsername = "unknown";
+            let userUsername = "unknown";
             try {
-              const ownerUser = await mmClient.getUserById(postData.user_id);
-              ownerUsername = ownerUser.username;
+              const user = await mmClient.getUserById(postData.user_id);
+              userUsername = user.username;
             } catch (e) {
-              log.warn(`[Channel] Could not fetch owner username: ${e}`);
+              log.warn(`[Channel] Could not fetch user username: ${e}`);
             }
             
-            log.info(`[Channel] Owner @mentioned bot in unmapped thread, requesting ownership confirmation`);
+            log.info(`[Channel] Team user @mentioned bot in unmapped thread, requesting ownership confirmation`);
             await sessionOwnershipHandler.requestOwnershipConfirmation(
               postData,
-              ownerUsername,
+              userUsername,
               threadRootId,
               channel.id
             );
             return;
           }
-          log.info(`[Channel] Bot @mentioned by owner, processing message (channel: ${channel.id})`);
+          log.info(`[Channel] Bot @mentioned by team user, processing message (channel: ${channel.id})`);
         } else {
           if (!mapping) {
             log.debug(`[Channel] Non-owner @mention but no thread mapping found - ignoring (channel: ${channel.id})`);
             return;
           }
           
-          if (guestApprovalHandler?.isUserApproved(postData.user_id, mapping)) {
+          if (guestApprovalHandler?.isUserApproved(postData.user_id, mapping, PluginState.teamStore)) {
             log.info(`[Channel] Bot @mentioned by approved guest ${postData.user_id}, processing (channel: ${channel.id})`);
           } else {
             log.info(`[Channel] Bot @mentioned by non-approved guest ${postData.user_id}, requesting approval (channel: ${channel.id})`);

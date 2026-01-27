@@ -1,6 +1,7 @@
 import { log } from "./logger.js";
 import type { Post } from "./models/index.js";
 import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
+import type { TeamStore } from "./persistence/team-store.js";
 
 export interface PendingApproval {
   requestPostId: string;
@@ -180,8 +181,10 @@ _Reply \`deny\` or \`0\` to reject_`;
 
   isUserApproved(
     userId: string,
-    mapping: { approvedUsers?: string[]; approveAllUsers?: boolean } | null
+    mapping: { approvedUsers?: string[]; approveAllUsers?: boolean } | null,
+    teamStore?: TeamStore | null
   ): boolean {
+    if (teamStore?.hasTeamAccess(userId)) return true;
     if (!mapping) return false;
     if (mapping.approveAllUsers) return true;
     if (mapping.approvedUsers?.includes(userId)) return true;

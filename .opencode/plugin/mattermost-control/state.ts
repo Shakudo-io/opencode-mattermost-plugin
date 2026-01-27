@@ -17,6 +17,7 @@ import type { GuestApprovalHandler } from "../../../src/guest-approval-handler.j
 import type { SessionOwnershipHandler } from "../../../src/session-ownership-handler.js";
 import type { FileCompletionHandler } from "../../../src/file-completion-handler.js";
 import type { SchedulerService } from "../../../src/scheduler/scheduler-service.js";
+import type { TeamStore } from "../../../src/persistence/team-store.js";
 import type { User } from "../../../src/models/index.js";
 
 class PluginStateManager {
@@ -39,6 +40,7 @@ class PluginStateManager {
   private _sessionOwnershipHandler: SessionOwnershipHandler | null = null;
   private _fileCompletionHandler: FileCompletionHandler | null = null;
   private _schedulerService: SchedulerService | null = null;
+  private _teamStore: TeamStore | null = null;
   private _botUser: User | null = null;
   private _projectName: string = "";
 
@@ -70,6 +72,7 @@ class PluginStateManager {
   get fileCompletionHandler(): FileCompletionHandler | null { return this._fileCompletionHandler; }
   get questionCleanupTimer(): ReturnType<typeof setInterval> | null { return this._questionCleanupTimer; }
   get schedulerService(): SchedulerService | null { return this._schedulerService; }
+  get teamStore(): TeamStore | null { return this._teamStore; }
 
   setProjectName(name: string): void {
     this._projectName = name;
@@ -128,11 +131,20 @@ class PluginStateManager {
     this._schedulerService = service;
   }
 
+  setTeamStore(store: TeamStore): void {
+    this._teamStore = store;
+  }
+
   disconnect(): void {
     // Stop the scheduler first
     if (this._schedulerService) {
       this._schedulerService.stop();
       this._schedulerService = null;
+    }
+    // Shutdown team store
+    if (this._teamStore) {
+      this._teamStore.shutdown();
+      this._teamStore = null;
     }
     for (const [_, timer] of this.activeToolTimers) {
       clearInterval(timer);
