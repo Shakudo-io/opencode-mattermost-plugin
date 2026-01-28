@@ -181,14 +181,26 @@ _Reply \`deny\` or \`0\` to reject_`;
 
   isUserApproved(
     userId: string,
-    mapping: { approvedUsers?: string[]; approveAllUsers?: boolean } | null,
+    mapping: { approvedUsers?: string[]; approveAllUsers?: boolean; approveNextMessage?: boolean } | null,
     teamStore?: TeamStore | null
   ): boolean {
     if (teamStore?.hasTeamAccess(userId)) return true;
     if (!mapping) return false;
     if (mapping.approveAllUsers) return true;
+    if (mapping.approveNextMessage) return true;
     if (mapping.approvedUsers?.includes(userId)) return true;
     return false;
+  }
+
+  consumeNextMessageApproval(
+    mapping: { approveNextMessage?: boolean } | null,
+    threadMappingStore: ThreadMappingStore
+  ): void {
+    if (mapping && mapping.approveNextMessage) {
+      (mapping as any).approveNextMessage = false;
+      threadMappingStore.update(mapping as any);
+      log.info(`[GuestApproval] Consumed one-time approveNextMessage approval`);
+    }
   }
 
   clearPendingApproval(sessionId: string): void {

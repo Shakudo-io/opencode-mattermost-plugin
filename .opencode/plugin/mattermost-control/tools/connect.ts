@@ -424,9 +424,10 @@ function setupWebSocketListeners(
           );
           
           if (confirmResult.confirmed && pending?.originalPost) {
-            log.info(`[SessionOwnership] User confirmed, creating session directly`);
+            log.info(`[SessionOwnership] User confirmed with approval policy: ${confirmResult.approvalPolicy || 'none'}`);
             const originalPost = pending.originalPost;
             (originalPost as any)._ownershipConfirmed = true;
+            (originalPost as any)._approvalPolicy = confirmResult.approvalPolicy || "none";
             await handleUserMessage(originalPost);
           }
           return;
@@ -507,6 +508,9 @@ function setupWebSocketListeners(
           
           if (guestApprovalHandler?.isUserApproved(postData.user_id, mapping, PluginState.teamStore)) {
             log.info(`[Channel] Bot @mentioned by approved guest ${postData.user_id}, processing (channel: ${channel.id})`);
+            if (mapping.approveNextMessage && threadMappingStore) {
+              guestApprovalHandler.consumeNextMessageApproval(mapping, threadMappingStore);
+            }
           } else {
             log.info(`[Channel] Bot @mentioned by non-approved guest ${postData.user_id}, requesting approval (channel: ${channel.id})`);
             
