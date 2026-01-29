@@ -631,7 +631,10 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const targetChannelId = existingMapping?.channelId || existingMapping?.dmChannelId || post.channel_id;
 
     const { openCodeSessionRegistry } = PluginState;
-    if (openCodeSessionRegistry && !openCodeSessionRegistry.isAvailable(targetSessionId)) {
+    const sessionAvailable = openCodeSessionRegistry?.isAvailable(targetSessionId);
+    log.info(`[SessionValidation] Checking session ${shortId}: registry=${!!openCodeSessionRegistry}, available=${sessionAvailable}`);
+    
+    if (openCodeSessionRegistry && !sessionAvailable) {
       log.warn(`[SessionValidation] Session ${shortId} no longer exists in OpenCode`);
       
       if (existingMapping && threadMappingStore) {
