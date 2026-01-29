@@ -96,6 +96,15 @@ export class MessageRouter {
         } as MergedSessionRoute;
       }
       
+      if (mapping.status === "orphaned") {
+        return {
+          type: "ended_session",
+          sessionId: mapping.sessionId,
+          threadRootPostId,
+          errorMessage: "This session is no longer available (OpenCode may have restarted). Start a new conversation to create a new session.",
+        } as EndedSessionRoute;
+      }
+      
       return {
         type: "thread_prompt",
         sessionId: mapping.sessionId,
