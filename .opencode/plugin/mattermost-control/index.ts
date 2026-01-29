@@ -630,6 +630,27 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const existingMapping = threadMappingStore?.getBySessionId(targetSessionId);
     const targetChannelId = existingMapping?.channelId || existingMapping?.dmChannelId || post.channel_id;
 
+    const { openCodeSessionRegistry } = PluginState;
+    if (openCodeSessionRegistry && !openCodeSessionRegistry.isAvailable(targetSessionId)) {
+      log.warn(`[SessionValidation] Session ${shortId} no longer exists in OpenCode`);
+      
+      if (existingMapping && threadMappingStore) {
+        existingMapping.status = "ended";
+        existingMapping.endedAt = new Date().toISOString();
+        threadMappingStore.update(existingMapping);
+        log.info(`[SessionValidation] Marked mapping for session ${shortId} as ended`);
+      }
+      
+      await mmClient.createPost(
+        targetChannelId,
+        `:warning: **Session No Longer Available**\n\nThe OpenCode session \`${shortId}\` associated with this thread no longer exists. This can happen when OpenCode restarts.\n\n_Start a new conversation to create a new session._`,
+        route.threadRootPostId
+      );
+      
+      userSession.isProcessing = false;
+      return;
+    }
+
     const channel = await mmClient.getChannel(post.channel_id);
     const isGroupDm = channel.type === "G";
     const botUser = PluginState.botUser;
