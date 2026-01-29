@@ -179,51 +179,59 @@ Summary:`;
   ): Promise<MergeResult> {
     log.info(`[MergeHandler] Starting merge from URL ${sourceUrl} into session ${targetSessionId}`);
 
-    const postId = this.parseThreadUrl(sourceUrl);
-    if (!postId) {
-      return {
-        success: false,
-        message: "Invalid URL format. Please provide a valid Mattermost thread link (e.g., `https://mattermost.example.com/team/pl/postid123`).",
-      };
-    }
+    try {
+      const postId = this.parseThreadUrl(sourceUrl);
+      log.debug(`[MergeHandler] Parsed postId: ${postId}`);
+      if (!postId) {
+        return {
+          success: false,
+          message: "Invalid URL format. Please provide a valid Mattermost thread link (e.g., `https://mattermost.example.com/team/pl/postid123`).",
+        };
+      }
 
-    const sourceThreadRootPostId = await this.getThreadRootPostId(postId);
-    if (!sourceThreadRootPostId) {
-      return {
-        success: false,
-        message: "Could not resolve thread from the provided URL. The post may have been deleted.",
-      };
-    }
+      log.debug(`[MergeHandler] Fetching thread root post ID for ${postId}`);
+      const sourceThreadRootPostId = await this.getThreadRootPostId(postId);
+      log.debug(`[MergeHandler] Source thread root: ${sourceThreadRootPostId}`);
+      if (!sourceThreadRootPostId) {
+        return {
+          success: false,
+          message: "Could not resolve thread from the provided URL. The post may have been deleted.",
+        };
+      }
 
-    if (sourceThreadRootPostId === targetThreadRootPostId) {
-      return {
-        success: false,
-        message: "Cannot merge a thread into itself.",
-      };
-    }
+      if (sourceThreadRootPostId === targetThreadRootPostId) {
+        return {
+          success: false,
+          message: "Cannot merge a thread into itself.",
+        };
+      }
 
-    const sourceMapping = this.threadMappingStore.getByThreadRootPostId(sourceThreadRootPostId);
-    if (!sourceMapping) {
-      return {
-        success: false,
-        message: "Thread not found in this OpenCode instance. Only threads from your current OpenCode sessions can be merged.",
-      };
-    }
+      log.debug(`[MergeHandler] Looking up source mapping for thread ${sourceThreadRootPostId}`);
+      const sourceMapping = this.threadMappingStore.getByThreadRootPostId(sourceThreadRootPostId);
+      log.debug(`[MergeHandler] Source mapping found: ${sourceMapping ? sourceMapping.sessionId : 'null'}`);
+      if (!sourceMapping) {
+        return {
+          success: false,
+          message: "Thread not found in this OpenCode instance. Only threads from your current OpenCode sessions can be merged.",
+        };
+      }
 
-    if (sourceMapping.status === "merged") {
-      const destMapping = sourceMapping.mergedInto
-        ? this.threadMappingStore.getBySessionId(sourceMapping.mergedInto)
-        : null;
-      const destLink = destMapping
-        ? `[here](${this.mattermostBaseUrl}/_redirect/pl/${destMapping.threadRootPostId})`
-        : "another thread";
-      return {
-        success: false,
-        message: `This thread was already merged into ${destLink} on ${sourceMapping.mergedAt || "unknown date"}.`,
-      };
-    }
+      if (sourceMapping.status === "merged") {
+        const destMapping = sourceMapping.mergedInto
+          ? this.threadMappingStore.getBySessionId(sourceMapping.mergedInto)
+          : null;
+        const destLink = destMapping
+          ? `[here](${this.mattermostBaseUrl}/_redirect/pl/${destMapping.threadRootPostId})`
+          : "another thread";
+        return {
+          success: false,
+          message: `This thread was already merged into ${destLink} on ${sourceMapping.mergedAt || "unknown date"}.`,
+        };
+      }
 
-    const summary = await this.summarizeSession(sourceMapping.sessionId, sourceMapping);
+      log.debug(`[MergeHandler] Summarizing session ${sourceMapping.sessionId}`);
+      const summary = await this.summarizeSession(sourceMapping.sessionId, sourceMapping);
+      log.debug(`[MergeHandler] Summary generated: ${summary ? summary.substring(0, 100) + '...' : 'null'}`)
     if (!summary) {
       return {
         success: false,
@@ -303,6 +311,13 @@ Summary:`;
       sourceSessionId: sourceMapping.sessionId,
       summary,
     };
+    } catch (e) {
+      log.error(`[MergeHandler] Unhandled error in executeMerge: ${e}`);
+      return {
+        success: false,
+        message: `Merge failed due to an unexpected error: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
   }
 
   isMergedThread(threadRootPostId: string): boolean {
