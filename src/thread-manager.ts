@@ -185,7 +185,7 @@ export class ThreadManager {
       `**Project**: ${content.projectName}`,
       `**Directory**: ${content.directory}`,
       `**Session**: ${content.shortId}`,
-      `**Job ID**: ${jobIdShort}`,
+      `**My session ID**: ${jobIdShort}`,
       `**Started**: ${content.startedAt.toISOString()}`,
     ];
 
