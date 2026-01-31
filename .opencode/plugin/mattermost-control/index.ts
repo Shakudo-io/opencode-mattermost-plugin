@@ -240,7 +240,17 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       }
       
       case "thread_prompt": {
-        const promptText = routeResult.promptText.trim();
+        let promptText = routeResult.promptText.trim();
+        
+        // Strip bot mention early so commands like "@kaji !merge" work in channels
+        const botUser = PluginState.botUser;
+        if (botUser) {
+          const strippedText = stripBotMention(promptText, botUser.username, botUser.id).trim();
+          if (strippedText !== promptText) {
+            log.debug(`[ThreadPrompt] Stripped bot mention: "${promptText}" -> "${strippedText}"`);
+            promptText = strippedText;
+          }
+        }
         
         const { fileCompletionHandler } = PluginState;
         if (fileCompletionHandler && fileCompletionHandler.hasPendingCompletion(routeResult.sessionId)) {
@@ -657,11 +667,6 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const channel = await mmClient.getChannel(post.channel_id);
     const isGroupDm = channel.type === "G";
     const botUser = PluginState.botUser;
-    
-    if (isGroupDm && botUser) {
-      promptText = stripBotMention(promptText, botUser.username, botUser.id);
-      log.info(`[GroupDM] Stripped bot mention, prompt: "${promptText.slice(0, 50)}..."`);
-    }
 
     const { streamCtx, statusIndicator } = await streamer.startStreamWithStatus(
       userSession,
