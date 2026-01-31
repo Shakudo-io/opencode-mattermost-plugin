@@ -176,12 +176,16 @@ export class ThreadManager {
   }
 
   private formatThreadRootPost(content: ThreadRootPostContent): string {
+    const jobId = process.env.MY_JOB_ID || "";
+    const jobIdShort = jobId.substring(0, 5);
+
     const lines = [
       `:rocket: **OpenCode Session Started**`,
       ``,
       `**Project**: ${content.projectName}`,
       `**Directory**: ${content.directory}`,
       `**Session**: ${content.shortId}`,
+      `**My session ID**: ${jobIdShort}`,
       `**Started**: ${content.startedAt.toISOString()}`,
     ];
 
