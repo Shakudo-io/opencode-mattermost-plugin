@@ -1,0 +1,128 @@
+# K8s Job that runs the Mattermost plugin under test
+# This connects to the test3 Mattermost instance and Supabase Metaflow database
+#
+# Usage:
+#   kubectl apply -f plugin-job.yaml
+#   kubectl logs -f job/opencode-mm-plugin-e2e -n mm-test
+#   kubectl delete job opencode-mm-plugin-e2e -n mm-test
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opencode-mm-plugin-e2e
+  namespace: mm-test
+  labels:
+    app: opencode-mm-plugin-e2e
+    purpose: e2e-testing
+spec:
+  # Don't retry on failure - let tests handle retries
+  backoffLimit: 0
+  # Keep job around for 1 hour after completion for log inspection
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: opencode-mm-plugin-e2e
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: plugin
+          image: oven/bun:1.1.42
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== OpenCode Mattermost Plugin E2E Test Runner ==="
+              echo "Installing dependencies..."
+              
+              # Clone or use mounted code
+              if [ -d /app/src ]; then
+                cd /app
+              else
+                echo "ERROR: /app/src not found. Mount the plugin source code."
+                exit 1
+              fi
+              
+              # Install dependencies
+              bun install
+              
+              echo "Starting plugin in standalone mode..."
+              echo "Mattermost URL: $MATTERMOST_URL"
+              echo "Supabase URL: $OPENCODE_MM_SUPABASE_URL"
+              
+              # Run the plugin entry point in a way that simulates OpenCode loading it
+              # We need to create a minimal harness that initializes the plugin
+              bun run /app/tests/e2e/harness/plugin-harness.ts
+          env:
+            # Mattermost connection (test3 cluster)
+            - name: MATTERMOST_URL
+              value: "http://mattermost-team-edition.mm-test.svc.cluster.local:8065/api/v4"
+            - name: MATTERMOST_WS_URL
+              value: "ws://mattermost-team-edition.mm-test.svc.cluster.local:8065/api/v4/websocket"
+            - name: MATTERMOST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mattermost-e2e-test-creds
+                  key: bot-token
+            - name: MATTERMOST_DEBUG
+              value: "true"
+            # Supabase connection (Metaflow instance)
+            - name: OPENCODE_MM_SUPABASE_URL
+              value: "http://supabase-metaflow-kong.hyperplane-supabase-metaflow.svc.cluster.local"
+            - name: OPENCODE_MM_SUPABASE_ANON_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: supabase-metaflow-keys
+                  key: anon-key
+            # Use Phase 3 (Postgres-only) for E2E tests
+            - name: OPENCODE_MM_MIGRATION_PHASE
+              value: "3"
+            # Plugin configuration
+            - name: MM_PLUGIN_LOG_FILE
+              value: "/tmp/opencode-mattermost-plugin.log"
+            - name: OPENCODE_MM_AUTO_CREATE_SESSION
+              value: "false"
+            # E2E test mode - signals to the harness this is a test run
+            - name: E2E_TEST_MODE
+              value: "true"
+          volumeMounts:
+            - name: plugin-source
+              mountPath: /app
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: plugin-source
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      # Init container to fetch the plugin code
+      initContainers:
+        - name: fetch-code
+          image: alpine/git:2.40.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Fetching plugin source code..."
+              # Clone from the monorepo
+              git clone --depth 1 --branch opencode-mattermost-plugin-002-postgres-state-management \
+                https://github.com/Shakudo/monorepo.git /tmp/repo || {
+                echo "Git clone failed. This job expects the code to be available."
+                echo "For local testing, use a ConfigMap or PVC instead."
+                exit 1
+              }
+              cp -r /tmp/repo/opencode-mattermost-plugin/* /app/
+          volumeMounts:
+            - name: plugin-source
+              mountPath: /app
+---
+# Secret for Supabase keys (reference - should already exist or be created separately)
+# kubectl create secret generic supabase-metaflow-keys -n mm-test \
+#   --from-literal=anon-key="$(kubectl get secret -n hyperplane-supabase-metaflow supabase-metaflow-jwt -o jsonpath='{.data.anon-key}' | base64 -d)"
