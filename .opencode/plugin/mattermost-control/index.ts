@@ -620,6 +620,29 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const { streamer, notifications, fileHandler, mmClient, threadMappingStore, todoManager } = PluginState;
     if (!streamer || !notifications || !fileHandler || !mmClient) return;
 
+    // Thread claiming for multi-instance coordination
+    const pgStore = threadMappingStore?.getPgStore();
+    const instanceId = threadMappingStore?.getInstanceId() ?? "local";
+    
+    if (pgStore && route.threadRootPostId) {
+      // Check if another instance is already processing this thread
+      const isClaimedByOther = await pgStore.isClaimedByOther(route.threadRootPostId, instanceId);
+      if (isClaimedByOther) {
+        log.info(`[ThreadClaim] Thread ${route.threadRootPostId} is claimed by another instance, skipping`);
+        // Silently skip - the other instance will handle this message
+        return;
+      }
+      
+      // Attempt to claim the thread
+      const claimed = await pgStore.claimThread(route.threadRootPostId, instanceId);
+      if (!claimed) {
+        log.info(`[ThreadClaim] Failed to claim thread ${route.threadRootPostId}, another instance may have claimed it`);
+        // Silently skip - another instance won the race
+        return;
+      }
+      log.info(`[ThreadClaim] Instance ${instanceId} claimed thread ${route.threadRootPostId}`);
+    }
+
     if (threadMappingStore && route.threadRootPostId) {
       const mapping = threadMappingStore.getByThreadRootPostId(route.threadRootPostId);
       if (mapping && mapping.status === "orphaned") {

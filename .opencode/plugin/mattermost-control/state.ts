@@ -152,6 +152,15 @@ class PluginStateManager {
     this.activeToolTimers.clear();
     this.activeResponseContexts.clear();
     
+    // Release all thread claims before disconnecting
+    const pgStore = this._threadMappingStore?.getPgStore();
+    const instanceId = this._threadMappingStore?.getInstanceId() ?? "local";
+    if (pgStore && instanceId !== "local") {
+      pgStore.releaseAllClaims(instanceId).catch(() => {
+        // Ignore errors during shutdown
+      });
+    }
+    
     this._wsClient?.disconnect();
     this._sessionManager?.shutdown();
     this._fileHandler?.cleanupTempFiles();

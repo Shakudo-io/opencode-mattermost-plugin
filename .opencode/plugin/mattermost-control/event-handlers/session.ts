@@ -1,7 +1,3 @@
-/**
- * Session event handlers - handles session.idle and session.status events
- */
-
 import { PluginState } from "../state.js";
 import { formatFullResponse } from "../formatters.js";
 import { stopActiveToolTimer, stopResponseTimer } from "../timers.js";
@@ -58,6 +54,17 @@ export async function handleSessionIdle(event: any): Promise<void> {
     await streamer.endStream(ctx.streamCtx);
     await notifications.notifyCompletion(ctx.mmSession, "Response complete", ctx.streamCtx.threadRootPostId);
     ctx.mmSession.isProcessing = false;
+    
+    // Release thread claim after processing completes
+    const { threadMappingStore } = PluginState;
+    const pgStore = threadMappingStore?.getPgStore();
+    const instanceId = threadMappingStore?.getInstanceId() ?? "local";
+    const threadRootPostId = ctx.streamCtx.threadRootPostId;
+    
+    if (pgStore && threadRootPostId) {
+      await pgStore.releaseThread(threadRootPostId, instanceId);
+      log.debug(`[ThreadClaim] Released claim on thread ${threadRootPostId}`);
+    }
   } catch (e) {
     log.error("Error finalizing stream:", e);
   }

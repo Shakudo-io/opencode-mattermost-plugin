@@ -1,13 +1,19 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import type { ThreadSessionMapping } from "../models/index.js";
 import { ThreadMappingFileSchema, type ThreadMappingFileV1 } from "../models/thread-mapping.js";
 import { log } from "../logger.js";
+import type { UnifiedStore } from "./unified-store.js";
+import { createThreadMappingPgStore, type ThreadMappingPgStore } from "./postgres/thread-mapping-pg.js";
 
 const PRIMARY_DIR = join(homedir(), ".config", "opencode");
 const FALLBACK_DIR = join(homedir(), ".opencode");
 const FILENAME = "mattermost-threads.json";
+
+export type ThreadMappingStoreOptions = {
+  unifiedStore?: UnifiedStore;
+};
 
 export class ThreadMappingStore {
   private mappings: Map<string, ThreadSessionMapping> = new Map();
@@ -18,8 +24,19 @@ export class ThreadMappingStore {
   private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private saveDebounceMs: number = 2000;
 
-  constructor() {
+  private unifiedStore: UnifiedStore | null = null;
+  private pgStore: ThreadMappingPgStore | null = null;
+
+  constructor(options?: ThreadMappingStoreOptions) {
     this.filePath = this.resolveFilePath();
+    this.unifiedStore = options?.unifiedStore ?? null;
+
+    if (this.unifiedStore) {
+      const clientManager = this.unifiedStore.getClientManager();
+      if (clientManager) {
+        this.pgStore = createThreadMappingPgStore(clientManager);
+      }
+    }
   }
 
   private resolveFilePath(): string {
@@ -33,7 +50,43 @@ export class ThreadMappingStore {
     return join(PRIMARY_DIR, FILENAME);
   }
 
+  private shouldWriteToPostgres(): boolean {
+    return this.unifiedStore?.shouldWriteToPostgres() ?? false;
+  }
+
+  private shouldReadFromPostgres(): boolean {
+    return this.unifiedStore?.shouldReadFromPostgres() ?? false;
+  }
+
+  private shouldWriteToJson(): boolean {
+    return this.unifiedStore?.shouldWriteToJson() ?? true;
+  }
+
   async load(): Promise<ThreadSessionMapping[]> {
+    if (this.shouldReadFromPostgres() && this.pgStore) {
+      try {
+        const mappings = await this.pgStore.listAll();
+        this.setMappings(mappings);
+        log.info(`[ThreadMappingStore] Loaded ${mappings.length} mappings from Postgres`);
+
+        if (this.unifiedStore?.getMigrationPhase() === "2") {
+          const jsonMappings = await this.loadFromJson();
+          if (jsonMappings.length > 0) {
+            this.mergeFromJson(jsonMappings);
+          }
+        }
+
+        return Array.from(this.mappings.values());
+      } catch (e) {
+        log.error("[ThreadMappingStore] Failed to load from Postgres, falling back to JSON:", e);
+        this.unifiedStore?.getDegradedModeManager().enter(String(e));
+      }
+    }
+
+    return this.loadFromJson();
+  }
+
+  private async loadFromJson(): Promise<ThreadSessionMapping[]> {
     try {
       if (!existsSync(this.filePath)) {
         log.debug("[ThreadMappingStore] No existing file, starting fresh");
@@ -59,15 +112,40 @@ export class ThreadMappingStore {
       }
 
       this.setMappings(validated.data.mappings);
-      log.info(`[ThreadMappingStore] Loaded ${validated.data.mappings.length} mappings`);
+      log.info(`[ThreadMappingStore] Loaded ${validated.data.mappings.length} mappings from JSON`);
       return validated.data.mappings;
     } catch (e) {
-      log.error("[ThreadMappingStore] Failed to load:", e);
+      log.error("[ThreadMappingStore] Failed to load from JSON:", e);
       return [];
     }
   }
 
+  private mergeFromJson(jsonMappings: ThreadSessionMapping[]): void {
+    let merged = 0;
+    for (const jsonMapping of jsonMappings) {
+      const existing = this.mappings.get(jsonMapping.sessionId);
+      if (!existing) {
+        this.addToIndexes(jsonMapping);
+        merged++;
+
+        if (this.shouldWriteToPostgres() && this.pgStore) {
+          this.pgStore.create(jsonMapping).catch((e) => {
+            log.warn(`[ThreadMappingStore] Failed to sync JSON mapping to Postgres: ${e}`);
+          });
+        }
+      }
+    }
+
+    if (merged > 0) {
+      log.info(`[ThreadMappingStore] Merged ${merged} mappings from JSON into memory`);
+    }
+  }
+
   async save(): Promise<void> {
+    if (!this.shouldWriteToJson()) {
+      return;
+    }
+
     try {
       const data: ThreadMappingFileV1 = {
         version: 1,
@@ -83,9 +161,9 @@ export class ThreadMappingStore {
       const tempPath = `${this.filePath}.tmp.${Date.now()}`;
       writeFileSync(tempPath, JSON.stringify(data, null, 2));
       renameSync(tempPath, this.filePath);
-      log.debug(`[ThreadMappingStore] Saved ${this.mappings.size} mappings`);
+      log.debug(`[ThreadMappingStore] Saved ${this.mappings.size} mappings to JSON`);
     } catch (e) {
-      log.error("[ThreadMappingStore] Failed to save:", e);
+      log.error("[ThreadMappingStore] Failed to save to JSON:", e);
     }
   }
 
@@ -150,25 +228,61 @@ export class ThreadMappingStore {
     }
   }
 
-  add(mapping: ThreadSessionMapping): void {
+  async add(mapping: ThreadSessionMapping): Promise<void> {
     this.addToIndexes(mapping);
-    this.scheduleSave();
+
+    if (this.shouldWriteToPostgres() && this.pgStore) {
+      try {
+        await this.pgStore.create(mapping);
+      } catch (e) {
+        log.error("[ThreadMappingStore] Failed to write to Postgres:", e);
+        this.unifiedStore?.getDegradedModeManager().enter(String(e));
+      }
+    }
+
+    if (this.shouldWriteToJson()) {
+      this.scheduleSave();
+    }
   }
 
-  update(mapping: ThreadSessionMapping): void {
+  async update(mapping: ThreadSessionMapping): Promise<void> {
     const existing = this.mappings.get(mapping.sessionId);
     if (existing) {
       this.removeFromIndexes(existing);
     }
     this.addToIndexes(mapping);
-    this.scheduleSave();
+
+    if (this.shouldWriteToPostgres() && this.pgStore) {
+      try {
+        await this.pgStore.update(mapping);
+      } catch (e) {
+        log.error("[ThreadMappingStore] Failed to update in Postgres:", e);
+        this.unifiedStore?.getDegradedModeManager().enter(String(e));
+      }
+    }
+
+    if (this.shouldWriteToJson()) {
+      this.scheduleSave();
+    }
   }
 
-  remove(sessionId: string): void {
+  async remove(sessionId: string): Promise<void> {
     const existing = this.mappings.get(sessionId);
     if (existing) {
       this.removeFromIndexes(existing);
-      this.scheduleSave();
+
+      if (this.shouldWriteToPostgres() && this.pgStore) {
+        try {
+          await this.pgStore.delete(sessionId);
+        } catch (e) {
+          log.error("[ThreadMappingStore] Failed to delete from Postgres:", e);
+          this.unifiedStore?.getDegradedModeManager().enter(String(e));
+        }
+      }
+
+      if (this.shouldWriteToJson()) {
+        this.scheduleSave();
+      }
     }
   }
 
@@ -208,7 +322,7 @@ export class ThreadMappingStore {
     return this.mappings.size;
   }
 
-  merge(diskMappings: ThreadSessionMapping[]): void {
+  async merge(diskMappings: ThreadSessionMapping[]): Promise<void> {
     for (const disk of diskMappings) {
       const existing = this.mappings.get(disk.sessionId);
       if (!existing) {
@@ -222,37 +336,49 @@ export class ThreadMappingStore {
         }
       }
     }
-    this.scheduleSave();
+
+    if (this.shouldWriteToJson()) {
+      this.scheduleSave();
+    }
   }
 
-  cleanOrphaned(validSessionIds: Set<string>): number {
+  async cleanOrphaned(validSessionIds: Set<string>): Promise<number> {
     let cleaned = 0;
     for (const mapping of this.listAll()) {
       if (mapping.status === "active" && !validSessionIds.has(mapping.sessionId)) {
         mapping.status = "orphaned";
-        this.update(mapping);
+        await this.update(mapping);
         cleaned++;
       }
     }
     return cleaned;
   }
 
-  reactivate(threadRootPostId: string): boolean {
+  async reactivate(threadRootPostId: string): Promise<boolean> {
     const mapping = this.byThreadRootPostId.get(threadRootPostId);
     if (mapping && mapping.status === "orphaned") {
       mapping.status = "active";
       mapping.lastActivityAt = new Date().toISOString();
-      this.update(mapping);
+      await this.update(mapping);
       return true;
     }
     return false;
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     if (this.saveDebounceTimer) {
       clearTimeout(this.saveDebounceTimer);
       this.saveDebounceTimer = null;
     }
-    this.save().catch((e) => log.error("[ThreadMappingStore] Shutdown save failed:", e));
+
+    await this.save();
+  }
+
+  getPgStore(): ThreadMappingPgStore | null {
+    return this.pgStore;
+  }
+
+  getInstanceId(): string {
+    return this.unifiedStore?.getInstanceId() ?? "local";
   }
 }

@@ -50,6 +50,18 @@ const FilesConfigSchema = z.object({
   allowedExtensions: z.array(z.string()).default(["*"]),
 });
 
+const PostgresConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  url: z.string().optional(),
+  supabaseUrl: z.string().optional(),
+  supabaseAnonKey: z.string().optional(),
+  migrationPhase: z.enum(["1", "2", "3"]).default("1"), // 1=dual-write, 2=migrating, 3=postgres-only
+  heartbeatInterval: z.number().default(30000), // 30s
+  deadInstanceTimeout: z.number().default(90000), // 90s
+  claimDuration: z.number().default(60000), // 60s claim timeout for thread processing
+  instanceId: z.string().optional(), // K8s pod name or generated UUID
+});
+
 const PluginConfigSchema = z.object({
   mattermost: MattermostConfigSchema,
   streaming: StreamingConfigSchema,
@@ -57,6 +69,7 @@ const PluginConfigSchema = z.object({
   sessions: SessionsConfigSchema,
   files: FilesConfigSchema,
   sessionSelection: SessionSelectionConfigSchema,
+  postgres: PostgresConfigSchema,
 });
 
 export type MattermostConfig = z.infer<typeof MattermostConfigSchema>;
@@ -65,6 +78,7 @@ export type NotificationsConfig = z.infer<typeof NotificationsConfigSchema>;
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 export type FilesConfig = z.infer<typeof FilesConfigSchema>;
 export type SessionSelectionConfig = z.infer<typeof SessionSelectionConfigSchema>;
+export type PostgresConfig = z.infer<typeof PostgresConfigSchema>;
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;
 
 // Default Mattermost configuration
@@ -145,6 +159,17 @@ export function loadConfig(): PluginConfig {
       autoSelectSingle: process.env.OPENCODE_MM_AUTO_SELECT !== "false",
       refreshIntervalMs: parseInt(process.env.OPENCODE_MM_SESSION_REFRESH_INTERVAL || "") || 60000,
       autoCreateSession: process.env.OPENCODE_MM_AUTO_CREATE_SESSION !== "false",
+    },
+    postgres: {
+      enabled: process.env.OPENCODE_MM_POSTGRES_ENABLED === "true",
+      url: process.env.OPENCODE_MM_POSTGRES_URL || undefined,
+      supabaseUrl: process.env.OPENCODE_MM_SUPABASE_URL || undefined,
+      supabaseAnonKey: process.env.OPENCODE_MM_SUPABASE_ANON_KEY || undefined,
+      migrationPhase: (process.env.OPENCODE_MM_MIGRATION_PHASE as "1" | "2" | "3") || "1",
+      heartbeatInterval: parseInt(process.env.OPENCODE_MM_HEARTBEAT_INTERVAL || "") || 30000,
+      deadInstanceTimeout: parseInt(process.env.OPENCODE_MM_DEAD_INSTANCE_TIMEOUT || "") || 90000,
+      claimDuration: parseInt(process.env.OPENCODE_MM_CLAIM_DURATION || "") || 60000,
+      instanceId: process.env.MY_POD_NAME || process.env.HOSTNAME || undefined,
     },
   };
 
