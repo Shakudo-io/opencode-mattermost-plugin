@@ -11,29 +11,52 @@ export interface SessionChecker {
   (sessionId: string): Promise<boolean>;
 }
 
+export interface LeaderChecker {
+  (): boolean;
+}
+
+export interface LeadershipChangeSubscriber {
+  (callback: (isLeader: boolean) => void): () => void;
+}
+
 export interface SchedulerServiceConfig {
   promptExecutor?: PromptExecutor;
   sessionChecker?: SessionChecker;
+  leaderChecker?: LeaderChecker;
+  onLeadershipChange?: LeadershipChangeSubscriber;
+  /**
+   * Maximum age (in ms) of overdue tasks to run catch-up for when becoming leader.
+   * Tasks older than this are skipped with a warning.
+   * Default: 1 hour (3600000 ms)
+   */
+  catchUpMaxAge?: number;
 }
+
+const DEFAULT_CATCH_UP_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 
 export class SchedulerService {
   private store: ScheduleStore;
   private jobs: Map<string, cron.ScheduledTask> = new Map();
   private promptExecutor: PromptExecutor | null = null;
   private sessionChecker: SessionChecker | null = null;
+  private leaderChecker: LeaderChecker | null = null;
+  private leadershipUnsubscribe: (() => void) | null = null;
+  private catchUpMaxAge: number;
   private started: boolean = false;
-  
-  /**
-   * Track sessions currently running scheduled tasks.
-   * Event handlers should skip streaming updates for these sessions
-   * to prevent responses from being routed to wrong threads.
-   */
   private runningScheduledSessions: Set<string> = new Set();
 
   constructor(config: SchedulerServiceConfig = {}) {
     this.store = new ScheduleStore();
     this.promptExecutor = config.promptExecutor || null;
     this.sessionChecker = config.sessionChecker || null;
+    this.leaderChecker = config.leaderChecker || null;
+    this.catchUpMaxAge = config.catchUpMaxAge ?? DEFAULT_CATCH_UP_MAX_AGE_MS;
+
+    if (config.onLeadershipChange) {
+      this.leadershipUnsubscribe = config.onLeadershipChange((isLeader) => {
+        this.handleLeadershipChange(isLeader);
+      });
+    }
   }
 
   setPromptExecutor(executor: PromptExecutor): void {
@@ -44,8 +67,82 @@ export class SchedulerService {
     this.sessionChecker = checker;
   }
 
+  setLeaderChecker(checker: LeaderChecker): void {
+    this.leaderChecker = checker;
+  }
+
   isRunningScheduledTask(sessionId: string): boolean {
     return this.runningScheduledSessions.has(sessionId);
+  }
+
+  private isLeader(): boolean {
+    if (!this.leaderChecker) {
+      return true;
+    }
+    return this.leaderChecker();
+  }
+
+  private async handleLeadershipChange(isLeader: boolean): Promise<void> {
+    if (isLeader) {
+      log.info("[SchedulerService] Acquired leadership, checking for overdue tasks");
+      await this.runCatchUpTasks();
+    } else {
+      log.info("[SchedulerService] Lost leadership, scheduled task execution paused");
+    }
+  }
+
+  private async runCatchUpTasks(): Promise<void> {
+    const schedules = this.store.listEnabled();
+    const now = Date.now();
+    const catchUpThreshold = now - this.catchUpMaxAge;
+
+    for (const schedule of schedules) {
+      if (!schedule.lastRunAt) {
+        continue;
+      }
+
+      const lastRunTime = new Date(schedule.lastRunAt).getTime();
+      const timeSinceLastRun = now - lastRunTime;
+
+      const nextExpectedRun = this.calculateNextRunAfter(schedule.cron, schedule.timezone, new Date(lastRunTime));
+      if (!nextExpectedRun) {
+        continue;
+      }
+
+      const nextExpectedTime = nextExpectedRun.getTime();
+      if (nextExpectedTime > now) {
+        continue;
+      }
+
+      if (nextExpectedTime < catchUpThreshold) {
+        log.warn(
+          `[SchedulerService] Skipping overdue task "${schedule.name}" - last expected run was ${Math.round(
+            (now - nextExpectedTime) / 60000
+          )} minutes ago (exceeds ${Math.round(this.catchUpMaxAge / 60000)} minute threshold)`
+        );
+        continue;
+      }
+
+      log.info(
+        `[SchedulerService] Running catch-up task "${schedule.name}" - was due ${Math.round(
+          (now - nextExpectedTime) / 60000
+        )} minutes ago`
+      );
+      await this.runTask(schedule);
+    }
+  }
+
+  private calculateNextRunAfter(cronExpression: string, timezone: string, after: Date): Date | null {
+    try {
+      const CronExpressionParser = require("cron-parser").default;
+      const interval = CronExpressionParser.parse(cronExpression, {
+        currentDate: after,
+        tz: timezone,
+      });
+      return interval.next().toDate();
+    } catch {
+      return null;
+    }
   }
 
   async start(): Promise<void> {
@@ -68,6 +165,11 @@ export class SchedulerService {
   async stop(): Promise<void> {
     if (!this.started) {
       return;
+    }
+
+    if (this.leadershipUnsubscribe) {
+      this.leadershipUnsubscribe();
+      this.leadershipUnsubscribe = null;
     }
 
     for (const [id, job] of this.jobs) {
@@ -118,8 +220,13 @@ export class SchedulerService {
     return false;
   }
 
-  private async runTask(schedule: ScheduleConfig): Promise<void> {
-    log.info(`[SchedulerService] Running scheduled task: ${schedule.name}`);
+  private async runTask(schedule: ScheduleConfig, skipLeaderCheck = false): Promise<void> {
+    if (!skipLeaderCheck && !this.isLeader()) {
+      log.debug(`[SchedulerService] Skipping task "${schedule.name}" - not the leader`);
+      return;
+    }
+
+    log.info(`[SchedulerService] Running scheduled task: ${schedule.name}${this.leaderChecker ? " (leader)" : ""}`);
 
     if (!this.promptExecutor) {
       log.error(`[SchedulerService] No prompt executor configured`);
@@ -224,16 +331,16 @@ export class SchedulerService {
     return schedule;
   }
 
-  removeSchedule(scheduleId: string): boolean {
+  async removeSchedule(scheduleId: string): Promise<boolean> {
     this.stopJob(scheduleId);
-    const removed = this.store.remove(scheduleId);
+    const removed = await this.store.remove(scheduleId);
     if (removed) {
       log.info(`[SchedulerService] Removed schedule: ${scheduleId}`);
     }
     return removed;
   }
 
-  removeScheduleByName(name: string): boolean {
+  async removeScheduleByName(name: string): Promise<boolean> {
     const schedule = this.store.getByName(name);
     if (schedule) {
       return this.removeSchedule(schedule.id);
@@ -241,7 +348,7 @@ export class SchedulerService {
     return false;
   }
 
-  enableSchedule(scheduleId: string): boolean {
+  async enableSchedule(scheduleId: string): Promise<boolean> {
     const schedule = this.store.getById(scheduleId);
     if (!schedule) {
       return false;
@@ -251,7 +358,7 @@ export class SchedulerService {
       return true;
     }
 
-    this.store.setEnabled(scheduleId, true);
+    await this.store.setEnabled(scheduleId, true);
     if (this.started) {
       this.startJob(schedule);
     }
@@ -259,7 +366,7 @@ export class SchedulerService {
     return true;
   }
 
-  disableSchedule(scheduleId: string): boolean {
+  async disableSchedule(scheduleId: string): Promise<boolean> {
     const schedule = this.store.getById(scheduleId);
     if (!schedule) {
       return false;
@@ -270,7 +377,7 @@ export class SchedulerService {
     }
 
     this.stopJob(scheduleId);
-    this.store.setEnabled(scheduleId, false);
+    await this.store.setEnabled(scheduleId, false);
     log.info(`[SchedulerService] Disabled schedule: ${schedule.name}`);
     return true;
   }

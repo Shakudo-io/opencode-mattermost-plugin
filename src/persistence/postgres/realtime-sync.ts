@@ -1,6 +1,6 @@
 import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import type { SupabaseClientManager } from "./supabase-client.js";
-import { ThreadMappingSchema, type ThreadMapping } from "./schema.js";
+import { ThreadMappingSchema, ScheduleSchema, type ThreadMapping, type Schedule } from "./schema.js";
 import { log } from "../../logger.js";
 
 export type RealtimeEventType = "INSERT" | "UPDATE" | "DELETE";
@@ -12,10 +12,18 @@ export type ThreadMappingChangeEvent = {
   timestamp: Date;
 };
 
+export type ScheduleChangeEvent = {
+  eventType: RealtimeEventType;
+  old: Schedule | null;
+  new: Schedule | null;
+  timestamp: Date;
+};
+
 export type RealtimeSyncOptions = {
   clientManager: SupabaseClientManager;
   instanceId: string;
   onThreadMappingChange?: (event: ThreadMappingChangeEvent) => void;
+  onScheduleChange?: (event: ScheduleChangeEvent) => void;
   pollingIntervalMs?: number;
 };
 
@@ -35,15 +43,18 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     clientManager,
     instanceId,
     onThreadMappingChange,
+    onScheduleChange,
     pollingIntervalMs = DEFAULT_POLLING_INTERVAL_MS,
   } = options;
 
   let threadMappingChannel: RealtimeChannel | null = null;
+  let scheduleChannel: RealtimeChannel | null = null;
   let isConnected = false;
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
   let reconnectAttempts = 0;
   let stopped = false;
   let lastKnownUpdatedAt: Date | null = null;
+  let lastKnownScheduleUpdatedAt: Date | null = null;
 
   async function subscribeToThreadMappings(): Promise<void> {
     if (stopped) return;
@@ -117,6 +128,72 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     }
   }
 
+  async function subscribeToSchedules(): Promise<void> {
+    if (stopped || !onScheduleChange) return;
+
+    const { client } = clientManager;
+
+    scheduleChannel = client
+      .channel("schedules_changes")
+      .on<Schedule>(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "opencode_mm_plugin",
+          table: "schedules",
+        },
+        (payload: RealtimePostgresChangesPayload<Schedule>) => {
+          handleScheduleChange(payload);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          log.info(`[realtime-sync] Connected to schedules Realtime channel`);
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          log.warn(`[realtime-sync] Schedules channel ${status}`);
+        }
+      });
+  }
+
+  function handleScheduleChange(payload: RealtimePostgresChangesPayload<Schedule>): void {
+    if (!onScheduleChange) return;
+
+    try {
+      const eventType = payload.eventType as RealtimeEventType;
+      let oldRecord: Schedule | null = null;
+      let newRecord: Schedule | null = null;
+
+      if (payload.old && Object.keys(payload.old).length > 0) {
+        const parsed = ScheduleSchema.safeParse(payload.old);
+        if (parsed.success) {
+          oldRecord = parsed.data;
+        }
+      }
+
+      if (payload.new && Object.keys(payload.new).length > 0) {
+        const parsed = ScheduleSchema.safeParse(payload.new);
+        if (parsed.success) {
+          newRecord = parsed.data;
+        }
+      }
+
+      const event: ScheduleChangeEvent = {
+        eventType,
+        old: oldRecord,
+        new: newRecord,
+        timestamp: new Date(),
+      };
+
+      log.debug(
+        `[realtime-sync] Schedule ${eventType}: name=${newRecord?.name || oldRecord?.name}, enabled=${newRecord?.enabled}`
+      );
+
+      onScheduleChange(event);
+    } catch (e) {
+      log.error("[realtime-sync] Error processing schedule change:", e);
+    }
+  }
+
   function startPolling(): void {
     if (pollingTimer || stopped) return;
 
@@ -136,6 +213,11 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
   }
 
   async function pollForChanges(): Promise<void> {
+    await pollThreadMappings();
+    await pollSchedules();
+  }
+
+  async function pollThreadMappings(): Promise<void> {
     if (!onThreadMappingChange) return;
 
     try {
@@ -149,7 +231,7 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
       const { data, error } = await query.limit(100);
 
       if (error) {
-        log.error("[realtime-sync] Polling error:", error);
+        log.error("[realtime-sync] Thread mappings polling error:", error);
         return;
       }
 
@@ -176,7 +258,52 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
 
       log.debug(`[realtime-sync] Polled ${data.length} updated thread mappings`);
     } catch (e) {
-      log.error("[realtime-sync] Polling exception:", e);
+      log.error("[realtime-sync] Thread mappings polling exception:", e);
+    }
+  }
+
+  async function pollSchedules(): Promise<void> {
+    if (!onScheduleChange) return;
+
+    try {
+      const { client } = clientManager;
+      let query = client.from("schedules").select("*").order("updated_at", { ascending: false });
+
+      if (lastKnownScheduleUpdatedAt) {
+        query = query.gt("updated_at", lastKnownScheduleUpdatedAt.toISOString());
+      }
+
+      const { data, error } = await query.limit(100);
+
+      if (error) {
+        log.error("[realtime-sync] Schedules polling error:", error);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+
+      for (const row of data) {
+        const parsed = ScheduleSchema.safeParse(row);
+        if (!parsed.success) continue;
+
+        const record = parsed.data;
+        const event: ScheduleChangeEvent = {
+          eventType: "UPDATE",
+          old: null,
+          new: record,
+          timestamp: new Date(record.updated_at),
+        };
+
+        onScheduleChange(event);
+
+        if (!lastKnownScheduleUpdatedAt || record.updated_at > lastKnownScheduleUpdatedAt) {
+          lastKnownScheduleUpdatedAt = record.updated_at;
+        }
+      }
+
+      log.debug(`[realtime-sync] Polled ${data.length} updated schedules`);
+    } catch (e) {
+      log.error("[realtime-sync] Schedules polling exception:", e);
     }
   }
 
@@ -199,8 +326,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
       if (stopped || isConnected) return;
 
       try {
-        await unsubscribeFromChannel();
+        await unsubscribeFromChannels();
         await subscribeToThreadMappings();
+        await subscribeToSchedules();
       } catch (e) {
         log.error("[realtime-sync] Reconnect failed:", e);
         scheduleReconnect();
@@ -208,10 +336,14 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     }, delay);
   }
 
-  async function unsubscribeFromChannel(): Promise<void> {
+  async function unsubscribeFromChannels(): Promise<void> {
     if (threadMappingChannel) {
       await threadMappingChannel.unsubscribe();
       threadMappingChannel = null;
+    }
+    if (scheduleChannel) {
+      await scheduleChannel.unsubscribe();
+      scheduleChannel = null;
     }
   }
 
@@ -222,6 +354,7 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
 
       try {
         await subscribeToThreadMappings();
+        await subscribeToSchedules();
       } catch (e) {
         log.error("[realtime-sync] Failed to start Realtime subscription, falling back to polling:", e);
         startPolling();
@@ -233,7 +366,7 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
       log.info("[realtime-sync] Stopping Realtime sync");
 
       stopPolling();
-      await unsubscribeFromChannel();
+      await unsubscribeFromChannels();
       isConnected = false;
     },
 

@@ -49,6 +49,7 @@
   "dependencies": {
     "@opencode-ai/plugin": "^1.1.25",
     "@supabase/supabase-js": "^2.93.3",
+    "cron-parser": "^5.5.0",
     "node-cron": "^4.2.1",
     "ws": "^8.18.0",
     "zod": "^4.1.8"

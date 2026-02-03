@@ -154,9 +154,9 @@ export function createScheduleRemoveTool(): ToolDefinition {
     async execute(args) {
       const scheduler = getSchedulerService();
       
-      let removed = scheduler.removeScheduleByName(args.name);
+      let removed = await scheduler.removeScheduleByName(args.name);
       if (!removed) {
-        removed = scheduler.removeSchedule(args.name);
+        removed = await scheduler.removeSchedule(args.name);
       }
 
       if (removed) {
