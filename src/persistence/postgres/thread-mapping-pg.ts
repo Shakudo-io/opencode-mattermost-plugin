@@ -283,24 +283,47 @@ export function createThreadMappingPgStore(
 
   /**
    * Attempt to claim a thread for processing.
-   * Uses SELECT FOR UPDATE SKIP LOCKED - first instance wins, others skip.
+   * Uses a two-step check-then-update approach since PostgREST's .or() doesn't work with .update().
    *
    * @returns true if claim succeeded, false if already claimed or not found
    */
   async function claimThread(threadRootPostId: string, instanceId: string): Promise<boolean> {
-    const claimUntil = new Date(Date.now() + claimDurationMs);
+    const now = new Date();
+    const claimUntil = new Date(now.getTime() + claimDurationMs);
 
-    // Use RPC for row-level locking (SELECT FOR UPDATE SKIP LOCKED)
-    // Since Supabase doesn't expose row locking directly, we use a conditional update
-    // that only succeeds if the thread is unclaimed or the claim has expired
+    const { data: existing, error: selectError } = await client
+      .from(TABLE_NAME)
+      .select("id, claimed_by, claimed_until")
+      .eq("thread_root_post_id", threadRootPostId)
+      .maybeSingle();
+
+    if (selectError) {
+      handlePostgrestError(selectError, "check thread for claim");
+      return false;
+    }
+
+    if (!existing) {
+      log.debug(`[thread-mapping-pg] Thread ${threadRootPostId} not found for claiming`);
+      return false;
+    }
+
+    if (existing.claimed_by && existing.claimed_by !== instanceId) {
+      const claimedUntil = existing.claimed_until ? new Date(existing.claimed_until) : null;
+      if (claimedUntil && claimedUntil > now) {
+        log.debug(
+          `[thread-mapping-pg] Thread ${threadRootPostId} already claimed by ${existing.claimed_by} until ${claimedUntil.toISOString()}`
+        );
+        return false;
+      }
+    }
+
     const { data, error } = await client
       .from(TABLE_NAME)
       .update({
         claimed_by: instanceId,
         claimed_until: claimUntil.toISOString(),
       })
-      .eq("thread_root_post_id", threadRootPostId)
-      .or(`claimed_by.is.null,claimed_until.lt.${new Date().toISOString()}`)
+      .eq("id", existing.id)
       .select("id")
       .maybeSingle();
 
@@ -314,8 +337,7 @@ export function createThreadMappingPgStore(
       return true;
     }
 
-    // No rows updated - either thread doesn't exist or is already claimed
-    log.debug(`[thread-mapping-pg] Failed to claim thread ${threadRootPostId} (already claimed or not found)`);
+    log.debug(`[thread-mapping-pg] Failed to claim thread ${threadRootPostId} (update returned no data)`);
     return false;
   }
 

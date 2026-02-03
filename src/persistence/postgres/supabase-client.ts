@@ -21,7 +21,7 @@ export type ConnectionState = "connected" | "disconnected" | "reconnecting" | "d
 
 type StateChangeCallback = (state: ConnectionState) => void;
 
-const SCHEMA = "opencode_mm_plugin";
+const SCHEMA = "public";
 const HEALTH_CHECK_QUERY = "SELECT 1 as health";
 const RECONNECT_DELAY_BASE = 1000;
 const MAX_RECONNECT_DELAY = 30000;
