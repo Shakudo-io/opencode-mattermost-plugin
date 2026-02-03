@@ -76,6 +76,11 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     return "MATTERMOST_URL environment variable is required. Set it before connecting.";
   }
 
+  const requireOwner = process.env.MATTERMOST_REQUIRE_OWNER === "true";
+  if (requireOwner && !config.mattermost.ownerUserId) {
+    return "MATTERMOST_OWNER_USER_ID is required when MATTERMOST_REQUIRE_OWNER=true. This prevents the bot from responding to unauthorized users.";
+  }
+
   try {
     log.info("Creating Mattermost clients...");
     const mmClient = new MattermostClient(config.mattermost);
