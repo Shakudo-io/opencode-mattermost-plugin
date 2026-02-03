@@ -1,6 +1,15 @@
 import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import type { SupabaseClientManager } from "./supabase-client.js";
-import { ThreadMappingSchema, ScheduleSchema, type ThreadMapping, type Schedule } from "./schema.js";
+import {
+  ThreadMappingSchema,
+  ScheduleSchema,
+  TeamSchema,
+  TeamMemberSchema,
+  type ThreadMapping,
+  type Schedule,
+  type Team,
+  type TeamMember,
+} from "./schema.js";
 import { log } from "../../logger.js";
 
 export type RealtimeEventType = "INSERT" | "UPDATE" | "DELETE";
@@ -19,11 +28,27 @@ export type ScheduleChangeEvent = {
   timestamp: Date;
 };
 
+export type TeamChangeEvent = {
+  eventType: RealtimeEventType;
+  old: Team | null;
+  new: Team | null;
+  timestamp: Date;
+};
+
+export type TeamMemberChangeEvent = {
+  eventType: RealtimeEventType;
+  old: TeamMember | null;
+  new: TeamMember | null;
+  timestamp: Date;
+};
+
 export type RealtimeSyncOptions = {
   clientManager: SupabaseClientManager;
   instanceId: string;
   onThreadMappingChange?: (event: ThreadMappingChangeEvent) => void;
   onScheduleChange?: (event: ScheduleChangeEvent) => void;
+  onTeamChange?: (event: TeamChangeEvent) => void;
+  onTeamMemberChange?: (event: TeamMemberChangeEvent) => void;
   pollingIntervalMs?: number;
 };
 
@@ -44,17 +69,23 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     instanceId,
     onThreadMappingChange,
     onScheduleChange,
+    onTeamChange,
+    onTeamMemberChange,
     pollingIntervalMs = DEFAULT_POLLING_INTERVAL_MS,
   } = options;
 
   let threadMappingChannel: RealtimeChannel | null = null;
   let scheduleChannel: RealtimeChannel | null = null;
+  let teamChannel: RealtimeChannel | null = null;
+  let teamMemberChannel: RealtimeChannel | null = null;
   let isConnected = false;
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
   let reconnectAttempts = 0;
   let stopped = false;
   let lastKnownUpdatedAt: Date | null = null;
   let lastKnownScheduleUpdatedAt: Date | null = null;
+  let lastKnownTeamUpdatedAt: Date | null = null;
+  let lastKnownTeamMemberCreatedAt: Date | null = null;
 
   async function subscribeToThreadMappings(): Promise<void> {
     if (stopped) return;
@@ -194,6 +225,138 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     }
   }
 
+  async function subscribeToTeams(): Promise<void> {
+    if (stopped || !onTeamChange) return;
+
+    const { client } = clientManager;
+
+    teamChannel = client
+      .channel("teams_changes")
+      .on<Team>(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "opencode_mm_plugin",
+          table: "teams",
+        },
+        (payload: RealtimePostgresChangesPayload<Team>) => {
+          handleTeamChange(payload);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          log.info(`[realtime-sync] Connected to teams Realtime channel`);
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          log.warn(`[realtime-sync] Teams channel ${status}`);
+        }
+      });
+  }
+
+  function handleTeamChange(payload: RealtimePostgresChangesPayload<Team>): void {
+    if (!onTeamChange) return;
+
+    try {
+      const eventType = payload.eventType as RealtimeEventType;
+      let oldRecord: Team | null = null;
+      let newRecord: Team | null = null;
+
+      if (payload.old && Object.keys(payload.old).length > 0) {
+        const parsed = TeamSchema.safeParse(payload.old);
+        if (parsed.success) {
+          oldRecord = parsed.data;
+        }
+      }
+
+      if (payload.new && Object.keys(payload.new).length > 0) {
+        const parsed = TeamSchema.safeParse(payload.new);
+        if (parsed.success) {
+          newRecord = parsed.data;
+        }
+      }
+
+      const event: TeamChangeEvent = {
+        eventType,
+        old: oldRecord,
+        new: newRecord,
+        timestamp: new Date(),
+      };
+
+      log.debug(
+        `[realtime-sync] Team ${eventType}: id=${newRecord?.team_id || oldRecord?.team_id}, name=${newRecord?.team_name || oldRecord?.team_name}`
+      );
+
+      onTeamChange(event);
+    } catch (e) {
+      log.error("[realtime-sync] Error processing team change:", e);
+    }
+  }
+
+  async function subscribeToTeamMembers(): Promise<void> {
+    if (stopped || !onTeamMemberChange) return;
+
+    const { client } = clientManager;
+
+    teamMemberChannel = client
+      .channel("team_members_changes")
+      .on<TeamMember>(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "opencode_mm_plugin",
+          table: "team_members",
+        },
+        (payload: RealtimePostgresChangesPayload<TeamMember>) => {
+          handleTeamMemberChange(payload);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          log.info(`[realtime-sync] Connected to team_members Realtime channel`);
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          log.warn(`[realtime-sync] Team members channel ${status}`);
+        }
+      });
+  }
+
+  function handleTeamMemberChange(payload: RealtimePostgresChangesPayload<TeamMember>): void {
+    if (!onTeamMemberChange) return;
+
+    try {
+      const eventType = payload.eventType as RealtimeEventType;
+      let oldRecord: TeamMember | null = null;
+      let newRecord: TeamMember | null = null;
+
+      if (payload.old && Object.keys(payload.old).length > 0) {
+        const parsed = TeamMemberSchema.safeParse(payload.old);
+        if (parsed.success) {
+          oldRecord = parsed.data;
+        }
+      }
+
+      if (payload.new && Object.keys(payload.new).length > 0) {
+        const parsed = TeamMemberSchema.safeParse(payload.new);
+        if (parsed.success) {
+          newRecord = parsed.data;
+        }
+      }
+
+      const event: TeamMemberChangeEvent = {
+        eventType,
+        old: oldRecord,
+        new: newRecord,
+        timestamp: new Date(),
+      };
+
+      log.info(
+        `[realtime-sync] Team member ${eventType}: team=${newRecord?.team_id || oldRecord?.team_id}, user=${newRecord?.mattermost_user_id || oldRecord?.mattermost_user_id}, username=${newRecord?.username || oldRecord?.username}`
+      );
+
+      onTeamMemberChange(event);
+    } catch (e) {
+      log.error("[realtime-sync] Error processing team member change:", e);
+    }
+  }
+
   function startPolling(): void {
     if (pollingTimer || stopped) return;
 
@@ -215,6 +378,8 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
   async function pollForChanges(): Promise<void> {
     await pollThreadMappings();
     await pollSchedules();
+    await pollTeams();
+    await pollTeamMembers();
   }
 
   async function pollThreadMappings(): Promise<void> {
@@ -307,6 +472,105 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     }
   }
 
+  async function pollTeams(): Promise<void> {
+    if (!onTeamChange) return;
+
+    try {
+      const { client } = clientManager;
+      let query = client
+        .schema("opencode_mm_plugin")
+        .from("teams")
+        .select("*")
+        .order("updated_at", { ascending: false });
+
+      if (lastKnownTeamUpdatedAt) {
+        query = query.gt("updated_at", lastKnownTeamUpdatedAt.toISOString());
+      }
+
+      const { data, error } = await query.limit(100);
+
+      if (error) {
+        log.error("[realtime-sync] Teams polling error:", error);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+
+      for (const row of data) {
+        const parsed = TeamSchema.safeParse(row);
+        if (!parsed.success) continue;
+
+        const record = parsed.data;
+        const event: TeamChangeEvent = {
+          eventType: "UPDATE",
+          old: null,
+          new: record,
+          timestamp: new Date(record.updated_at),
+        };
+
+        onTeamChange(event);
+
+        if (!lastKnownTeamUpdatedAt || record.updated_at > lastKnownTeamUpdatedAt) {
+          lastKnownTeamUpdatedAt = record.updated_at;
+        }
+      }
+
+      log.debug(`[realtime-sync] Polled ${data.length} updated teams`);
+    } catch (e) {
+      log.error("[realtime-sync] Teams polling exception:", e);
+    }
+  }
+
+  async function pollTeamMembers(): Promise<void> {
+    if (!onTeamMemberChange) return;
+
+    try {
+      const { client } = clientManager;
+      // Team members don't have updated_at, only created_at - so we track new members
+      let query = client
+        .schema("opencode_mm_plugin")
+        .from("team_members")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (lastKnownTeamMemberCreatedAt) {
+        query = query.gt("created_at", lastKnownTeamMemberCreatedAt.toISOString());
+      }
+
+      const { data, error } = await query.limit(100);
+
+      if (error) {
+        log.error("[realtime-sync] Team members polling error:", error);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+
+      for (const row of data) {
+        const parsed = TeamMemberSchema.safeParse(row);
+        if (!parsed.success) continue;
+
+        const record = parsed.data;
+        const event: TeamMemberChangeEvent = {
+          eventType: "INSERT", // Polling only catches new members
+          old: null,
+          new: record,
+          timestamp: new Date(record.created_at),
+        };
+
+        onTeamMemberChange(event);
+
+        if (!lastKnownTeamMemberCreatedAt || record.created_at > lastKnownTeamMemberCreatedAt) {
+          lastKnownTeamMemberCreatedAt = record.created_at;
+        }
+      }
+
+      log.debug(`[realtime-sync] Polled ${data.length} new team members`);
+    } catch (e) {
+      log.error("[realtime-sync] Team members polling exception:", e);
+    }
+  }
+
   function scheduleReconnect(): void {
     if (stopped || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -329,6 +593,8 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
         await unsubscribeFromChannels();
         await subscribeToThreadMappings();
         await subscribeToSchedules();
+        await subscribeToTeams();
+        await subscribeToTeamMembers();
       } catch (e) {
         log.error("[realtime-sync] Reconnect failed:", e);
         scheduleReconnect();
@@ -345,6 +611,14 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
       await scheduleChannel.unsubscribe();
       scheduleChannel = null;
     }
+    if (teamChannel) {
+      await teamChannel.unsubscribe();
+      teamChannel = null;
+    }
+    if (teamMemberChannel) {
+      await teamMemberChannel.unsubscribe();
+      teamMemberChannel = null;
+    }
   }
 
   return {
@@ -355,6 +629,8 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
       try {
         await subscribeToThreadMappings();
         await subscribeToSchedules();
+        await subscribeToTeams();
+        await subscribeToTeamMembers();
       } catch (e) {
         log.error("[realtime-sync] Failed to start Realtime subscription, falling back to polling:", e);
         startPolling();

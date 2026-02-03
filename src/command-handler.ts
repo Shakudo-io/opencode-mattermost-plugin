@@ -814,7 +814,7 @@ export class CommandHandler {
     }
 
     if (subcommand === "clear") {
-      return this.handleTeamClear(teamStore);
+      return await this.handleTeamClear(teamStore);
     }
 
     return {
@@ -894,7 +894,7 @@ export class CommandHandler {
         };
       }
 
-      const added = teamStore.addMember(user.id, username, addedBy);
+      const added = await teamStore.addMember(user.id, username, addedBy);
       
       if (!added) {
         return {
@@ -932,7 +932,7 @@ export class CommandHandler {
 
     try {
       const user = await mmClient.getUserByUsername(username);
-      const removed = teamStore.removeMember(user.id);
+      const removed = await teamStore.removeMember(user.id);
       
       if (!removed) {
         return {
@@ -954,8 +954,8 @@ export class CommandHandler {
     }
   }
 
-  private handleTeamClear(teamStore: TeamStore): CommandResult {
-    const count = teamStore.clearMembers();
+  private async handleTeamClear(teamStore: TeamStore): Promise<CommandResult> {
+    const count = await teamStore.clearMembers();
     
     if (count === 0) {
       return {
