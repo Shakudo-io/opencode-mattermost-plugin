@@ -48,6 +48,7 @@ class PluginStateManager {
   readonly activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   readonly activeResponseTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private _questionCleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private _pendingCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   get isConnected(): boolean { return this._isConnected; }
   get projectName(): string { return this._projectName; }
@@ -71,6 +72,7 @@ class PluginStateManager {
   get sessionOwnershipHandler(): SessionOwnershipHandler | null { return this._sessionOwnershipHandler; }
   get fileCompletionHandler(): FileCompletionHandler | null { return this._fileCompletionHandler; }
   get questionCleanupTimer(): ReturnType<typeof setInterval> | null { return this._questionCleanupTimer; }
+  get pendingCleanupTimer(): ReturnType<typeof setInterval> | null { return this._pendingCleanupTimer; }
   get schedulerService(): SchedulerService | null { return this._schedulerService; }
   get teamStore(): TeamStore | null { return this._teamStore; }
 
@@ -123,6 +125,10 @@ class PluginStateManager {
     this._questionCleanupTimer = timer;
   }
 
+  setPendingCleanupTimer(timer: ReturnType<typeof setInterval> | null): void {
+    this._pendingCleanupTimer = timer;
+  }
+
   setFileCompletionHandler(handler: FileCompletionHandler): void {
     this._fileCompletionHandler = handler;
   }
@@ -145,6 +151,11 @@ class PluginStateManager {
     if (this._teamStore) {
       this._teamStore.shutdown();
       this._teamStore = null;
+    }
+    // Clear pending cleanup timer
+    if (this._pendingCleanupTimer) {
+      clearInterval(this._pendingCleanupTimer);
+      this._pendingCleanupTimer = null;
     }
     for (const [_, timer] of this.activeToolTimers) {
       clearInterval(timer);

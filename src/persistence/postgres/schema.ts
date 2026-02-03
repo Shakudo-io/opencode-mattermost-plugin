@@ -202,6 +202,9 @@ export const PendingApprovalSchema = z.object({
   guest_username: z.string().max(255).nullable(),
   approval_post_id: z.string().max(64),
   channel_id: z.string().max(64),
+  session_id: z.string().max(64),
+  thread_root_post_id: z.string().max(64),
+  original_message: z.string().nullable(),
   status: PendingApprovalStatusSchema,
   decided_by: z.string().max(64).nullable(),
   created_at: z.coerce.date(),
@@ -218,18 +221,24 @@ export const PendingApprovalInsertSchema = PendingApprovalSchema.omit({
   status: true,
   decided_by: true,
   decided_at: true,
+  original_message: true,
 });
 export type PendingApprovalInsert = z.infer<typeof PendingApprovalInsertSchema>;
 
 export const PendingOwnershipStatusSchema = z.enum(["pending", "confirmed", "rejected", "expired"]);
 export type PendingOwnershipStatus = z.infer<typeof PendingOwnershipStatusSchema>;
 
+export const PendingOwnershipStepSchema = z.enum(["confirm_create", "select_approval"]);
+export type PendingOwnershipStep = z.infer<typeof PendingOwnershipStepSchema>;
+
 export const PendingOwnershipSchema = z.object({
   id: z.string().max(64),
   thread_root_post_id: z.string().max(64),
+  channel_id: z.string().max(64),
   claiming_user_id: z.string().max(64),
-  current_owner_id: z.string().max(64),
+  current_owner_id: z.string().max(64).nullable(),
   confirmation_post_id: z.string().max(64),
+  step: PendingOwnershipStepSchema,
   status: PendingOwnershipStatusSchema,
   created_at: z.coerce.date(),
   expires_at: z.coerce.date(),
@@ -243,5 +252,6 @@ export const PendingOwnershipInsertSchema = PendingOwnershipSchema.omit({
 }).partial({
   status: true,
   resolved_at: true,
+  current_owner_id: true,
 });
 export type PendingOwnershipInsert = z.infer<typeof PendingOwnershipInsertSchema>;

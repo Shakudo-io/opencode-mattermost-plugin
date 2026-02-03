@@ -1,5 +1,6 @@
 import { log } from "./logger.js";
 import type { Post } from "./models/index.js";
+import type { PendingInteractionsPgStore } from "./persistence/postgres/pending-interactions-pg.js";
 
 export type ConfirmationStep = "confirm_create" | "select_approval";
 
@@ -26,6 +27,7 @@ export class SessionOwnershipHandler {
   private botUserId: string | null = null;
   private pendingConfirmations: Map<string, PendingOwnershipConfirmation> = new Map();
   private readonly CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000;
+  private pgStore: PendingInteractionsPgStore | null = null;
 
   constructor(mmClient: any) {
     this.mmClient = mmClient;
@@ -33,6 +35,11 @@ export class SessionOwnershipHandler {
 
   setBotUserId(botUserId: string): void {
     this.botUserId = botUserId;
+  }
+
+  setPgStore(store: PendingInteractionsPgStore): void {
+    this.pgStore = store;
+    log.info(`[SessionOwnership] Postgres store configured for dual-write`);
   }
 
   private getKey(channelId: string, threadRootPostId: string): string {
@@ -119,6 +126,22 @@ _Request expires in 5 minutes_`;
     };
 
     this.pendingConfirmations.set(key, pending);
+
+    if (this.pgStore) {
+      try {
+        await this.pgStore.createOwnership({
+          id: crypto.randomUUID(),
+          claiming_user_id: post.user_id,
+          confirmation_post_id: requestPost.id,
+          channel_id: channelId,
+          thread_root_post_id: threadRootPostId,
+          step: "confirm_create",
+        });
+      } catch (e) {
+        log.warn(`[SessionOwnership] Failed to write ownership to Postgres: ${e}`);
+      }
+    }
+
     log.info(`[SessionOwnership] Requested confirmation from @${username} for thread ${threadRootPostId.substring(0, 8)}`);
 
     return requestPost.id;
@@ -175,6 +198,7 @@ _Request expires in 5 minutes_`;
         pending.step = "select_approval";
         pending.createdAt = new Date(); // Reset timeout
         this.pendingConfirmations.set(key, pending);
+        this.updatePgOwnershipStep(pending.requestPostId, "select_approval");
 
         const approvalMessage = `Great! **Do you want to pre-approve other people to use this session?**
 
@@ -195,6 +219,7 @@ _Reply with a number (1, 2, or 3)_`;
 
       if (trimmed === "no" || trimmed === "n") {
         this.pendingConfirmations.delete(key);
+        this.updatePgOwnershipStatus(pending.requestPostId, "rejected");
         await this.mmClient.createPost(
           channelId,
           `Got it. Ask someone else to @mention me to create a session for this thread.`,
@@ -225,6 +250,7 @@ _Reply with a number (1, 2, or 3)_`;
       }
 
       this.pendingConfirmations.delete(key);
+      this.updatePgOwnershipStatus(pending.requestPostId, "confirmed");
       log.info(`[SessionOwnership] @${pending.username} confirmed session creation with policy '${approvalPolicy}' for thread ${threadRootPostId.substring(0, 8)}`);
       return { confirmed: true, post: pending.originalPost, message: "Session will be created.", approvalPolicy };
     }
@@ -235,6 +261,34 @@ _Reply with a number (1, 2, or 3)_`;
   clearPendingConfirmation(channelId: string, threadRootPostId: string): void {
     const key = this.getKey(channelId, threadRootPostId);
     this.pendingConfirmations.delete(key);
+  }
+
+  private updatePgOwnershipStep(ownershipPostId: string, step: ConfirmationStep): void {
+    if (this.pgStore) {
+      this.pgStore.getOwnershipByPostId(ownershipPostId).then((ownership) => {
+        if (ownership) {
+          this.pgStore!.updateOwnershipStep(ownership.id, step).catch((e) => {
+            log.warn(`[SessionOwnership] Failed to update step in Postgres: ${e}`);
+          });
+        }
+      }).catch((e) => {
+        log.warn(`[SessionOwnership] Failed to get ownership from Postgres: ${e}`);
+      });
+    }
+  }
+
+  private updatePgOwnershipStatus(ownershipPostId: string, status: "confirmed" | "rejected"): void {
+    if (this.pgStore) {
+      this.pgStore.getOwnershipByPostId(ownershipPostId).then((ownership) => {
+        if (ownership) {
+          this.pgStore!.resolveOwnership(ownership.id, status).catch((e) => {
+            log.warn(`[SessionOwnership] Failed to resolve ownership in Postgres: ${e}`);
+          });
+        }
+      }).catch((e) => {
+        log.warn(`[SessionOwnership] Failed to get ownership from Postgres: ${e}`);
+      });
+    }
   }
 
   cleanupExpired(): number {

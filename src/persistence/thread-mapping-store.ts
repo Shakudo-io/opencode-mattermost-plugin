@@ -378,6 +378,10 @@ export class ThreadMappingStore {
     return this.pgStore;
   }
 
+  getClientManager(): import("./postgres/supabase-client.js").SupabaseClientManager | null {
+    return this.unifiedStore?.getClientManager() ?? null;
+  }
+
   getInstanceId(): string {
     return this.unifiedStore?.getInstanceId() ?? "local";
   }

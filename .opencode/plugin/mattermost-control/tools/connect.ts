@@ -21,6 +21,7 @@ import { isBotMentioned } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
 import { TeamStore } from "../../../../src/persistence/team-store.js";
+import { createPendingInteractionsPgStore, type PendingInteractionsPgStore } from "../../../../src/persistence/postgres/pending-interactions-pg.js";
 import type { WebSocketEvent } from "../../../../src/models/index.js";
 
 export interface ConnectionContext {
@@ -152,6 +153,29 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     
     const fileCompletionHandler = new FileCompletionHandler(ctx.opencodeBaseUrl, ctx.directory);
     PluginState.setFileCompletionHandler(fileCompletionHandler);
+
+    const clientManager = threadMappingStore?.getClientManager();
+    let pendingPgStore: PendingInteractionsPgStore | null = null;
+    if (clientManager) {
+      pendingPgStore = createPendingInteractionsPgStore(clientManager);
+      questionHandler.setPgStore(pendingPgStore);
+      guestApprovalHandler.setPgStore(pendingPgStore);
+      sessionOwnershipHandler.setPgStore(pendingPgStore);
+      log.info("[PendingPg] Wired Postgres store to handlers");
+
+      const TTL_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+      const cleanupTimer = setInterval(async () => {
+        try {
+          const result = await pendingPgStore!.expireOldPending();
+          if (result.questions > 0 || result.approvals > 0 || result.ownerships > 0) {
+            log.info(`[TTL Cleanup] Expired: ${result.questions} questions, ${result.approvals} approvals, ${result.ownerships} ownerships`);
+          }
+        } catch (e) {
+          log.warn(`[TTL Cleanup] Failed: ${e}`);
+        }
+      }, TTL_CLEANUP_INTERVAL_MS);
+      PluginState.setPendingCleanupTimer(cleanupTimer);
+    }
 
     setupSessionCallbacks(openCodeSessionRegistry, threadMappingStore, threadManager, sessionManager, config);
     

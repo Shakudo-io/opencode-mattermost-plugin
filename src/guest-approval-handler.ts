@@ -2,6 +2,7 @@ import { log } from "./logger.js";
 import type { Post } from "./models/index.js";
 import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
 import type { TeamStore } from "./persistence/team-store.js";
+import type { PendingInteractionsPgStore } from "./persistence/postgres/pending-interactions-pg.js";
 
 export interface PendingApproval {
   requestPostId: string;
@@ -17,9 +18,15 @@ export class GuestApprovalHandler {
   private mmClient: any;
   private pendingApprovals: Map<string, PendingApproval> = new Map();
   private readonly APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
+  private pgStore: PendingInteractionsPgStore | null = null;
 
   constructor(mmClient: any) {
     this.mmClient = mmClient;
+  }
+
+  setPgStore(store: PendingInteractionsPgStore): void {
+    this.pgStore = store;
+    log.info(`[GuestApproval] Postgres store configured for dual-write`);
   }
 
   async requestApproval(
@@ -63,6 +70,24 @@ _Reply \`deny\` or \`0\` to reject_`;
     };
 
     this.pendingApprovals.set(sessionId, pending);
+
+    if (this.pgStore) {
+      try {
+        await this.pgStore.createApproval({
+          id: crypto.randomUUID(),
+          guest_user_id: post.user_id,
+          guest_username: guestUsername,
+          approval_post_id: requestPost.id,
+          channel_id: channelId,
+          session_id: sessionId,
+          thread_root_post_id: threadRootPostId,
+          original_message: post.message,
+        });
+      } catch (e) {
+        log.warn(`[GuestApproval] Failed to write approval to Postgres: ${e}`);
+      }
+    }
+
     log.info(`[GuestApproval] Requested approval for @${guestUsername} in session ${sessionId.substring(0, 8)}`);
 
     return requestPost.id;
@@ -120,6 +145,7 @@ _Reply \`deny\` or \`0\` to reject_`;
 
     if (effectiveChoice === "0" || effectiveChoice === "deny" || effectiveChoice === "no") {
       this.pendingApprovals.delete(sessionId);
+      this.updatePgApprovalStatus(pending.requestPostId, "denied", "owner");
       await this.mmClient.createPost(
         channelId,
         `❌ Request from @${pending.guestUsername} was denied.`,
@@ -131,6 +157,7 @@ _Reply \`deny\` or \`0\` to reject_`;
 
     if (effectiveChoice === "1") {
       this.pendingApprovals.delete(sessionId);
+      this.updatePgApprovalStatus(pending.requestPostId, "approved", "owner");
       await this.mmClient.createPost(
         channelId,
         `✅ Approved message from @${pending.guestUsername}.`,
@@ -142,6 +169,7 @@ _Reply \`deny\` or \`0\` to reject_`;
 
     if (effectiveChoice === "2") {
       this.pendingApprovals.delete(sessionId);
+      this.updatePgApprovalStatus(pending.requestPostId, "approved", "owner");
       if (mapping) {
         const approvedUsers = mapping.approvedUsers || [];
         if (!approvedUsers.includes(pending.guestUserId)) {
@@ -161,6 +189,7 @@ _Reply \`deny\` or \`0\` to reject_`;
 
     if (effectiveChoice === "3") {
       this.pendingApprovals.delete(sessionId);
+      this.updatePgApprovalStatus(pending.requestPostId, "approved", "owner");
       if (mapping) {
         mapping.approveAllUsers = true;
         threadMappingStore.update(mapping);
@@ -205,6 +234,24 @@ _Reply \`deny\` or \`0\` to reject_`;
 
   clearPendingApproval(sessionId: string): void {
     this.pendingApprovals.delete(sessionId);
+  }
+
+  private updatePgApprovalStatus(
+    approvalPostId: string,
+    status: "approved" | "denied",
+    decidedBy: string
+  ): void {
+    if (this.pgStore) {
+      this.pgStore.getApprovalByPostId(approvalPostId).then((approval) => {
+        if (approval) {
+          this.pgStore!.decideApproval(approval.id, status, decidedBy).catch((e) => {
+            log.warn(`[GuestApproval] Failed to update approval in Postgres: ${e}`);
+          });
+        }
+      }).catch((e) => {
+        log.warn(`[GuestApproval] Failed to get approval from Postgres: ${e}`);
+      });
+    }
   }
 
   cleanupExpired(): number {

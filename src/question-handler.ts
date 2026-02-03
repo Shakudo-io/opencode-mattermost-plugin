@@ -1,5 +1,7 @@
 import type { MattermostClient } from "./clients/mattermost-client.js";
 import { log } from "./logger.js";
+import type { PendingInteractionsPgStore } from "./persistence/postgres/pending-interactions-pg.js";
+import type { QuestionData } from "./persistence/postgres/schema.js";
 
 export interface QuestionOption {
   label: string;
@@ -47,9 +49,19 @@ export class QuestionHandler {
   private sessionToQuestion: Map<string, string> = new Map();
   private opencodeBaseUrl: string = "";
   private opencodeDirectory: string = "";
+  private pgStore: PendingInteractionsPgStore | null = null;
 
   constructor(mmClient: MattermostClient) {
     this.mmClient = mmClient;
+  }
+
+  /**
+   * Set the Postgres store for dual-write support.
+   * When set, pending questions will be written to both local Map and Postgres.
+   */
+  setPgStore(store: PendingInteractionsPgStore): void {
+    this.pgStore = store;
+    log.info(`[QuestionHandler] Postgres store configured for dual-write`);
   }
 
   /**
@@ -88,6 +100,29 @@ export class QuestionHandler {
 
     this.pendingQuestions.set(request.id, pending);
     this.sessionToQuestion.set(request.sessionID, request.id);
+
+    if (this.pgStore) {
+      try {
+        const currentQuestion = request.questions[0];
+        await this.pgStore.createQuestion({
+          id: request.id,
+          thread_root_post_id: threadRootPostId || "",
+          opencode_session_id: request.sessionID,
+          question_post_id: post.id,
+          question_data: {
+            header: currentQuestion.header,
+            question: currentQuestion.question,
+            options: currentQuestion.options.map((opt) => ({
+              label: opt.label,
+              description: opt.description,
+            })),
+            multiple: currentQuestion.multiple,
+          },
+        });
+      } catch (e) {
+        log.warn(`[QuestionHandler] Failed to write question to Postgres: ${e}`);
+      }
+    }
 
     log.info(`[QuestionHandler] Posted question ${request.id} as post ${post.id}`);
     return post.id;
@@ -200,6 +235,14 @@ export class QuestionHandler {
 
     this.pendingQuestions.delete(questionId);
     this.sessionToQuestion.delete(sessionId);
+
+    if (this.pgStore) {
+      try {
+        await this.pgStore.answerQuestion(questionId, JSON.stringify(pending.answers));
+      } catch (e) {
+        log.warn(`[QuestionHandler] Failed to update question in Postgres: ${e}`);
+      }
+    }
 
     const selectionSummary = pending.answers.map((ans, idx) => {
       const q = pending.request.questions[idx];
@@ -330,6 +373,13 @@ export class QuestionHandler {
     if (pending) {
       this.sessionToQuestion.delete(pending.request.sessionID);
       this.pendingQuestions.delete(questionId);
+
+      if (this.pgStore) {
+        this.pgStore.cancelQuestion(questionId).catch((e) => {
+          log.warn(`[QuestionHandler] Failed to cancel question in Postgres: ${e}`);
+        });
+      }
+
       log.info(`[QuestionHandler] Cancelled question ${questionId}`);
     }
   }
