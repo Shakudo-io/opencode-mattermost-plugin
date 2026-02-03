@@ -5,10 +5,16 @@ import {
   ScheduleSchema,
   TeamSchema,
   TeamMemberSchema,
+  PendingQuestionSchema,
+  PendingApprovalSchema,
+  PendingOwnershipSchema,
   type ThreadMapping,
   type Schedule,
   type Team,
   type TeamMember,
+  type PendingQuestion,
+  type PendingApproval,
+  type PendingOwnership,
 } from "./schema.js";
 import { log } from "../../logger.js";
 
@@ -42,6 +48,27 @@ export type TeamMemberChangeEvent = {
   timestamp: Date;
 };
 
+export type PendingQuestionChangeEvent = {
+  eventType: RealtimeEventType;
+  old: PendingQuestion | null;
+  new: PendingQuestion | null;
+  timestamp: Date;
+};
+
+export type PendingApprovalChangeEvent = {
+  eventType: RealtimeEventType;
+  old: PendingApproval | null;
+  new: PendingApproval | null;
+  timestamp: Date;
+};
+
+export type PendingOwnershipChangeEvent = {
+  eventType: RealtimeEventType;
+  old: PendingOwnership | null;
+  new: PendingOwnership | null;
+  timestamp: Date;
+};
+
 export type RealtimeSyncOptions = {
   clientManager: SupabaseClientManager;
   instanceId: string;
@@ -49,6 +76,9 @@ export type RealtimeSyncOptions = {
   onScheduleChange?: (event: ScheduleChangeEvent) => void;
   onTeamChange?: (event: TeamChangeEvent) => void;
   onTeamMemberChange?: (event: TeamMemberChangeEvent) => void;
+  onPendingQuestionChange?: (event: PendingQuestionChangeEvent) => void;
+  onPendingApprovalChange?: (event: PendingApprovalChangeEvent) => void;
+  onPendingOwnershipChange?: (event: PendingOwnershipChangeEvent) => void;
   pollingIntervalMs?: number;
 };
 
@@ -71,6 +101,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     onScheduleChange,
     onTeamChange,
     onTeamMemberChange,
+    onPendingQuestionChange,
+    onPendingApprovalChange,
+    onPendingOwnershipChange,
     pollingIntervalMs = DEFAULT_POLLING_INTERVAL_MS,
   } = options;
 
@@ -78,6 +111,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
   let scheduleChannel: RealtimeChannel | null = null;
   let teamChannel: RealtimeChannel | null = null;
   let teamMemberChannel: RealtimeChannel | null = null;
+  let pendingQuestionChannel: RealtimeChannel | null = null;
+  let pendingApprovalChannel: RealtimeChannel | null = null;
+  let pendingOwnershipChannel: RealtimeChannel | null = null;
   let isConnected = false;
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
   let reconnectAttempts = 0;
@@ -86,6 +122,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
   let lastKnownScheduleUpdatedAt: Date | null = null;
   let lastKnownTeamUpdatedAt: Date | null = null;
   let lastKnownTeamMemberCreatedAt: Date | null = null;
+  let lastKnownPendingQuestionCreatedAt: Date | null = null;
+  let lastKnownPendingApprovalCreatedAt: Date | null = null;
+  let lastKnownPendingOwnershipCreatedAt: Date | null = null;
 
   async function subscribeToThreadMappings(): Promise<void> {
     if (stopped) return;
@@ -357,6 +396,204 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     }
   }
 
+  async function subscribeToPendingQuestions(): Promise<void> {
+    if (stopped || !onPendingQuestionChange) return;
+
+    const { client } = clientManager;
+
+    pendingQuestionChannel = client
+      .channel("pending_questions_changes")
+      .on<PendingQuestion>(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "opencode_mm_plugin",
+          table: "pending_questions",
+        },
+        (payload: RealtimePostgresChangesPayload<PendingQuestion>) => {
+          handlePendingQuestionChange(payload);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          log.info(`[realtime-sync] Connected to pending_questions Realtime channel`);
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          log.warn(`[realtime-sync] Pending questions channel ${status}`);
+        }
+      });
+  }
+
+  function handlePendingQuestionChange(payload: RealtimePostgresChangesPayload<PendingQuestion>): void {
+    if (!onPendingQuestionChange) return;
+
+    try {
+      const eventType = payload.eventType as RealtimeEventType;
+      let oldRecord: PendingQuestion | null = null;
+      let newRecord: PendingQuestion | null = null;
+
+      if (payload.old && Object.keys(payload.old).length > 0) {
+        const parsed = PendingQuestionSchema.safeParse(payload.old);
+        if (parsed.success) {
+          oldRecord = parsed.data;
+        }
+      }
+
+      if (payload.new && Object.keys(payload.new).length > 0) {
+        const parsed = PendingQuestionSchema.safeParse(payload.new);
+        if (parsed.success) {
+          newRecord = parsed.data;
+        }
+      }
+
+      const event: PendingQuestionChangeEvent = {
+        eventType,
+        old: oldRecord,
+        new: newRecord,
+        timestamp: new Date(),
+      };
+
+      log.debug(
+        `[realtime-sync] Pending question ${eventType}: id=${newRecord?.id || oldRecord?.id}, status=${newRecord?.status || oldRecord?.status}`
+      );
+
+      onPendingQuestionChange(event);
+    } catch (e) {
+      log.error("[realtime-sync] Error processing pending question change:", e);
+    }
+  }
+
+  async function subscribeToPendingApprovals(): Promise<void> {
+    if (stopped || !onPendingApprovalChange) return;
+
+    const { client } = clientManager;
+
+    pendingApprovalChannel = client
+      .channel("pending_approvals_changes")
+      .on<PendingApproval>(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "opencode_mm_plugin",
+          table: "pending_approvals",
+        },
+        (payload: RealtimePostgresChangesPayload<PendingApproval>) => {
+          handlePendingApprovalChange(payload);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          log.info(`[realtime-sync] Connected to pending_approvals Realtime channel`);
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          log.warn(`[realtime-sync] Pending approvals channel ${status}`);
+        }
+      });
+  }
+
+  function handlePendingApprovalChange(payload: RealtimePostgresChangesPayload<PendingApproval>): void {
+    if (!onPendingApprovalChange) return;
+
+    try {
+      const eventType = payload.eventType as RealtimeEventType;
+      let oldRecord: PendingApproval | null = null;
+      let newRecord: PendingApproval | null = null;
+
+      if (payload.old && Object.keys(payload.old).length > 0) {
+        const parsed = PendingApprovalSchema.safeParse(payload.old);
+        if (parsed.success) {
+          oldRecord = parsed.data;
+        }
+      }
+
+      if (payload.new && Object.keys(payload.new).length > 0) {
+        const parsed = PendingApprovalSchema.safeParse(payload.new);
+        if (parsed.success) {
+          newRecord = parsed.data;
+        }
+      }
+
+      const event: PendingApprovalChangeEvent = {
+        eventType,
+        old: oldRecord,
+        new: newRecord,
+        timestamp: new Date(),
+      };
+
+      log.debug(
+        `[realtime-sync] Pending approval ${eventType}: id=${newRecord?.id || oldRecord?.id}, guest=${newRecord?.guest_username || oldRecord?.guest_username}, status=${newRecord?.status || oldRecord?.status}`
+      );
+
+      onPendingApprovalChange(event);
+    } catch (e) {
+      log.error("[realtime-sync] Error processing pending approval change:", e);
+    }
+  }
+
+  async function subscribeToPendingOwnerships(): Promise<void> {
+    if (stopped || !onPendingOwnershipChange) return;
+
+    const { client } = clientManager;
+
+    pendingOwnershipChannel = client
+      .channel("pending_ownerships_changes")
+      .on<PendingOwnership>(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "opencode_mm_plugin",
+          table: "pending_ownerships",
+        },
+        (payload: RealtimePostgresChangesPayload<PendingOwnership>) => {
+          handlePendingOwnershipChange(payload);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          log.info(`[realtime-sync] Connected to pending_ownerships Realtime channel`);
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          log.warn(`[realtime-sync] Pending ownerships channel ${status}`);
+        }
+      });
+  }
+
+  function handlePendingOwnershipChange(payload: RealtimePostgresChangesPayload<PendingOwnership>): void {
+    if (!onPendingOwnershipChange) return;
+
+    try {
+      const eventType = payload.eventType as RealtimeEventType;
+      let oldRecord: PendingOwnership | null = null;
+      let newRecord: PendingOwnership | null = null;
+
+      if (payload.old && Object.keys(payload.old).length > 0) {
+        const parsed = PendingOwnershipSchema.safeParse(payload.old);
+        if (parsed.success) {
+          oldRecord = parsed.data;
+        }
+      }
+
+      if (payload.new && Object.keys(payload.new).length > 0) {
+        const parsed = PendingOwnershipSchema.safeParse(payload.new);
+        if (parsed.success) {
+          newRecord = parsed.data;
+        }
+      }
+
+      const event: PendingOwnershipChangeEvent = {
+        eventType,
+        old: oldRecord,
+        new: newRecord,
+        timestamp: new Date(),
+      };
+
+      log.debug(
+        `[realtime-sync] Pending ownership ${eventType}: id=${newRecord?.id || oldRecord?.id}, claimingUser=${newRecord?.claiming_user_id || oldRecord?.claiming_user_id}, status=${newRecord?.status || oldRecord?.status}`
+      );
+
+      onPendingOwnershipChange(event);
+    } catch (e) {
+      log.error("[realtime-sync] Error processing pending ownership change:", e);
+    }
+  }
+
   function startPolling(): void {
     if (pollingTimer || stopped) return;
 
@@ -380,6 +617,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     await pollSchedules();
     await pollTeams();
     await pollTeamMembers();
+    await pollPendingQuestions();
+    await pollPendingApprovals();
+    await pollPendingOwnerships();
   }
 
   async function pollThreadMappings(): Promise<void> {
@@ -571,6 +811,153 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
     }
   }
 
+  async function pollPendingQuestions(): Promise<void> {
+    if (!onPendingQuestionChange) return;
+
+    try {
+      const { client } = clientManager;
+      let query = client
+        .schema("opencode_mm_plugin")
+        .from("pending_questions")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (lastKnownPendingQuestionCreatedAt) {
+        query = query.gt("created_at", lastKnownPendingQuestionCreatedAt.toISOString());
+      }
+
+      const { data, error } = await query.limit(100);
+
+      if (error) {
+        log.error("[realtime-sync] Pending questions polling error:", error);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+
+      for (const row of data) {
+        const parsed = PendingQuestionSchema.safeParse(row);
+        if (!parsed.success) continue;
+
+        const record = parsed.data;
+        const event: PendingQuestionChangeEvent = {
+          eventType: "INSERT",
+          old: null,
+          new: record,
+          timestamp: new Date(record.created_at),
+        };
+
+        onPendingQuestionChange(event);
+
+        if (!lastKnownPendingQuestionCreatedAt || record.created_at > lastKnownPendingQuestionCreatedAt) {
+          lastKnownPendingQuestionCreatedAt = record.created_at;
+        }
+      }
+
+      log.debug(`[realtime-sync] Polled ${data.length} new pending questions`);
+    } catch (e) {
+      log.error("[realtime-sync] Pending questions polling exception:", e);
+    }
+  }
+
+  async function pollPendingApprovals(): Promise<void> {
+    if (!onPendingApprovalChange) return;
+
+    try {
+      const { client } = clientManager;
+      let query = client
+        .schema("opencode_mm_plugin")
+        .from("pending_approvals")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (lastKnownPendingApprovalCreatedAt) {
+        query = query.gt("created_at", lastKnownPendingApprovalCreatedAt.toISOString());
+      }
+
+      const { data, error } = await query.limit(100);
+
+      if (error) {
+        log.error("[realtime-sync] Pending approvals polling error:", error);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+
+      for (const row of data) {
+        const parsed = PendingApprovalSchema.safeParse(row);
+        if (!parsed.success) continue;
+
+        const record = parsed.data;
+        const event: PendingApprovalChangeEvent = {
+          eventType: "INSERT",
+          old: null,
+          new: record,
+          timestamp: new Date(record.created_at),
+        };
+
+        onPendingApprovalChange(event);
+
+        if (!lastKnownPendingApprovalCreatedAt || record.created_at > lastKnownPendingApprovalCreatedAt) {
+          lastKnownPendingApprovalCreatedAt = record.created_at;
+        }
+      }
+
+      log.debug(`[realtime-sync] Polled ${data.length} new pending approvals`);
+    } catch (e) {
+      log.error("[realtime-sync] Pending approvals polling exception:", e);
+    }
+  }
+
+  async function pollPendingOwnerships(): Promise<void> {
+    if (!onPendingOwnershipChange) return;
+
+    try {
+      const { client } = clientManager;
+      let query = client
+        .schema("opencode_mm_plugin")
+        .from("pending_ownerships")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (lastKnownPendingOwnershipCreatedAt) {
+        query = query.gt("created_at", lastKnownPendingOwnershipCreatedAt.toISOString());
+      }
+
+      const { data, error } = await query.limit(100);
+
+      if (error) {
+        log.error("[realtime-sync] Pending ownerships polling error:", error);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+
+      for (const row of data) {
+        const parsed = PendingOwnershipSchema.safeParse(row);
+        if (!parsed.success) continue;
+
+        const record = parsed.data;
+        const event: PendingOwnershipChangeEvent = {
+          eventType: "INSERT",
+          old: null,
+          new: record,
+          timestamp: new Date(record.created_at),
+        };
+
+        onPendingOwnershipChange(event);
+
+        if (!lastKnownPendingOwnershipCreatedAt || record.created_at > lastKnownPendingOwnershipCreatedAt) {
+          lastKnownPendingOwnershipCreatedAt = record.created_at;
+        }
+      }
+
+      log.debug(`[realtime-sync] Polled ${data.length} new pending ownerships`);
+    } catch (e) {
+      log.error("[realtime-sync] Pending ownerships polling exception:", e);
+    }
+  }
+
   function scheduleReconnect(): void {
     if (stopped || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -595,6 +982,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
         await subscribeToSchedules();
         await subscribeToTeams();
         await subscribeToTeamMembers();
+        await subscribeToPendingQuestions();
+        await subscribeToPendingApprovals();
+        await subscribeToPendingOwnerships();
       } catch (e) {
         log.error("[realtime-sync] Reconnect failed:", e);
         scheduleReconnect();
@@ -619,6 +1009,18 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
       await teamMemberChannel.unsubscribe();
       teamMemberChannel = null;
     }
+    if (pendingQuestionChannel) {
+      await pendingQuestionChannel.unsubscribe();
+      pendingQuestionChannel = null;
+    }
+    if (pendingApprovalChannel) {
+      await pendingApprovalChannel.unsubscribe();
+      pendingApprovalChannel = null;
+    }
+    if (pendingOwnershipChannel) {
+      await pendingOwnershipChannel.unsubscribe();
+      pendingOwnershipChannel = null;
+    }
   }
 
   return {
@@ -631,6 +1033,9 @@ export function createRealtimeSync(options: RealtimeSyncOptions): RealtimeSync {
         await subscribeToSchedules();
         await subscribeToTeams();
         await subscribeToTeamMembers();
+        await subscribeToPendingQuestions();
+        await subscribeToPendingApprovals();
+        await subscribeToPendingOwnerships();
       } catch (e) {
         log.error("[realtime-sync] Failed to start Realtime subscription, falling back to polling:", e);
         startPolling();
