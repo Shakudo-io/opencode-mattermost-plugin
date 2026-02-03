@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-test-harness
+  namespace: mm-test
+  labels:
+    app: e2e-test-harness
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e2e-test-harness
+  template:
+    metadata:
+      labels:
+        app: e2e-test-harness
+    spec:
+      containers:
+        - name: harness
+          image: harbor.test3.canopyhub.io/library/e2e-test-harness:latest
+          imagePullPolicy: Always
+          env:
+            - name: MATTERMOST_URL
+              value: "https://mattermost.test3.canopyhub.io/api/v4"
+            - name: MATTERMOST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mattermost-e2e-test-creds
+                  key: bot-token
+            - name: BOT_USER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mattermost-e2e-test-creds
+                  key: bot-user-id
+            - name: DEBUG
+              value: "true"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      imagePullSecrets:
+        - name: harbor-pull-secret

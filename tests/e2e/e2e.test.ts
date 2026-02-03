@@ -285,7 +285,18 @@ class MattermostTestWebSocket {
 }
 
 class SupabaseTestClient {
+  private schema = "opencode_mattermost";
+  
   constructor(private url: string, private anonKey: string) {}
+
+  private getHeaders(): Record<string, string> {
+    return {
+      "apikey": this.anonKey,
+      "Authorization": `Bearer ${this.anonKey}`,
+      "Accept-Profile": this.schema,
+      "Content-Profile": this.schema,
+    };
+  }
 
   async query<T>(table: string, filters?: Record<string, any>): Promise<T[]> {
     let path = `/rest/v1/${table}?select=*`;
@@ -296,10 +307,7 @@ class SupabaseTestClient {
     }
 
     const response = await fetch(`${this.url}${path}`, {
-      headers: {
-        "apikey": this.anonKey,
-        "Authorization": `Bearer ${this.anonKey}`,
-      },
+      headers: this.getHeaders(),
     });
 
     if (!response.ok) {
@@ -315,10 +323,7 @@ class SupabaseTestClient {
       `${this.url}/rest/v1/thread_mappings?opencode_session_id=eq.${sessionId}`,
       {
         method: "DELETE",
-        headers: {
-          "apikey": this.anonKey,
-          "Authorization": `Bearer ${this.anonKey}`,
-        },
+        headers: this.getHeaders(),
       }
     );
 

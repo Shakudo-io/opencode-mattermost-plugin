@@ -48,24 +48,17 @@ load_credentials() {
     export MATTERMOST_TEST_USER_PASSWORD=$(kubectl get secret mattermost-e2e-test-creds -n mm-test \
         -o jsonpath='{.data.test-user-password}' 2>/dev/null | base64 -d)
     
-    export OPENCODE_MM_SUPABASE_ANON_KEY=$(kubectl get secret supabase-metaflow-keys -n mm-test \
-        -o jsonpath='{.data.anon-key}' 2>/dev/null | base64 -d)
+    # Load Supabase credentials from the same secret
+    export OPENCODE_MM_SUPABASE_URL=$(kubectl get secret mattermost-e2e-test-creds -n mm-test \
+        -o jsonpath='{.data.supabase-url}' 2>/dev/null | base64 -d)
+    
+    export OPENCODE_MM_SUPABASE_ANON_KEY=$(kubectl get secret mattermost-e2e-test-creds -n mm-test \
+        -o jsonpath='{.data.supabase-anon-key}' 2>/dev/null | base64 -d)
     
     if [ -z "$OPENCODE_MM_SUPABASE_ANON_KEY" ]; then
-        log_warn "Supabase anon key not found in mm-test namespace, trying to create it..."
-        
-        local anon_key
-        anon_key=$(kubectl get secret -n hyperplane-supabase-metaflow supabase-metaflow-jwt \
-            -o jsonpath='{.data.anon-key}' 2>/dev/null | base64 -d)
-        
-        if [ -n "$anon_key" ]; then
-            kubectl create secret generic supabase-metaflow-keys -n mm-test \
-                --from-literal=anon-key="$anon_key" 2>/dev/null || true
-            export OPENCODE_MM_SUPABASE_ANON_KEY="$anon_key"
-            log_info "Created supabase-metaflow-keys secret in mm-test namespace"
-        else
-            log_warn "Could not retrieve Supabase anon key - database tests will be skipped"
-        fi
+        log_warn "Supabase credentials not found in mattermost-e2e-test-creds secret - database tests will be skipped"
+    else
+        log_info "Supabase URL: $OPENCODE_MM_SUPABASE_URL"
     fi
     
     log_info "Credentials loaded successfully"
@@ -96,7 +89,6 @@ run_tests() {
     
     export MATTERMOST_URL="https://mattermost.test3.canopyhub.io/api/v4"
     export MATTERMOST_WS_URL="wss://mattermost.test3.canopyhub.io/api/v4/websocket"
-    export OPENCODE_MM_SUPABASE_URL="http://supabase-metaflow-kong.hyperplane-supabase-metaflow.svc.cluster.local"
     
     bun test tests/e2e/e2e.test.ts "$@"
 }
