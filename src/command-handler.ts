@@ -6,8 +6,10 @@ import type { ThreadMappingStore } from "./persistence/thread-mapping-store.js";
 import type { TeamStore } from "./persistence/team-store.js";
 import type { QuestionHandler } from "./question-handler.js";
 import type { ModelSelection } from "./models/index.js";
+import type { UnifiedStore } from "./persistence/unified-store.js";
 import { MergeHandler } from "./merge-handler.js";
 import { log } from "./logger.js";
+import { createMigrationManager, type MigrationManager } from "./persistence/postgres/migration.js";
 
 export interface ProviderModel {
   id: string;
@@ -29,6 +31,7 @@ export interface CommandContext {
   threadRootPostId?: string;
   channelId?: string;
   mattermostBaseUrl?: string;
+  unifiedStore?: UnifiedStore | null;
 }
 
 export type CommandResult = {
@@ -63,6 +66,8 @@ export class CommandHandler {
     this.commands.set("team", this.handleTeam.bind(this));
     this.commands.set("reject", this.handleReject.bind(this));
     this.commands.set("cancel", this.handleReject.bind(this)); // alias
+    this.commands.set("migrate", this.handleMigrate.bind(this));
+    this.commands.set("export", this.handleExport.bind(this));
   }
 
   private cachedModels: ProviderModel[] = [];
@@ -302,6 +307,7 @@ export class CommandHandler {
     context: CommandContext
   ): Promise<CommandResult> {
     const hasThreads = !!context.threadMappingStore;
+    const hasPostgres = !!context.unifiedStore?.isPostgresEnabled();
     
     const lines = [
       `:question: **Available Commands**`,
@@ -318,9 +324,15 @@ export class CommandHandler {
       `| \`${this.commandPrefix}stop\` | Stop/abort the current session (use in thread) |`,
       `| \`${this.commandPrefix}reject\` | Skip/reject a pending AI question |`,
       `| \`${this.commandPrefix}team\` | Manage team members (owner only) |`,
-      `| \`${this.commandPrefix}help\` | Show this help message |`,
-      "",
     ];
+
+    if (hasPostgres) {
+      lines.push(`| \`${this.commandPrefix}migrate\` | Migrate data from JSON files to Postgres |`);
+      lines.push(`| \`${this.commandPrefix}export\` | Export data from Postgres to JSON backup files |`);
+    }
+    
+    lines.push(`| \`${this.commandPrefix}help\` | Show this help message |`);
+    lines.push("");
     
     if (hasThreads) {
       lines.push("**Thread-Based Workflow:**");
@@ -968,6 +980,174 @@ export class CommandHandler {
       success: true,
       message: `:white_check_mark: Removed **${count}** team member(s). Only the owner has access now.`,
     };
+  }
+
+  private async handleMigrate(
+    _command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { unifiedStore, ownerUserId, userSession } = context;
+
+    // Check owner permission
+    const isOwner = ownerUserId && userSession.mattermostUserId === ownerUserId;
+    if (!isOwner) {
+      return {
+        success: false,
+        message: "Only the owner can run the migrate command.",
+      };
+    }
+
+    // Check if Postgres is enabled
+    if (!unifiedStore?.isPostgresEnabled()) {
+      return {
+        success: false,
+        message: [
+          `:warning: **PostgreSQL Not Enabled**`,
+          "",
+          "Migration requires PostgreSQL to be configured.",
+          "",
+          "**To enable PostgreSQL:**",
+          "1. Set `OPENCODE_MM_SUPABASE_URL` environment variable",
+          "2. Set `OPENCODE_MM_SUPABASE_SERVICE_KEY` environment variable",
+          "3. Set `OPENCODE_MM_MIGRATION_PHASE=2` or higher",
+          "4. Restart OpenCode",
+        ].join("\n"),
+      };
+    }
+
+    const clientManager = unifiedStore.getSupabaseClientManager();
+    if (!clientManager) {
+      return {
+        success: false,
+        message: "PostgreSQL client manager not available.",
+      };
+    }
+
+    const instanceId = process.env.OPENCODE_MM_INSTANCE_ID || "local";
+    const migrationManager = createMigrationManager(clientManager, instanceId);
+
+    const progressLines: string[] = [];
+    const onProgress = (msg: string) => {
+      progressLines.push(msg);
+      log.info(`[Migration] ${msg}`);
+    };
+
+    try {
+      const summary = await migrationManager.runFullMigration(onProgress);
+
+      const lines = [
+        summary.success ? `:white_check_mark: **Migration Complete**` : `:warning: **Migration Completed with Errors**`,
+        "",
+        `**Summary:**`,
+        `- Migrated: ${summary.totalMigrated} items`,
+        `- Skipped: ${summary.totalSkipped} items (already existed)`,
+        `- Errors: ${summary.totalErrors} items`,
+        "",
+        `**Details:**`,
+      ];
+
+      for (const result of summary.results) {
+        const icon = result.success ? ":white_check_mark:" : ":x:";
+        lines.push(`${icon} ${result.message}`);
+      }
+
+      if (summary.success) {
+        lines.push("");
+        lines.push("Your data is now stored in PostgreSQL. You can use `!export` to create JSON backups anytime.");
+      }
+
+      return {
+        success: summary.success,
+        message: lines.join("\n"),
+      };
+    } catch (e) {
+      log.error("[Migration] Full migration failed:", e);
+      return {
+        success: false,
+        message: `:x: **Migration Failed**\n\nError: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  }
+
+  private async handleExport(
+    _command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const { unifiedStore, ownerUserId, userSession } = context;
+
+    // Check owner permission
+    const isOwner = ownerUserId && userSession.mattermostUserId === ownerUserId;
+    if (!isOwner) {
+      return {
+        success: false,
+        message: "Only the owner can run the export command.",
+      };
+    }
+
+    // Check if Postgres is enabled
+    if (!unifiedStore?.isPostgresEnabled()) {
+      return {
+        success: false,
+        message: [
+          `:warning: **PostgreSQL Not Enabled**`,
+          "",
+          "Export requires PostgreSQL to be configured.",
+          "Nothing to export - data is still in local JSON files.",
+        ].join("\n"),
+      };
+    }
+
+    const clientManager = unifiedStore.getSupabaseClientManager();
+    if (!clientManager) {
+      return {
+        success: false,
+        message: "PostgreSQL client manager not available.",
+      };
+    }
+
+    const instanceId = process.env.OPENCODE_MM_INSTANCE_ID || "local";
+    const migrationManager = createMigrationManager(clientManager, instanceId);
+
+    const progressLines: string[] = [];
+    const onProgress = (msg: string) => {
+      progressLines.push(msg);
+      log.info(`[Export] ${msg}`);
+    };
+
+    try {
+      const summary = await migrationManager.exportAll(onProgress);
+
+      const lines = [
+        summary.success ? `:white_check_mark: **Export Complete**` : `:warning: **Export Completed with Errors**`,
+        "",
+        `**Summary:** ${summary.totalExported} items exported`,
+        "",
+        `**Files Created:**`,
+      ];
+
+      for (const result of summary.results) {
+        const icon = result.success ? ":white_check_mark:" : ":x:";
+        if (result.filePath) {
+          lines.push(`${icon} \`${result.filePath}\``);
+        } else {
+          lines.push(`${icon} ${result.message}`);
+        }
+      }
+
+      lines.push("");
+      lines.push("Backup files can be used to restore data if needed.");
+
+      return {
+        success: summary.success,
+        message: lines.join("\n"),
+      };
+    } catch (e) {
+      log.error("[Export] Full export failed:", e);
+      return {
+        success: false,
+        message: `:x: **Export Failed**\n\nError: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
   }
 
   async handleModelSelection(

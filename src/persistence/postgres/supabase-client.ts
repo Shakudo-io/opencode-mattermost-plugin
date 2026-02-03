@@ -13,6 +13,8 @@ export type SupabaseClientManager = {
   disconnect: () => Promise<void>;
   reconnect: () => Promise<boolean>;
   onStateChange: (callback: (state: ConnectionState) => void) => () => void;
+  startHealthMonitor: () => void;
+  stopHealthMonitor: () => void;
 };
 
 export type ConnectionState = "connected" | "disconnected" | "reconnecting" | "degraded";
@@ -23,6 +25,7 @@ const SCHEMA = "opencode_mm_plugin";
 const HEALTH_CHECK_QUERY = "SELECT 1 as health";
 const RECONNECT_DELAY_BASE = 1000;
 const MAX_RECONNECT_DELAY = 30000;
+const HEALTH_CHECK_INTERVAL_MS = 30000; // 30 seconds
 
 export function createSupabaseClientManager(config: PostgresConfig): SupabaseClientManager | null {
   if (!config.enabled) {
@@ -39,6 +42,7 @@ export function createSupabaseClientManager(config: PostgresConfig): SupabaseCli
   const stateCallbacks: Set<StateChangeCallback> = new Set();
   let reconnectAttempts = 0;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let healthMonitorTimer: NodeJS.Timeout | null = null;
 
   const client = createClient(config.supabaseUrl, config.supabaseAnonKey, {
     db: {
@@ -127,9 +131,47 @@ export function createSupabaseClientManager(config: PostgresConfig): SupabaseCli
       reconnectTimer = null;
     }
 
+    if (healthMonitorTimer) {
+      clearInterval(healthMonitorTimer);
+      healthMonitorTimer = null;
+    }
+
     await client.removeAllChannels();
     setState("disconnected");
     log.info("[supabase-client] Disconnected");
+  }
+
+  function startHealthMonitor() {
+    if (healthMonitorTimer) {
+      return; // Already running
+    }
+
+    log.info(`[supabase-client] Starting health monitor (every ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`);
+
+    healthMonitorTimer = setInterval(async () => {
+      if (state === "reconnecting") {
+        return; // Skip health check during reconnection
+      }
+
+      const healthy = await checkHealth();
+      if (state === "connected" && !healthy) {
+        log.warn("[supabase-client] Health check failed, triggering reconnect");
+        setState("degraded");
+        reconnect();
+      } else if (state === "degraded" && healthy) {
+        log.info("[supabase-client] Health check passed in degraded mode, recovering");
+        setState("connected");
+        reconnectAttempts = 0;
+      }
+    }, HEALTH_CHECK_INTERVAL_MS);
+  }
+
+  function stopHealthMonitor() {
+    if (healthMonitorTimer) {
+      clearInterval(healthMonitorTimer);
+      healthMonitorTimer = null;
+      log.info("[supabase-client] Stopped health monitor");
+    }
   }
 
   checkHealth().then((healthy) => {
@@ -169,6 +211,9 @@ export function createSupabaseClientManager(config: PostgresConfig): SupabaseCli
         stateCallbacks.delete(callback);
       };
     },
+
+    startHealthMonitor,
+    stopHealthMonitor,
   };
 }
 

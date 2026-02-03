@@ -16,10 +16,12 @@ export type UnifiedStore = {
   getInstanceId: () => string;
   isLeader: () => boolean;
   getMigrationPhase: () => MigrationPhase;
+  isPostgresEnabled: () => boolean;
   shouldWriteToPostgres: () => boolean;
   shouldReadFromPostgres: () => boolean;
   shouldWriteToJson: () => boolean;
   getClientManager: () => SupabaseClientManager | null;
+  getSupabaseClientManager: () => SupabaseClientManager | null;
   getInstanceRegistry: () => InstanceRegistry | null;
   getDegradedModeManager: () => DegradedModeManager;
   onLeadershipChange: (callback: (isLeader: boolean) => void) => () => void;
@@ -94,6 +96,10 @@ export function createUnifiedStore(options: UnifiedStoreOptions): UnifiedStore {
         if (instanceRegistry) {
           await instanceRegistry.start();
         }
+
+        if (clientManager) {
+          clientManager.startHealthMonitor();
+        }
       } else {
         log.info("[unified-store] Postgres disabled, using JSON-only mode");
       }
@@ -103,6 +109,10 @@ export function createUnifiedStore(options: UnifiedStoreOptions): UnifiedStore {
 
     async shutdown() {
       if (!initialized) return;
+
+      if (clientManager) {
+        clientManager.stopHealthMonitor();
+      }
 
       if (instanceRegistry) {
         await instanceRegistry.stop();
@@ -129,11 +139,19 @@ export function createUnifiedStore(options: UnifiedStoreOptions): UnifiedStore {
       return migrationPhase;
     },
 
+    isPostgresEnabled() {
+      return postgresConfig.enabled && clientManager !== null;
+    },
+
     shouldWriteToPostgres,
     shouldReadFromPostgres,
     shouldWriteToJson,
 
     getClientManager() {
+      return clientManager;
+    },
+
+    getSupabaseClientManager() {
       return clientManager;
     },
 

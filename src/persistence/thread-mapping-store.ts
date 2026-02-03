@@ -374,6 +374,40 @@ export class ThreadMappingStore {
     await this.save();
   }
 
+  /**
+   * Clean up stale thread mappings older than the specified number of days.
+   * This helps prevent unbounded growth of the mapping store.
+   *
+   * @param maxAgeDays Maximum age in days before a mapping is considered stale (default: 30)
+   * @returns Number of mappings cleaned up
+   */
+  async cleanupStaleMappings(maxAgeDays: number = 30): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+    const cutoffTimestamp = cutoffDate.getTime();
+
+    let cleaned = 0;
+    const toRemove: string[] = [];
+
+    for (const mapping of this.listAll()) {
+      const lastActivity = new Date(mapping.lastActivityAt).getTime();
+      if (lastActivity < cutoffTimestamp) {
+        toRemove.push(mapping.sessionId);
+      }
+    }
+
+    for (const sessionId of toRemove) {
+      await this.remove(sessionId);
+      cleaned++;
+    }
+
+    if (cleaned > 0) {
+      log.info(`[ThreadMappingStore] Cleaned up ${cleaned} stale mappings older than ${maxAgeDays} days`);
+    }
+
+    return cleaned;
+  }
+
   getPgStore(): ThreadMappingPgStore | null {
     return this.pgStore;
   }

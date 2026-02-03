@@ -37,6 +37,8 @@ export type ThreadMappingPgStore = {
   releaseExpiredClaims(): Promise<number>;
   isClaimedByOther(threadRootPostId: string, instanceId: string): Promise<boolean>;
   releaseAllClaims(instanceId: string): Promise<number>;
+
+  cleanupStaleMappings(maxAgeDays?: number): Promise<number>;
 };
 
 /**
@@ -433,6 +435,28 @@ export function createThreadMappingPgStore(
     return count;
   }
 
+  async function cleanupStaleMappings(maxAgeDays: number = 30): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+
+    const { data, error } = await client
+      .from(TABLE_NAME)
+      .delete()
+      .lt("updated_at", cutoffDate.toISOString())
+      .select("id");
+
+    if (error) {
+      handlePostgrestError(error, "cleanup stale mappings");
+      return 0;
+    }
+
+    const count = data?.length || 0;
+    if (count > 0) {
+      log.info(`[thread-mapping-pg] Cleaned up ${count} stale mappings older than ${maxAgeDays} days`);
+    }
+    return count;
+  }
+
   return {
     create,
     getByThreadRootPostId,
@@ -448,5 +472,6 @@ export function createThreadMappingPgStore(
     releaseExpiredClaims,
     isClaimedByOther,
     releaseAllClaims,
+    cleanupStaleMappings,
   };
 }

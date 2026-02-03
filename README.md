@@ -276,7 +276,33 @@ export OPENCODE_MM_NOTIFY_STATUS="true"
 
 # Logging
 export MM_PLUGIN_LOG_FILE="/tmp/opencode-mattermost-plugin.log"
+
+# PostgreSQL State Management (Multi-Instance Support)
+# See "Migrating to PostgreSQL" section below for full setup guide
+export OPENCODE_MM_SUPABASE_URL=""               # Supabase project URL
+export OPENCODE_MM_SUPABASE_ANON_KEY=""          # Supabase anon key
+export OPENCODE_MM_MIGRATION_PHASE="1"           # Migration phase (1, 2, or 3)
 ```
+
+### PostgreSQL State Management
+
+For multi-instance deployments (multiple OpenCode instances sharing the same Mattermost bot), the plugin supports PostgreSQL-backed state management using Supabase.
+
+**Benefits:**
+- Thread mappings shared across instances
+- Scheduled tasks with single-execution guarantee (leader election)
+- Team configuration sharing
+- Graceful degradation to local JSON if database unavailable
+
+**Migration Phases:**
+
+| Phase | Description | Behavior |
+|-------|-------------|----------|
+| **1** | Dual-write (default) | Write to both JSON and Postgres, read from JSON |
+| **2** | Migration | Write to both, read from Postgres (with JSON fallback) |
+| **3** | Postgres-only | Postgres is primary, JSON only for degraded mode |
+
+See [Migrating to PostgreSQL](#migrating-to-postgresql) for step-by-step setup.
 
 ### OpenCode Configuration
 
@@ -1054,6 +1080,225 @@ bun install --registry http://verdaccio.hyperplane-verdaccio.svc.cluster.local:4
 echo "Updated to version $VERSION"
 echo "IMPORTANT: Restart OpenCode for changes to take effect!"
 ```
+
+---
+
+## Migrating to PostgreSQL
+
+This guide walks through migrating from local JSON file storage to PostgreSQL (Supabase) for multi-instance deployments.
+
+### Prerequisites
+
+- A Supabase instance with the `opencode_mattermost` schema created
+- Database tables created (see SQL schema below)
+- Supabase URL and anon key
+
+### Database Schema
+
+Create the required tables in your Supabase instance:
+
+```sql
+-- Create schema
+CREATE SCHEMA IF NOT EXISTS opencode_mattermost;
+
+-- Thread mappings table
+CREATE TABLE opencode_mattermost.thread_mappings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  thread_root_post_id TEXT UNIQUE NOT NULL,
+  channel_id TEXT NOT NULL,
+  opencode_session_id TEXT NOT NULL,
+  mattermost_user_id TEXT NOT NULL,
+  mode TEXT DEFAULT 'normal',
+  metadata JSONB DEFAULT '{}',
+  claimed_by TEXT,
+  claimed_until TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Scheduled tasks table
+CREATE TABLE opencode_mattermost.scheduled_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT UNIQUE NOT NULL,
+  cron TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  timezone TEXT DEFAULT 'UTC',
+  enabled BOOLEAN DEFAULT true,
+  target_user TEXT,
+  last_run_at TIMESTAMPTZ,
+  last_run_by TEXT,
+  next_run_at TIMESTAMPTZ,
+  metadata JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Team configuration table
+CREATE TABLE opencode_mattermost.team_configs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id TEXT UNIQUE NOT NULL,
+  config JSONB NOT NULL DEFAULT '{}',
+  updated_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Pending questions table
+CREATE TABLE opencode_mattermost.pending_questions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id TEXT NOT NULL,
+  thread_root_post_id TEXT NOT NULL,
+  question_post_id TEXT,
+  question_data JSONB NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  answered_at TIMESTAMPTZ,
+  answer JSONB
+);
+
+-- Pending approvals table
+CREATE TABLE opencode_mattermost.pending_approvals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  thread_root_post_id TEXT NOT NULL,
+  requester_user_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  original_message TEXT NOT NULL,
+  approval_post_id TEXT,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  resolved_at TIMESTAMPTZ,
+  resolution TEXT
+);
+
+-- Indexes for common queries
+CREATE INDEX idx_thread_mappings_session ON opencode_mattermost.thread_mappings(opencode_session_id);
+CREATE INDEX idx_thread_mappings_user ON opencode_mattermost.thread_mappings(mattermost_user_id);
+CREATE INDEX idx_thread_mappings_channel ON opencode_mattermost.thread_mappings(channel_id);
+CREATE INDEX idx_scheduled_tasks_next_run ON opencode_mattermost.scheduled_tasks(next_run_at) WHERE enabled = true;
+CREATE INDEX idx_pending_questions_session ON opencode_mattermost.pending_questions(session_id);
+CREATE INDEX idx_pending_approvals_thread ON opencode_mattermost.pending_approvals(thread_root_post_id);
+
+-- Enable Realtime for tables that need it
+ALTER PUBLICATION supabase_realtime ADD TABLE opencode_mattermost.pending_questions;
+ALTER PUBLICATION supabase_realtime ADD TABLE opencode_mattermost.pending_approvals;
+```
+
+### Step 1: Configure Environment Variables
+
+Add these environment variables to your OpenCode environment:
+
+```bash
+# Supabase connection
+export OPENCODE_MM_SUPABASE_URL="https://your-project.supabase.co"
+export OPENCODE_MM_SUPABASE_ANON_KEY="your-anon-key"
+
+# Start in Phase 1 (dual-write mode)
+export OPENCODE_MM_MIGRATION_PHASE="1"
+```
+
+### Step 2: Start in Dual-Write Mode (Phase 1)
+
+With `OPENCODE_MM_MIGRATION_PHASE="1"`, the plugin will:
+- Write to both local JSON files AND PostgreSQL
+- Read from local JSON files (existing behavior)
+- Gracefully handle Postgres failures
+
+This allows you to verify Postgres writes are working without affecting production reads.
+
+**Verify Phase 1:**
+```bash
+# Check plugin logs for Postgres writes
+tail -f /tmp/opencode-mattermost-plugin.log | grep -i postgres
+
+# Verify data is being written to Supabase
+# (check your Supabase dashboard or query the tables)
+```
+
+### Step 3: Migrate Existing Data
+
+Once Phase 1 is running, migrate your existing JSON data to PostgreSQL:
+
+**Via Mattermost DM:**
+```
+!migrate
+```
+
+This will:
+1. Read all thread mappings from local JSON
+2. Read all scheduled tasks from local JSON  
+3. Read team configuration from local JSON
+4. Write all data to PostgreSQL (skipping duplicates)
+5. Report migration statistics
+
+**Verify migration:**
+```
+!migrate --dry-run
+```
+
+### Step 4: Switch to Migration Mode (Phase 2)
+
+After verifying data is in Postgres:
+
+```bash
+export OPENCODE_MM_MIGRATION_PHASE="2"
+```
+
+In Phase 2:
+- Writes go to both JSON and Postgres
+- Reads come from Postgres (with JSON fallback if Postgres fails)
+- Any data found in JSON but not in Postgres is auto-synced
+
+Run in Phase 2 for a few days to ensure everything works correctly.
+
+### Step 5: Complete Migration (Phase 3)
+
+Once confident:
+
+```bash
+export OPENCODE_MM_MIGRATION_PHASE="3"
+```
+
+In Phase 3:
+- Postgres is the primary data store
+- JSON files are only used for degraded mode (when Postgres is unavailable)
+- Queued writes during degraded mode are flushed when connection recovers
+
+### Rollback Procedure
+
+If you encounter issues:
+
+1. **Quick rollback:** Set `OPENCODE_MM_MIGRATION_PHASE="1"` to return to JSON-primary mode
+2. **Export data:** Use `!export` command to dump current state to JSON files
+3. **Remove Postgres config:** Unset `OPENCODE_MM_SUPABASE_URL` to disable Postgres entirely
+
+### Export Command
+
+Export current state to JSON files (useful for backup or debugging):
+
+```
+!export
+```
+
+This creates timestamped JSON files in the plugin temp directory with all thread mappings, schedules, and team configs.
+
+### Graceful Degradation
+
+When Postgres becomes unavailable:
+- Plugin automatically enters "degraded mode"
+- Writes are queued locally (up to 1000 items, 5-minute expiration)
+- Reads fall back to local JSON cache
+- When connection recovers, queued writes are flushed
+- Health monitoring checks connection every 30 seconds
+
+### Multi-Instance Coordination
+
+With Postgres enabled, multiple OpenCode instances can share state:
+
+- **Thread claiming:** Only one instance processes messages for a thread at a time
+- **Scheduled task leader election:** Only one instance runs each scheduled task
+- **Real-time sync:** Pending questions and approvals sync via Supabase Realtime
 
 ---
 
