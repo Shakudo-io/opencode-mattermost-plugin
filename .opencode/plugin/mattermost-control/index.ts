@@ -1072,6 +1072,45 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         );
         
         log.info(`[TUISync] Posted TUI message to Mattermost thread`);
+        
+        // Set up response context so assistant responses stream to Mattermost
+        const { streamer } = PluginState;
+        if (streamer && !PluginState.activeResponseContexts.has(input.sessionID)) {
+          const tuiSession = {
+            id: `tui-${input.sessionID}`,
+            mattermostUserId: mapping.mattermostUserId,
+            mattermostUsername: "TUI",
+            dmChannelId: mapping.dmChannelId,
+            createdAt: new Date(),
+            lastActivityAt: new Date(),
+            isProcessing: true,
+            currentPromptPostId: null,
+            currentResponsePostId: null,
+            pendingPermission: null,
+            lastPrompt: null,
+            targetOpenCodeSessionId: input.sessionID,
+          };
+          
+          const { streamCtx } = await streamer.startStreamWithStatus(
+            tuiSession as any,
+            mapping.threadRootPostId,
+            "Processing...",
+            targetChannelId
+          );
+          
+          const responseContext = createEmptyResponseContext(
+            input.sessionID,
+            tuiSession,
+            streamCtx,
+            mapping.threadRootPostId,
+            0
+          );
+          
+          PluginState.activeResponseContexts.set(input.sessionID, responseContext);
+          startResponseTimer(input.sessionID);
+          
+          log.info(`[TUISync] Set up response context for assistant streaming`);
+        }
       } catch (e) {
         log.error(`[TUISync] Failed to post TUI message to Mattermost:`, e);
       }
