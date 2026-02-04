@@ -258,6 +258,7 @@ export OPENCODE_MM_MAX_SESSIONS="50"             # max concurrent sessions
 export OPENCODE_MM_ALLOWED_USERS=""              # comma-separated user IDs (empty = all)
 export OPENCODE_MM_AUTO_CREATE_SESSION="true"    # auto-create session from main DM
 export OPENCODE_MM_ALLOWED_CHANNEL_TYPES="D,G,O,P"  # allowed channel types (D=DM, G=Group, O=Public, P=Private)
+export OPENCODE_MM_DEFAULT_CHANNEL_ID=""         # channel ID for TUI-started session threads
 
 # Multi-user / Owner filtering
 export MATTERMOST_OWNER_USER_ID=""               # Only respond to DMs from this user ID
