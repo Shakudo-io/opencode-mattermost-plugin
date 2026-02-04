@@ -81,6 +81,10 @@ export interface ResponseContext {
   bashCommand?: string;
   /** Captured diffs from edit tool executions */
   editDiffs: EditDiff[];
+  /** Last completed bash output (preserved after tool finishes for final display) */
+  lastBashOutput?: string;
+  /** Last completed bash command (preserved after tool finishes for final display) */
+  lastBashCommand?: string;
 }
 
 /**
@@ -117,5 +121,7 @@ export function createEmptyResponseContext(
     inCompactionSummary: false,
     bashCommand: undefined,
     editDiffs: [],
+    lastBashOutput: undefined,
+    lastBashCommand: undefined,
   };
 }

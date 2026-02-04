@@ -70,6 +70,11 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
     if (ctx.activeTool) {
       ctx.toolCalls.push(ctx.activeTool.name);
       if (ctx.activeTool.name === "bash") {
+        // Preserve the output for final display before clearing for next bash command
+        if (ctx.shellOutput || ctx.bashCommand) {
+          ctx.lastBashOutput = ctx.shellOutput;
+          ctx.lastBashCommand = ctx.bashCommand;
+        }
         ctx.shellOutput = "";
         ctx.shellOutputLastUpdate = 0;
       }

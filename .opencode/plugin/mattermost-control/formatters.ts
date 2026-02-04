@@ -199,12 +199,21 @@ export function formatFullResponse(ctx: ResponseContext): string {
     output += todoStatus + "\n";
   }
   
+  // Show live bash output when bash tool is active
   if ((ctx.shellOutput || ctx.bashCommand) && ctx.activeTool?.name === "bash") {
     const formattedShell = formatShellOutput(
       ctx.shellOutput,
       ctx.bashCommand,
       ctx.shellOutputLastUpdate,
       ctx.activeTool.startTime
+    );
+    output += "```bash\n" + formattedShell + "\n```\n\n";
+  } 
+  // Show preserved bash output after tool completes (for final response)
+  else if (ctx.lastBashOutput || ctx.lastBashCommand) {
+    const formattedShell = formatShellOutput(
+      ctx.lastBashOutput || "",
+      ctx.lastBashCommand
     );
     output += "```bash\n" + formattedShell + "\n```\n\n";
   }
