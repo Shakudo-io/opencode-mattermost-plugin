@@ -10,6 +10,7 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 ### Core Features
 - **Thread-Per-Session**: Each OpenCode session automatically gets its own dedicated Mattermost thread for clean conversation isolation
 - **Remote Control**: Send prompts to OpenCode via Mattermost DMs
+- **Bi-directional TUI Sync**: Messages typed in the OpenCode TUI appear in Mattermost, and assistant responses stream back - full conversation visibility regardless of where you interact
 - **Multi-Session Management**: Control multiple OpenCode sessions in parallel via separate threads
 - **Session Monitoring**: Get DM alerts when sessions need attention (permission requests, idle, questions)
 - **Real-time Streaming**: Responses stream back in chunks with intelligent buffering
@@ -258,7 +259,8 @@ export OPENCODE_MM_MAX_SESSIONS="50"             # max concurrent sessions
 export OPENCODE_MM_ALLOWED_USERS=""              # comma-separated user IDs (empty = all)
 export OPENCODE_MM_AUTO_CREATE_SESSION="true"    # auto-create session from main DM
 export OPENCODE_MM_ALLOWED_CHANNEL_TYPES="D,G,O,P"  # allowed channel types (D=DM, G=Group, O=Public, P=Private)
-export OPENCODE_MM_DEFAULT_CHANNEL_ID=""         # channel ID for TUI-started session threads
+export OPENCODE_MM_DEFAULT_CHANNEL_ID=""         # Channel ID for bi-directional TUI sync
+                                                 # When set, TUI messages sync to Mattermost threads
 
 # Multi-user / Owner filtering
 export MATTERMOST_OWNER_USER_ID=""               # Only respond to DMs from this user ID
@@ -426,6 +428,49 @@ Bot (in thread): [Streaming response...]
 - Each thread maps to exactly one OpenCode session
 - Thread posts are routed to the correct session automatically
 - Ended sessions show a completion message and reject new prompts
+
+### Bi-directional TUI Sync
+
+Keep your Mattermost thread in sync with your TUI session. When you type in the OpenCode TUI, your messages and the assistant's responses automatically appear in Mattermost - perfect for maintaining a complete conversation history or collaborating with others.
+
+**How it works:**
+1. Messages you type in the TUI appear in Mattermost with a `:keyboard: **[TUI]**` prefix
+2. Assistant responses stream to Mattermost just like Mattermost-originated conversations
+3. Your Mattermost thread becomes a complete log of all interactions, regardless of where they originated
+
+**Setup:**
+
+Set the default channel where TUI-started sessions should create threads:
+
+```bash
+export OPENCODE_MM_DEFAULT_CHANNEL_ID="your-channel-id"
+```
+
+To find your channel ID:
+- Open Mattermost in a browser
+- Navigate to the channel you want to use (your DM with the bot works great)
+- The channel ID is in the URL: `https://mattermost.example.com/.../channels/{channel-id}`
+- Or use the Mattermost API: `GET /api/v4/users/me/channels`
+
+**Example flow:**
+```
+[In your TUI]
+You: What files are in this project?
+
+[In Mattermost thread - appears automatically]
+:keyboard: **[TUI]** What files are in this project?
+
+Bot: Here are the files in your project:
+     - src/index.ts
+     - src/config.ts
+     - package.json
+     ...
+```
+
+**Notes:**
+- TUI sync only works for sessions that have a mapped Mattermost thread
+- If `OPENCODE_MM_DEFAULT_CHANNEL_ID` is set, new TUI sessions automatically get a thread created
+- Messages from Mattermost that were forwarded to the TUI are not echoed back (no loops)
 
 ### Sending Files to Mattermost
 
