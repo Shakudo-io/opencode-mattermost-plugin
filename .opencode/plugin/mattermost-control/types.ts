@@ -85,6 +85,8 @@ export interface ResponseContext {
   lastBashOutput?: string;
   /** Last completed bash command (preserved after tool finishes for final display) */
   lastBashCommand?: string;
+  /** All completed bash outputs (command + output pairs) for multi-command display */
+  completedBashOutputs: Array<{ command: string; output: string }>;
 }
 
 /**
@@ -123,5 +125,6 @@ export function createEmptyResponseContext(
     editDiffs: [],
     lastBashOutput: undefined,
     lastBashCommand: undefined,
+    completedBashOutputs: [],
   };
 }

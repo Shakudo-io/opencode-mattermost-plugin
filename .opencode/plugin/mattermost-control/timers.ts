@@ -10,7 +10,7 @@ export async function updateResponseStream(sessionId: string): Promise<void> {
   const ctx = PluginState.activeResponseContexts.get(sessionId);
   if (!ctx || !PluginState.streamer) return;
   
-  const formattedOutput = formatFullResponse(ctx);
+  const formattedOutput = formatFullResponse(ctx, log.info.bind(log));
   
   try {
     await PluginState.streamer.updateStream(ctx.streamCtx, formattedOutput);

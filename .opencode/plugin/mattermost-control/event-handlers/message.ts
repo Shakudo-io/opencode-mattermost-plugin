@@ -100,13 +100,28 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
     ctx.thinkingBuffer += delta;
     ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
     shouldUpdate = true;
-  } else if (part?.type === "tool" && part?.tool === "bash" && part?.state?.status === "running") {
-    // Live shell output streaming
-    const shellOutput = part.state.metadata?.output;
-    if (shellOutput && shellOutput !== ctx.shellOutput) {
-      ctx.shellOutput = shellOutput;
-      ctx.shellOutputLastUpdate = Date.now();
-      shouldUpdate = true;
+  } else if (part?.type === "tool" && part?.tool === "bash") {
+    const status = part?.state?.status;
+    const shellOutput = part.state.metadata?.output || part.state?.output || part.output;
+    
+    log.info(`[BashStream] status=${status}, output=${shellOutput?.length || 0} chars, ctx.shellOutput=${ctx.shellOutput?.length || 0} chars`);
+    
+    if (status === "running") {
+      if (shellOutput && shellOutput !== ctx.shellOutput) {
+        ctx.shellOutput = shellOutput;
+        ctx.shellOutputLastUpdate = Date.now();
+        shouldUpdate = true;
+      }
+    } else if (status === "completed" || status === "done") {
+      if (shellOutput) {
+        ctx.shellOutput = shellOutput;
+        ctx.lastBashOutput = shellOutput;
+        ctx.lastBashCommand = ctx.bashCommand;
+        ctx.shellOutputLastUpdate = Date.now();
+        ctx.completedBashOutputs.push({ command: ctx.bashCommand || "", output: shellOutput });
+        log.info(`[BashStream] Captured final output: ${shellOutput.length} chars, command: ${ctx.bashCommand?.substring(0, 50)}, total completed: ${ctx.completedBashOutputs.length}`);
+        shouldUpdate = true;
+      }
     }
   }
   

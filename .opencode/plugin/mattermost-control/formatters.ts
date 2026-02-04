@@ -175,7 +175,11 @@ export function formatTodoStatus(todos: TodoItem[]): string {
   return output;
 }
 
-export function formatFullResponse(ctx: ResponseContext): string {
+export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string) => void): string {
+  if (debugLog) {
+    debugLog(`[FormatDebug] activeTool: ${ctx.activeTool?.name || 'null'}, shellOutput: ${ctx.shellOutput?.length || 0}, lastBashOutput: ${ctx.lastBashOutput?.length || 0}, lastBashCommand: ${ctx.lastBashCommand?.substring(0, 30) || 'none'}`);
+  }
+  
   const toolStatus = formatToolStatus(
     ctx.toolCalls,
     ctx.activeTool,
@@ -209,13 +213,12 @@ export function formatFullResponse(ctx: ResponseContext): string {
     );
     output += "```bash\n" + formattedShell + "\n```\n\n";
   } 
-  // Show preserved bash output after tool completes (for final response)
-  else if (ctx.lastBashOutput || ctx.lastBashCommand) {
-    const formattedShell = formatShellOutput(
-      ctx.lastBashOutput || "",
-      ctx.lastBashCommand
-    );
-    output += "```bash\n" + formattedShell + "\n```\n\n";
+  // Show all completed bash outputs after tools finish (for final response)
+  else if (ctx.completedBashOutputs && ctx.completedBashOutputs.length > 0) {
+    for (const bash of ctx.completedBashOutputs) {
+      const formattedShell = formatShellOutput(bash.output, bash.command);
+      output += "```bash\n" + formattedShell + "\n```\n\n";
+    }
   }
   
   if (ctx.editDiffs && ctx.editDiffs.length > 0) {

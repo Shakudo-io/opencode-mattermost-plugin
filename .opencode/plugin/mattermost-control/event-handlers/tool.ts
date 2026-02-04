@@ -70,12 +70,26 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
     if (ctx.activeTool) {
       ctx.toolCalls.push(ctx.activeTool.name);
       if (ctx.activeTool.name === "bash") {
+        // Debug: Log all available sources for bash output
+        log.info(`[BashDebug] tool.execute.after for bash - ctx.shellOutput: ${ctx.shellOutput?.length || 0} chars`);
+        log.info(`[BashDebug] input.result type: ${typeof input.result}, length: ${typeof input.result === 'string' ? input.result.length : 'N/A'}`);
+        log.info(`[BashDebug] input.metadata: ${JSON.stringify(input.metadata || {})}`);
+        log.info(`[BashDebug] input keys: ${Object.keys(input).join(', ')}`);
+        
         // Preserve the output for final display before clearing for next bash command
-        if (ctx.shellOutput || ctx.bashCommand) {
-          ctx.lastBashOutput = ctx.shellOutput;
-          ctx.lastBashCommand = ctx.bashCommand;
+        // Try multiple sources: streaming output, tool result, or tool metadata
+        const finalOutput = ctx.shellOutput || input.result || input.metadata?.output || "";
+        const finalCommand = ctx.bashCommand || input.args?.command;
+        
+        log.info(`[BashDebug] Final output selected: ${finalOutput.length} chars, command: ${finalCommand?.substring(0, 50)}`);
+        
+        if (finalOutput || finalCommand) {
+          ctx.lastBashOutput = finalOutput;
+          ctx.lastBashCommand = finalCommand;
+          log.info(`[BashOutput] Preserved output (${finalOutput.length} chars) and command for final display`);
         }
         ctx.shellOutput = "";
+        ctx.bashCommand = undefined;
         ctx.shellOutputLastUpdate = 0;
       }
       // Capture edit diffs for display

@@ -45,12 +45,13 @@ export async function handleSessionIdle(event: any): Promise<void> {
   }
   
   log.info(`[MessageParts] Session ${eventSessionId.substring(0, 8)} completed: textParts=${ctx.textPartCount || 0}, reasoningParts=${ctx.reasoningPartCount || 0}, responseLen=${ctx.responseBuffer.length}, thinkingLen=${ctx.thinkingBuffer.length}, tools=${ctx.toolCalls.length}, compactions=${ctx.compactionCount}, todos=${ctx.todos.length}, cost=$${(ctx.cost.sessionTotal + ctx.cost.currentMessage).toFixed(4)}`);
+  log.info(`[FinalBash] lastBashOutput: ${ctx.lastBashOutput?.length || 0} chars, lastBashCommand: ${ctx.lastBashCommand?.substring(0, 50) || 'none'}`);
   
   try {
     stopActiveToolTimer(eventSessionId);
     stopResponseTimer(eventSessionId);
     
-    ctx.streamCtx.buffer = formatFullResponse(ctx);
+    ctx.streamCtx.buffer = formatFullResponse(ctx, log.info.bind(log));
     await streamer.endStream(ctx.streamCtx);
     await notifications.notifyCompletion(ctx.mmSession, "Response complete", ctx.streamCtx.threadRootPostId);
     ctx.mmSession.isProcessing = false;
