@@ -55,6 +55,7 @@ const PostgresConfigSchema = z.object({
   url: z.string().optional(),
   supabaseUrl: z.string().optional(),
   supabaseAnonKey: z.string().optional(),
+  supabaseSchema: z.string().default("opencode_mattermost"), // Database schema name
   migrationPhase: z.enum(["1", "2", "3"]).default("1"), // 1=dual-write, 2=migrating, 3=postgres-only
   heartbeatInterval: z.number().default(30000), // 30s
   deadInstanceTimeout: z.number().default(90000), // 90s
@@ -165,6 +166,7 @@ export function loadConfig(): PluginConfig {
       url: process.env.OPENCODE_MM_POSTGRES_URL || undefined,
       supabaseUrl: process.env.OPENCODE_MM_SUPABASE_URL || undefined,
       supabaseAnonKey: process.env.OPENCODE_MM_SUPABASE_ANON_KEY || undefined,
+      supabaseSchema: process.env.OPENCODE_MM_SUPABASE_SCHEMA || "opencode_mattermost",
       migrationPhase: (process.env.OPENCODE_MM_MIGRATION_PHASE as "1" | "2" | "3") || "1",
       heartbeatInterval: parseInt(process.env.OPENCODE_MM_HEARTBEAT_INTERVAL || "") || 30000,
       deadInstanceTimeout: parseInt(process.env.OPENCODE_MM_DEAD_INSTANCE_TIMEOUT || "") || 90000,

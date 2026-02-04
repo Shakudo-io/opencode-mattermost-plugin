@@ -21,7 +21,6 @@ export type ConnectionState = "connected" | "disconnected" | "reconnecting" | "d
 
 type StateChangeCallback = (state: ConnectionState) => void;
 
-const SCHEMA = "public";
 const HEALTH_CHECK_QUERY = "SELECT 1 as health";
 const RECONNECT_DELAY_BASE = 1000;
 const MAX_RECONNECT_DELAY = 30000;
@@ -44,9 +43,12 @@ export function createSupabaseClientManager(config: PostgresConfig): SupabaseCli
   let reconnectTimer: NodeJS.Timeout | null = null;
   let healthMonitorTimer: NodeJS.Timeout | null = null;
 
+  const schema = config.supabaseSchema || "opencode_mattermost";
+  log.info(`[supabase-client] Using schema: ${schema}`);
+  
   const client = createClient(config.supabaseUrl, config.supabaseAnonKey, {
     db: {
-      schema: SCHEMA,
+      schema: schema,
     },
     auth: {
       persistSession: false,
