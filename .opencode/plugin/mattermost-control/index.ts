@@ -993,6 +993,54 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     "tool.execute.after": async (input) => {
       await handleToolExecuteAfter(input);
     },
+
+    "chat.message": async (input, output) => {
+      const { threadMappingStore, mmClient } = PluginState;
+      
+      if (!mmClient || !threadMappingStore) {
+        return;
+      }
+
+      const mapping = threadMappingStore.getBySessionId(input.sessionID);
+      if (!mapping?.threadRootPostId) {
+        return;
+      }
+
+      const textParts = output.parts.filter((p: any) => p.type === "text");
+      if (textParts.length === 0) {
+        return;
+      }
+
+      const messageText = textParts.map((p: any) => p.text).join("\n");
+      
+      const isFromMattermost = messageText.includes("[Mattermost DM from @") || messageText.includes("[Reply-To:");
+      if (isFromMattermost) {
+        log.debug(`[TUISync] Skipping message that originated from Mattermost`);
+        return;
+      }
+
+      const trimmedText = messageText.trim();
+      if (!trimmedText) {
+        return;
+      }
+
+      const targetChannelId = mapping.channelId || mapping.dmChannelId;
+      try {
+        log.info(`[TUISync] Posting TUI message to thread ${mapping.threadRootPostId.substring(0, 8)}...`);
+        
+        const formattedMessage = `:keyboard: **[TUI]** ${trimmedText}`;
+        
+        await mmClient.createPost(
+          targetChannelId,
+          formattedMessage,
+          mapping.threadRootPostId
+        );
+        
+        log.info(`[TUISync] Posted TUI message to Mattermost thread`);
+      } catch (e) {
+        log.error(`[TUISync] Failed to post TUI message to Mattermost:`, e);
+      }
+    },
   };
 };
 
