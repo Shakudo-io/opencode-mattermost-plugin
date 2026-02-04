@@ -1,7 +1,7 @@
 import type { ResponseContext, TodoItem, ActiveTool, CostInfo, EditDiff } from "./types.js";
 
 export const RESPONSE_UPDATE_INTERVAL_MS = 1000;
-export const MAX_SHELL_OUTPUT_LINES = 15;
+export const MAX_SHELL_OUTPUT_LINES = 25;
 export const BASH_HEARTBEAT_THRESHOLD_MS = 10_000;
 export const THINKING_LINE_LIMIT = 500;
 

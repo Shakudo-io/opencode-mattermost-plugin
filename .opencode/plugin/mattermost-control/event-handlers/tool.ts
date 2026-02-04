@@ -16,6 +16,7 @@ export async function handleToolExecuteBefore(input: any): Promise<void> {
   if (!PluginState.isConnected) return;
   
   const toolSessionId = input.sessionID || input.session?.id;
+  log.info(`[ToolDebug] tool.execute.before - tool: ${input.tool}, sessionId: ${toolSessionId?.substring(0, 8)}`);
   if (!toolSessionId) return;
   
   if (isScheduledTaskSession(toolSessionId)) {
@@ -24,16 +25,22 @@ export async function handleToolExecuteBefore(input: any): Promise<void> {
   }
   
   const ctx = PluginState.activeResponseContexts.get(toolSessionId);
-  if (!ctx) return;
+  if (!ctx) {
+    log.info(`[ToolDebug] No active context for session ${toolSessionId.substring(0, 8)}`);
+    return;
+  }
   
   ctx.activeTool = {
     name: input.tool,
     startTime: Date.now(),
   };
   
-  // Capture bash command for display
-  if (input.tool === "bash" && input.args?.command) {
-    ctx.bashCommand = input.args.command;
+  if (input.tool === "bash") {
+    log.info(`[ToolDebug] bash args: ${JSON.stringify(input.args || {})}`);
+    if (input.args?.command) {
+      ctx.bashCommand = input.args.command;
+      log.info(`[ToolDebug] Captured bash command: ${ctx.bashCommand.substring(0, 100)}`);
+    }
   }
   
   startActiveToolTimer(toolSessionId);
@@ -42,6 +49,7 @@ export async function handleToolExecuteBefore(input: any): Promise<void> {
 
 export async function handleToolExecuteAfter(input: any): Promise<void> {
   const toolSessionId = input.sessionID || input.session?.id;
+  log.info(`[ToolDebug] tool.execute.after - tool: ${input.tool}, sessionId: ${toolSessionId?.substring(0, 8)}`);
 
   // Skip all tool.execute.after processing for scheduled task sessions
   if (toolSessionId && isScheduledTaskSession(toolSessionId)) {
@@ -92,12 +100,19 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
         ctx.bashCommand = undefined;
         ctx.shellOutputLastUpdate = 0;
       }
-      // Capture edit diffs for display
-      if (ctx.activeTool.name === "edit" && input.metadata?.diff) {
-        ctx.editDiffs.push({
-          filePath: input.args?.filePath || "unknown",
-          diff: input.metadata.diff,
-        });
+      if (ctx.activeTool.name === "edit") {
+        log.info(`[EditDebug] tool.execute.after for edit - input.metadata: ${JSON.stringify(input.metadata || {})}`);
+        log.info(`[EditDebug] input.result type: ${typeof input.result}, preview: ${String(input.result)?.substring(0, 200)}`);
+        log.info(`[EditDebug] input keys: ${Object.keys(input).join(', ')}`);
+        
+        const diff = input.metadata?.diff || input.result;
+        if (diff) {
+          ctx.editDiffs.push({
+            filePath: input.args?.filePath || "unknown",
+            diff: typeof diff === 'string' ? diff : JSON.stringify(diff),
+          });
+          log.info(`[EditDebug] Captured diff for ${input.args?.filePath}, total diffs: ${ctx.editDiffs.length}`);
+        }
       }
       ctx.activeTool = null;
       stopActiveToolTimer(toolSessionId);
