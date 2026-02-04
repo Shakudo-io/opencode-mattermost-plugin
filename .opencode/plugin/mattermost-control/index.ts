@@ -995,14 +995,9 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     },
 
     "chat.message": async (input, output) => {
-      const { threadMappingStore, mmClient } = PluginState;
+      const { threadMappingStore, mmClient, threadManager, openCodeSessionRegistry, botUser } = PluginState;
       
       if (!mmClient || !threadMappingStore) {
-        return;
-      }
-
-      const mapping = threadMappingStore.getBySessionId(input.sessionID);
-      if (!mapping?.threadRootPostId) {
         return;
       }
 
@@ -1022,6 +1017,46 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       const trimmedText = messageText.trim();
       if (!trimmedText) {
         return;
+      }
+
+      let mapping = threadMappingStore.getBySessionId(input.sessionID);
+      
+      if (!mapping?.threadRootPostId) {
+        const defaultChannelId = process.env.OPENCODE_MM_DEFAULT_CHANNEL_ID;
+        if (!defaultChannelId) {
+          log.debug(`[TUISync] No thread mapping and no default channel configured for session ${input.sessionID}`);
+          return;
+        }
+        
+        if (!threadManager || !openCodeSessionRegistry) {
+          log.debug(`[TUISync] ThreadManager or registry not available`);
+          return;
+        }
+        
+        const sessions = openCodeSessionRegistry.listAvailable();
+        const sessionInfo = sessions.find((s: OpenCodeSessionInfo) => s.id === input.sessionID);
+        if (!sessionInfo) {
+          log.debug(`[TUISync] Session ${input.sessionID} not found in registry`);
+          return;
+        }
+        
+        const ownerUserId = process.env.MATTERMOST_OWNER_USER_ID || botUser?.id || "";
+        
+        try {
+          log.info(`[TUISync] Creating thread for TUI session ${sessionInfo.shortId} in channel ${defaultChannelId}`);
+          mapping = await threadManager.createThread(
+            sessionInfo,
+            ownerUserId,
+            defaultChannelId,
+            undefined,
+            defaultChannelId,
+            undefined
+          );
+          log.info(`[TUISync] Created thread ${mapping.threadRootPostId.substring(0, 8)} for TUI session`);
+        } catch (e) {
+          log.error(`[TUISync] Failed to create thread for TUI session:`, e);
+          return;
+        }
       }
 
       const targetChannelId = mapping.channelId || mapping.dmChannelId;
