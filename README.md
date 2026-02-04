@@ -1300,6 +1300,71 @@ With Postgres enabled, multiple OpenCode instances can share state:
 - **Scheduled task leader election:** Only one instance runs each scheduled task
 - **Real-time sync:** Pending questions and approvals sync via Supabase Realtime
 
+### Shakudo Platform Deployment
+
+For deployments on the Shakudo platform (dev.hyperplane.dev), use the Metaflow Supabase instance:
+
+#### 1. Database Setup (One-time)
+
+The `opencode_mattermost` schema must be created in Supabase and PostgREST must be configured to expose it.
+
+**Create schema and tables:**
+```bash
+# Get postgres password
+PGPASSWORD=$(kubectl get secret -n hyperplane-supabase-metaflow supabase-metaflow-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
+
+# Create schema
+kubectl exec -n hyperplane-supabase-metaflow supabase-metaflow-postgresql-0 -- bash -c "PGPASSWORD='$PGPASSWORD' psql -U postgres -d postgres -c 'CREATE SCHEMA IF NOT EXISTS opencode_mattermost;'"
+
+# Create tables (run each CREATE TABLE statement from the schema above)
+# Grant permissions
+kubectl exec -n hyperplane-supabase-metaflow supabase-metaflow-postgresql-0 -- bash -c "PGPASSWORD='$PGPASSWORD' psql -U postgres -d postgres -c '
+GRANT USAGE ON SCHEMA opencode_mattermost TO anon;
+GRANT ALL ON ALL TABLES IN SCHEMA opencode_mattermost TO anon;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA opencode_mattermost TO anon;
+GRANT USAGE ON SCHEMA opencode_mattermost TO authenticated;
+GRANT ALL ON ALL TABLES IN SCHEMA opencode_mattermost TO authenticated;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA opencode_mattermost TO authenticated;
+'"
+```
+
+**Configure PostgREST to expose the schema:**
+```bash
+# Add opencode_mattermost to the PGRST_DB_SCHEMA list
+kubectl patch configmap supabase-metaflow-rest-default \
+  -n hyperplane-supabase-metaflow \
+  --type merge \
+  -p '{"data":{"PGRST_DB_SCHEMA":"public,storage,graphql_public,opencode_mattermost"}}'
+
+# Restart PostgREST to pick up the change
+kubectl rollout restart deployment supabase-metaflow-rest -n hyperplane-supabase-metaflow
+```
+
+#### 2. Environment Variables
+
+Add to `~/.bashrc`:
+```bash
+# OpenCode Mattermost Plugin - Postgres State Management
+# Using PostgREST directly (port 80)
+export OPENCODE_MM_SUPABASE_URL="http://supabase-metaflow-rest.hyperplane-supabase-metaflow.svc.cluster.local:80"
+export OPENCODE_MM_SUPABASE_ANON_KEY="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE4MzQ3MDA0MDAsImlhdCI6MTY3NjkzNDAwMCwiaXNzIjoic3VwYWJhc2UiLCJyb2xlIjoiYW5vbiJ9.L5wyKsVw1lSYIlwMJYDC-7bfDmsBOf0Xwq1hU4QMbnA"
+export OPENCODE_MM_MIGRATION_PHASE="1"
+```
+
+Then `source ~/.bashrc` and restart OpenCode.
+
+#### 3. Verify Connection
+
+Test that PostgREST can query the schema:
+```bash
+curl -s -X GET "http://supabase-metaflow-rest.hyperplane-supabase-metaflow.svc.cluster.local:80/thread_mappings?limit=1" \
+  -H "apikey: $OPENCODE_MM_SUPABASE_ANON_KEY" \
+  -H "Authorization: Bearer $OPENCODE_MM_SUPABASE_ANON_KEY" \
+  -H "Accept-Profile: opencode_mattermost"
+```
+
+Should return `[]` (empty array) if working correctly.
+
 ---
 
 ## Troubleshooting
