@@ -278,15 +278,55 @@ export OPENCODE_MM_NOTIFY_STATUS="true"
 export MM_PLUGIN_LOG_FILE="/tmp/opencode-mattermost-plugin.log"
 
 # PostgreSQL State Management (Multi-Instance Support)
+# Set OPENCODE_MM_POSTGRES_ENABLED=true to enable Postgres (disabled by default)
 # See "Migrating to PostgreSQL" section below for full setup guide
-export OPENCODE_MM_SUPABASE_URL=""               # Supabase project URL
-export OPENCODE_MM_SUPABASE_ANON_KEY=""          # Supabase anon key
+export OPENCODE_MM_POSTGRES_ENABLED="false"      # Enable Postgres state management
+export OPENCODE_MM_SUPABASE_URL=""               # Supabase/PostgREST URL
+export OPENCODE_MM_SUPABASE_ANON_KEY=""          # Supabase anon key (JWT)
+export OPENCODE_MM_SUPABASE_SCHEMA="opencode_mattermost"  # Database schema name
 export OPENCODE_MM_MIGRATION_PHASE="1"           # Migration phase (1, 2, or 3)
+export OPENCODE_MM_HEARTBEAT_INTERVAL="30000"    # Instance heartbeat interval (ms)
+export OPENCODE_MM_DEAD_INSTANCE_TIMEOUT="90000" # Mark instance dead after (ms)
+export OPENCODE_MM_CLAIM_DURATION="60000"        # Thread claim duration (ms)
 ```
 
-### PostgreSQL State Management
+### Storage Modes
 
-For multi-instance deployments (multiple OpenCode instances sharing the same Mattermost bot), the plugin supports PostgreSQL-backed state management using Supabase.
+The plugin supports two storage modes for persisting thread mappings, scheduled tasks, and other state:
+
+#### Local JSON Files (Default)
+
+By default, the plugin stores all state in local JSON files. **This is the recommended mode for single-instance deployments.**
+
+**No configuration required** - just set the required Mattermost environment variables and the plugin will use local JSON files automatically.
+
+Files are stored in `~/.config/opencode/`:
+- `mattermost-threads.json` - Thread-to-session mappings
+- `mattermost-schedules.json` - Scheduled tasks
+- `mattermost-teams.json` - Team configuration
+
+**Advantages:**
+- Zero setup required
+- No external dependencies
+- Works offline
+- Simple debugging (just read the JSON files)
+
+**When to use:**
+- Single OpenCode instance
+- Development/testing
+- Personal use
+- When you don't need cross-instance coordination
+
+#### PostgreSQL State Management (Multi-Instance)
+
+For multi-instance deployments (multiple OpenCode instances sharing the same Mattermost bot), enable PostgreSQL-backed state management.
+
+**To enable:**
+```bash
+export OPENCODE_MM_POSTGRES_ENABLED="true"
+export OPENCODE_MM_SUPABASE_URL="https://your-project.supabase.co"
+export OPENCODE_MM_SUPABASE_ANON_KEY="your-anon-key"
+```
 
 **Benefits:**
 - Thread mappings shared across instances
@@ -301,6 +341,11 @@ For multi-instance deployments (multiple OpenCode instances sharing the same Mat
 | **1** | Dual-write (default) | Write to both JSON and Postgres, read from JSON |
 | **2** | Migration | Write to both, read from Postgres (with JSON fallback) |
 | **3** | Postgres-only | Postgres is primary, JSON only for degraded mode |
+
+**When to use:**
+- Multiple OpenCode instances sharing one bot
+- Production deployments requiring high availability
+- Team environments with shared scheduled tasks
 
 See [Migrating to PostgreSQL](#migrating-to-postgresql) for step-by-step setup.
 
