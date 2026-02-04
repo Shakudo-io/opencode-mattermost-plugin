@@ -38,6 +38,7 @@ import {
 } from "./event-handlers/index.js";
 
 import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
+import { createUnifiedStore, type UnifiedStore } from "../../../src/persistence/unified-store.js";
 import { buildThreadContext, summarizeContextWithHaiku, formatContextForPrompt, stripBotMention } from "../../../src/context-builder.js";
 import { loadConfig } from "../../../src/config.js";
 import { log } from "../../../src/logger.js";
@@ -53,7 +54,18 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
 
   PluginState.setProjectName(projectName);
 
-  const threadMappingStore = new ThreadMappingStore();
+  // Create unified store for Postgres state management (if enabled)
+  let unifiedStore: UnifiedStore | null = null;
+  if (config.postgres.enabled) {
+    log.info(`[Plugin] Postgres enabled, creating unified store (phase ${config.postgres.migrationPhase})`);
+    unifiedStore = createUnifiedStore({ postgresConfig: config.postgres });
+    await unifiedStore.initialize();
+    log.info(`[Plugin] Unified store initialized, postgres=${unifiedStore.isPostgresEnabled()}`);
+  } else {
+    log.info("[Plugin] Postgres disabled, using JSON-only mode");
+  }
+
+  const threadMappingStore = new ThreadMappingStore({ unifiedStore: unifiedStore ?? undefined });
   threadMappingStore.load().catch((e) => log.warn("[Plugin] Failed to load thread mappings:", e));
   PluginState.setThreadMappingStore(threadMappingStore);
 
