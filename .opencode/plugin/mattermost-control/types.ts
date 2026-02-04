@@ -46,6 +46,14 @@ export interface CostInfo {
 }
 
 /**
+ * Represents a captured edit diff from the edit tool
+ */
+export interface EditDiff {
+  filePath: string;
+  diff: string;
+}
+
+/**
  * Per-session context tracking an active response stream
  */
 export interface ResponseContext {
@@ -69,6 +77,10 @@ export interface ResponseContext {
   compactionPostId?: string;
   awaitingContinuation: boolean;
   inCompactionSummary: boolean;
+  /** Command being executed by bash tool (for display) */
+  bashCommand?: string;
+  /** Captured diffs from edit tool executions */
+  editDiffs: EditDiff[];
 }
 
 /**
@@ -103,5 +115,7 @@ export function createEmptyResponseContext(
     responseStartTime: Date.now(),
     awaitingContinuation: false,
     inCompactionSummary: false,
+    bashCommand: undefined,
+    editDiffs: [],
   };
 }

@@ -8,6 +8,7 @@ import type {
   EndedSessionRoute,
   MergedSessionRoute,
 } from "./models/routing.js";
+import { log } from "./logger.js";
 
 export type MessageType = "command" | "prompt";
 
@@ -97,6 +98,7 @@ export class MessageRouter {
       }
       
       if (mapping.status === "orphaned") {
+        log.warn(`[ROUTING] Thread ${threadRootPostId} has orphaned status, session ${mapping.sessionId}`);
         return {
           type: "ended_session",
           sessionId: mapping.sessionId,

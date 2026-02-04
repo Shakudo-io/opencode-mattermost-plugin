@@ -1,4 +1,4 @@
-import type { ResponseContext, TodoItem, ActiveTool, CostInfo } from "./types.js";
+import type { ResponseContext, TodoItem, ActiveTool, CostInfo, EditDiff } from "./types.js";
 
 export const RESPONSE_UPDATE_INTERVAL_MS = 1000;
 export const MAX_SHELL_OUTPUT_LINES = 15;
@@ -93,20 +93,31 @@ export function formatToolStatus(
 
 export function formatShellOutput(
   shellOutput: string,
+  bashCommand?: string,
   lastOutputTime?: number,
   toolStartTime?: number
 ): string {
-  if (!shellOutput) return "";
+  if (!shellOutput && !bashCommand) return "";
+  
+  // Start with the command echo if available
+  let output = "";
+  if (bashCommand) {
+    output = `$ ${bashCommand}\n`;
+  }
+  
+  // Handle empty shell output (command just started)
+  if (!shellOutput || !shellOutput.trim()) {
+    return output.trim();
+  }
   
   const lines = shellOutput.trim().split('\n');
   const totalLines = lines.length;
   
-  let output: string;
   if (totalLines <= MAX_SHELL_OUTPUT_LINES) {
-    output = shellOutput.trim();
+    output += shellOutput.trim();
   } else {
     const tailLines = lines.slice(-MAX_SHELL_OUTPUT_LINES);
-    output = `... (${totalLines - MAX_SHELL_OUTPUT_LINES} lines hidden)\n${tailLines.join('\n')}`;
+    output += `... (${totalLines - MAX_SHELL_OUTPUT_LINES} lines hidden)\n${tailLines.join('\n')}`;
   }
   
   if (lastOutputTime && toolStartTime) {
@@ -120,6 +131,17 @@ export function formatShellOutput(
     }
   }
   
+  return output;
+}
+
+export function formatEditDiffs(diffs: EditDiff[]): string {
+  if (!diffs || diffs.length === 0) return "";
+  
+  let output = "";
+  for (const edit of diffs) {
+    output += `📝 **${edit.filePath}**\n`;
+    output += "```diff\n" + edit.diff + "\n```\n\n";
+  }
   return output;
 }
 
@@ -177,13 +199,18 @@ export function formatFullResponse(ctx: ResponseContext): string {
     output += todoStatus + "\n";
   }
   
-  if (ctx.shellOutput && ctx.activeTool?.name === "bash") {
+  if ((ctx.shellOutput || ctx.bashCommand) && ctx.activeTool?.name === "bash") {
     const formattedShell = formatShellOutput(
-      ctx.shellOutput, 
+      ctx.shellOutput,
+      ctx.bashCommand,
       ctx.shellOutputLastUpdate,
       ctx.activeTool.startTime
     );
-    output += "```\n" + formattedShell + "\n```\n\n";
+    output += "```bash\n" + formattedShell + "\n```\n\n";
+  }
+  
+  if (ctx.editDiffs && ctx.editDiffs.length > 0) {
+    output += formatEditDiffs(ctx.editDiffs);
   }
   
   if (ctx.responseBuffer) {

@@ -97,13 +97,17 @@ export class ThreadMappingStore {
       const parsed = JSON.parse(raw);
       const validated = ThreadMappingFileSchema.safeParse(parsed);
 
-      if (!validated.success) {
+        if (!validated.success) {
         log.warn("[ThreadMappingStore] Invalid file format, filtering invalid entries");
         const mappings: ThreadSessionMapping[] = [];
         if (Array.isArray(parsed?.mappings)) {
           for (const m of parsed.mappings) {
             if (m?.sessionId && m?.threadRootPostId) {
-              mappings.push(m as ThreadSessionMapping);
+              // Default status to "active" if missing or invalid
+              mappings.push({
+                ...m,
+                status: m.status || "active",
+              } as ThreadSessionMapping);
             }
           }
         }

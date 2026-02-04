@@ -273,6 +273,49 @@ ctx.streamCtx?.channelId || ctx.mmSession.dmChannelId  // when you have response
 
 ---
 
+## 2026-02-04: Threads marked orphaned on OpenCode restart (v0.3.50 → v0.3.51)
+
+**Problem:** After restarting OpenCode, all Mattermost threads are marked as "orphaned" and users see "This session is no longer available (OpenCode may have restarted)" error when trying to use existing threads.
+
+**Specific case:** After restart, 288 out of 348 threads were orphaned. Only 2 remained active (likely created after restart).
+
+**Root Cause:** The `cleanOrphanedMappings()` function in `tools/connect.ts` runs on every plugin connect. It marks threads as orphaned if their `sessionId` doesn't exist in current OpenCode sessions. But session IDs are ephemeral - they change on every restart. So ALL old threads fail the check and get orphaned.
+
+```typescript
+// In thread-mapping-store.ts - the problematic logic
+async cleanOrphaned(validSessionIds: Set<string>): Promise<number> {
+  for (const mapping of this.listAll()) {
+    if (mapping.status === "active" && !validSessionIds.has(mapping.sessionId)) {
+      mapping.status = "orphaned";  // This kills ALL threads on restart
+      await this.update(mapping);
+    }
+  }
+}
+```
+
+**Fix:** Disabled `cleanOrphanedMappings()` call in `tools/connect.ts`:
+
+```typescript
+// NOTE: cleanOrphanedMappings disabled - it incorrectly marks threads as orphaned
+// when OpenCode restarts (session IDs change). Threads should remain active
+// and be matched by other means (user ID, project, etc.) rather than exact session ID.
+// cleanOrphanedMappings(threadMappingStore, availableSessions);
+```
+
+**Data Fix:** Reactivate orphaned threads in JSON file:
+```bash
+cd ~/.config/opencode && cat mattermost-threads.json | jq '(.mappings |= map(if .status == "orphaned" then .status = "active" else . end))' > tmp.json && mv tmp.json mattermost-threads.json
+```
+
+**Files Changed:**
+- `.opencode/plugin/mattermost-control/tools/connect.ts` - Commented out `cleanOrphanedMappings()` call
+
+**Prevention:** Session IDs should NOT be used as the primary identifier for thread validity. Threads should remain active and be matched by user ID, project directory, or other persistent identifiers. The orphan cleanup logic needs redesign to only orphan threads whose PROJECTS no longer exist, not just sessions.
+
+**Verified:** Fix deployed in v0.3.51, 288 threads reactivated from orphaned→active status.
+
+---
+
 ## 2026-01-18: mmClient closure timing bug (v0.3.1 → v0.3.2)
 
 **Problem:** Plugin crashed on disconnect due to accessing closed mmClient.

@@ -31,6 +31,11 @@ export async function handleToolExecuteBefore(input: any): Promise<void> {
     startTime: Date.now(),
   };
   
+  // Capture bash command for display
+  if (input.tool === "bash" && input.args?.command) {
+    ctx.bashCommand = input.args.command;
+  }
+  
   startActiveToolTimer(toolSessionId);
   await updateResponseStream(toolSessionId);
 }
@@ -67,6 +72,13 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
       if (ctx.activeTool.name === "bash") {
         ctx.shellOutput = "";
         ctx.shellOutputLastUpdate = 0;
+      }
+      // Capture edit diffs for display
+      if (ctx.activeTool.name === "edit" && input.metadata?.diff) {
+        ctx.editDiffs.push({
+          filePath: input.args?.filePath || "unknown",
+          diff: input.metadata.diff,
+        });
       }
       ctx.activeTool = null;
       stopActiveToolTimer(toolSessionId);

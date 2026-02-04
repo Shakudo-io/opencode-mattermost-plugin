@@ -180,7 +180,10 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
     setupSessionCallbacks(openCodeSessionRegistry, threadMappingStore, threadManager, sessionManager, config);
     
     const availableSessions = openCodeSessionRegistry.listAvailable();
-    cleanOrphanedMappings(threadMappingStore, availableSessions);
+    // NOTE: cleanOrphanedMappings disabled - it incorrectly marks threads as orphaned
+    // when OpenCode restarts (session IDs change). Threads should remain active
+    // and be matched by other means (user ID, project, etc.) rather than exact session ID.
+    // cleanOrphanedMappings(threadMappingStore, availableSessions);
     await createThreadsForExistingSessions(threadManager, threadMappingStore, sessionManager, availableSessions, config);
 
     setupWebSocketListeners(wsClient, botUser.id, config, ctx.handleUserMessage, reactionHandler);
