@@ -26,6 +26,36 @@ const RECONNECT_DELAY_BASE = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const HEALTH_CHECK_INTERVAL_MS = 30000; // 30 seconds
 
+/**
+ * Supabase JS client adds /rest/v1/ to PostgREST URLs, but our PostgREST
+ * service is exposed directly at root. This fetch wrapper strips that prefix.
+ */
+function createPostgrestFetch(_baseUrl: string): typeof fetch {
+  const customFetch = async (
+    input: RequestInfo | URL,
+    init?: RequestInit
+  ): Promise<Response> => {
+    let url: string;
+    if (typeof input === "string") {
+      url = input;
+    } else if (input instanceof URL) {
+      url = input.toString();
+    } else {
+      url = input.url;
+    }
+
+    const rewrittenUrl = url.replace("/rest/v1/", "/");
+
+    if (url !== rewrittenUrl) {
+      log.debug(`[supabase-client] URL rewrite: ${url} -> ${rewrittenUrl}`);
+    }
+
+    return fetch(rewrittenUrl, init);
+  };
+
+  return customFetch as typeof fetch;
+}
+
 export function createSupabaseClientManager(config: PostgresConfig): SupabaseClientManager | null {
   if (!config.enabled) {
     log.info("[supabase-client] Postgres is disabled");
@@ -45,6 +75,9 @@ export function createSupabaseClientManager(config: PostgresConfig): SupabaseCli
 
   const schema = config.supabaseSchema || "opencode_mattermost";
   log.info(`[supabase-client] Using schema: ${schema}`);
+  log.info(`[supabase-client] Using URL: ${config.supabaseUrl}`);
+  
+  const customFetch = createPostgrestFetch(config.supabaseUrl);
   
   const client = createClient(config.supabaseUrl, config.supabaseAnonKey, {
     db: {
@@ -58,6 +91,9 @@ export function createSupabaseClientManager(config: PostgresConfig): SupabaseCli
       params: {
         eventsPerSecond: 10,
       },
+    },
+    global: {
+      fetch: customFetch,
     },
   });
 
