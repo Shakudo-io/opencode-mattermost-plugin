@@ -100,20 +100,7 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
         ctx.bashCommand = undefined;
         ctx.shellOutputLastUpdate = 0;
       }
-      if (ctx.activeTool.name === "edit") {
-        log.info(`[EditDebug] tool.execute.after for edit - input.metadata: ${JSON.stringify(input.metadata || {})}`);
-        log.info(`[EditDebug] input.result type: ${typeof input.result}, preview: ${String(input.result)?.substring(0, 200)}`);
-        log.info(`[EditDebug] input keys: ${Object.keys(input).join(', ')}`);
-        
-        const diff = input.metadata?.diff || input.result;
-        if (diff) {
-          ctx.editDiffs.push({
-            filePath: input.args?.filePath || "unknown",
-            diff: typeof diff === 'string' ? diff : JSON.stringify(diff),
-          });
-          log.info(`[EditDebug] Captured diff for ${input.args?.filePath}, total diffs: ${ctx.editDiffs.length}`);
-        }
-      }
+      // Edit diffs: captured in message.ts via message.part.updated (part.state.metadata.diff)
       ctx.activeTool = null;
       stopActiveToolTimer(toolSessionId);
     }

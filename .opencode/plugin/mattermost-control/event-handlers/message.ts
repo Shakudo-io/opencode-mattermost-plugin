@@ -130,34 +130,16 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
       }
     }
   } else if (part?.type === "tool" && part?.tool === "edit") {
-    // Handle edit tool - capture diff data
     const status = part?.state?.status;
-    const stateKeys = Object.keys(part?.state || {}).join(', ');
-    const outputKeys = Object.keys(part?.state?.output || {}).join(', ');
-    
-    log.info(`[EditStream] status=${status}, state keys: ${stateKeys}, output keys: ${outputKeys}`);
     
     if (status === "completed" || status === "done") {
-      // Try multiple possible locations for the diff
-      const diff = part?.state?.output?.diff || 
-                   part?.state?.metadata?.diff || 
-                   part?.state?.diff ||
-                   part?.output?.diff;
-      const filePath = part?.state?.input?.filePath || 
-                       part?.state?.input?.file_path ||
-                       part?.input?.filePath ||
-                       part?.args?.filePath;
-      
-      log.info(`[EditStream] Completed: filePath=${filePath}, diff length=${diff?.length || 0}`);
+      const filePath = part?.state?.input?.filePath || part?.state?.input?.file_path;
+      const diff = part?.state?.metadata?.diff;
       
       if (diff && filePath) {
         ctx.editDiffs.push({ filePath, diff });
-        log.info(`[EditStream] Captured edit diff for ${filePath}, total: ${ctx.editDiffs.length}`);
+        log.info(`[EditStream] Captured edit diff for ${filePath} (${diff.length} chars), total: ${ctx.editDiffs.length}`);
         shouldUpdate = true;
-      } else {
-        // Log what we DO have for debugging
-        log.info(`[EditStream] Missing data - state.output: ${JSON.stringify(part?.state?.output || {}).substring(0, 200)}`);
-        log.info(`[EditStream] Missing data - state.input: ${JSON.stringify(part?.state?.input || {}).substring(0, 200)}`);
       }
     }
   }
