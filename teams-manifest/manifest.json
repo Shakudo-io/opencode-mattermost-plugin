@@ -59,10 +59,10 @@
   ],
   "permissions": ["identity", "messageTeamMembers"],
   "validDomains": [
-    "opencode-teams-bot.dev.hyperplane.dev"
+    "bc2cc691-56d8-425d-88b2-70d024e56c12-webhook.dev.hyperplane.dev"
   ],
   "webApplicationInfo": {
     "id": "{{AZURE_APP_ID}}",
-    "resource": "api://opencode-teams-bot.dev.hyperplane.dev/{{AZURE_APP_ID}}"
+    "resource": "api://bc2cc691-56d8-425d-88b2-70d024e56c12-webhook.dev.hyperplane.dev/{{AZURE_APP_ID}}"
   }
 }

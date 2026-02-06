@@ -205,6 +205,17 @@ export {
 } from "./teams-permission-handler.js";
 
 // =============================================================================
+// Auth Handler
+// =============================================================================
+
+export {
+  TeamsAuthHandler,
+  getTeamsAuthHandler,
+  clearTeamsAuthHandler,
+  type AuthCheckResult,
+} from "./teams-auth.js";
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -218,6 +229,7 @@ import { getTeamsThreadManager, type TeamsThreadManager } from "./teams-thread-m
 import { createTeamsCommandHandler, type TeamsCommandHandler } from "./teams-command-handler.js";
 import { createTeamsQuestionHandler, type TeamsQuestionHandler } from "./teams-question-handler.js";
 import { createTeamsPermissionHandler, type TeamsPermissionHandler } from "./teams-permission-handler.js";
+import { getTeamsAuthHandler, type TeamsAuthHandler } from "./teams-auth.js";
 import type { QuestionOption } from "./cards/question-card.js";
 import { MessageFactory } from "botbuilder";
 
@@ -229,6 +241,7 @@ export interface StartTeamsBotResult {
   commandHandler: TeamsCommandHandler;
   questionHandler: TeamsQuestionHandler;
   permissionHandler: TeamsPermissionHandler;
+  authHandler: TeamsAuthHandler;
 }
 
 export async function startTeamsBot(): Promise<StartTeamsBotResult> {
@@ -313,10 +326,19 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
   const commandHandler = createTeamsCommandHandler(config, bridge);
   const questionHandler = createTeamsQuestionHandler(config);
   const permissionHandler = createTeamsPermissionHandler(config);
+  const authHandler = getTeamsAuthHandler(config);
 
   const bot = new TeamsBot({
     config,
     onMessage: async (context, text) => {
+      // Auth check: verify user is in the authorized Azure AD group
+      const authResult = await authHandler.checkAuthorization(context);
+      if (!authResult.authorized) {
+        log.info(`Access denied for user ${authResult.userId}: ${authResult.reason ?? "not_in_group"}`);
+        await authHandler.sendAccessDenied(context);
+        return;
+      }
+
       const activity = context.activity;
       const replyToId = activity.replyToId;
       const conversationId = activity.conversation?.id ?? "unknown";
@@ -423,7 +445,7 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
 
   log.info("MS Teams bot started successfully");
 
-  return { server, bot, bridge, threadManager, commandHandler, questionHandler, permissionHandler };
+  return { server, bot, bridge, threadManager, commandHandler, questionHandler, permissionHandler, authHandler };
 }
 
 
@@ -459,6 +481,7 @@ if (isMainModule) {
         result.bridge.disconnect();
         result.questionHandler.destroy?.();
         result.permissionHandler.destroy();
+        result.authHandler.destroy();
         process.exit(0);
       };
 
