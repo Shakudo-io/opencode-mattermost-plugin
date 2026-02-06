@@ -38,8 +38,8 @@ export class TeamsAuthHandler {
     }
 
     if (!this.config.azure.authorizedGroupId) {
-      this.log.debug(`No authorized group configured, allowing user ${userId}`);
-      return { authorized: true, userId, reason: "no_group_configured", cached: false };
+      this.log.warn(`No authorized group configured - denying all users (set AZURE_AD_AUTHORIZED_GROUP_ID)`);
+      return { authorized: false, userId, reason: "no_group_configured", cached: false };
     }
 
     const cached = this.cache.get(userId);
@@ -56,11 +56,13 @@ export class TeamsAuthHandler {
     } catch (error) {
       this.log.error(`Auth check failed for ${userId}: ${error}`);
       const staleCache = this.cache.get(userId);
-      if (staleCache) {
-        this.log.warn(`Using stale cache for ${userId}: authorized=${staleCache.authorized}`);
-        return { authorized: staleCache.authorized, userId, reason: "stale_cache", cached: true };
+      const STALE_GRACE_MS = 5 * 60 * 1000; // 5 minutes grace window
+      if (staleCache && (Date.now() - staleCache.checkedAt) < (this.config.bot.authCacheDurationMs + STALE_GRACE_MS)) {
+        this.log.warn(`Using stale cache (within grace) for ${userId}: authorized=${staleCache.authorized}`);
+        return { authorized: staleCache.authorized, userId, reason: "stale_cache_grace", cached: true };
       }
-      return { authorized: false, userId, reason: "auth_check_failed", cached: false };
+      this.log.error(`Auth check failed and no valid cache for ${userId} - denying access`);
+      return { authorized: false, userId, reason: "auth_check_failed_no_cache", cached: false };
     }
   }
 
@@ -91,7 +93,14 @@ export class TeamsAuthHandler {
     );
   }
 
+  private static readonly GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   private async checkGroupMembership(userAadObjectId: string): Promise<boolean> {
+    if (!TeamsAuthHandler.GUID_RE.test(userAadObjectId)) {
+      this.log.warn(`Invalid AAD Object ID format: ${userAadObjectId.substring(0, 8)}...`);
+      return false;
+    }
+
     const token = await this.getGraphAccessToken();
     const groupId = this.config.azure.authorizedGroupId;
 
@@ -102,6 +111,7 @@ export class TeamsAuthHandler {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (response.status === 404) {
@@ -140,6 +150,7 @@ export class TeamsAuthHandler {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) {

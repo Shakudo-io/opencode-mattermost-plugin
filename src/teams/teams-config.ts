@@ -251,7 +251,7 @@ export function logTeamsConfig(config: TeamsConfig): void {
   log.info("=== MS Teams Bot Configuration ===");
   log.info("Azure Configuration:");
   log.info(`  App ID: ${redact(config.azure.appId)}`);
-  log.info(`  App Password: ${redact(config.azure.appPassword)}`);
+  log.info(`  App Password: ****[REDACTED]****`);
   log.info(`  Tenant ID: ${redact(config.azure.tenantId)}`);
   log.info(`  Authorized Group ID: ${redact(config.azure.authorizedGroupId)}`);
   log.info(`  Bot Endpoint: ${config.azure.botEndpoint || "(not set)"}`);

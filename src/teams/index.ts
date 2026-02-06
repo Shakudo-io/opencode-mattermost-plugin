@@ -249,8 +249,11 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
 
   log.info("Starting MS Teams bot...");
 
-  if (!validateTeamsConfig()) {
-    throw new Error("Invalid Teams configuration. Check environment variables.");
+  const { isValid, errors: configErrors } = validateTeamsConfig();
+  if (!isValid) {
+    const errorMsg = `Invalid Teams configuration: ${configErrors.join("; ")}`;
+    log.error(errorMsg);
+    throw new Error(errorMsg);
   }
 
   const config = getTeamsConfig();
@@ -403,7 +406,7 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
       );
     },
     onCardAction: async (context, actionData) => {
-      log.info(`Card action: ${JSON.stringify(actionData)}`);
+      log.info(`Card action: verb=${actionData.verb}, keys=[${Object.keys(actionData).join(",")}]`);
       const verb = actionData.verb as string;
 
       if (verb === "answer_question" || verb === "reject_question") {
@@ -415,6 +418,11 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
         } else if ("error" in result) {
           log.warn(`Question handling error: ${result.error}`);
         }
+        return;
+      }
+
+      if (verb === "response_page") {
+        log.debug(`Pagination action: page=${actionData.page}, session=${actionData.sessionId}`);
         return;
       }
 

@@ -42,6 +42,7 @@ export class TeamsResponseStreamer {
   private readonly activeSessions: Map<string, StreamingSession> = new Map();
   private readonly updateTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private readonly requestTimes: number[] = [];
+  private readonly updatingStreams = new Set<string>();
 
   constructor(config?: Partial<TeamsResponseStreamerConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -196,34 +197,40 @@ export class TeamsResponseStreamer {
   private async updateStatusCard(streamId: string): Promise<void> {
     const session = this.activeSessions.get(streamId);
     if (!session || !session.statusMessageId || session.isComplete) return;
-
-    const currentContent = session.chunks.join("");
-    const previewLength = 500;
-    const preview = currentContent.length > previewLength
-      ? currentContent.slice(-previewLength)
-      : currentContent;
-
-    const card = createStatusCard({
-      sessionId: session.sessionId,
-      prompt: session.prompt,
-      startTime: session.startTime,
-      tools: session.tools,
-      currentOutput: preview,
-    });
+    if (this.updatingStreams.has(streamId)) return;
+    this.updatingStreams.add(streamId);
 
     try {
-      await this.checkRateLimit();
+      const currentContent = session.chunks.join("");
+      const previewLength = 500;
+      const preview = currentContent.length > previewLength
+        ? currentContent.slice(-previewLength)
+        : currentContent;
 
-      const updateActivity: Partial<Activity> = {
-        id: session.statusMessageId,
-        type: "message",
-        attachments: [card],
-      };
+      const card = createStatusCard({
+        sessionId: session.sessionId,
+        prompt: session.prompt,
+        startTime: session.startTime,
+        tools: session.tools,
+        currentOutput: preview,
+      });
 
-      await session.context.updateActivity(updateActivity);
-      session.lastUpdateTime = Date.now();
-    } catch (error) {
-      this.log.error(`Failed to update status card: ${error}`);
+      try {
+        await this.checkRateLimit();
+
+        const updateActivity: Partial<Activity> = {
+          id: session.statusMessageId,
+          type: "message",
+          attachments: [card],
+        };
+
+        await session.context.updateActivity(updateActivity);
+        session.lastUpdateTime = Date.now();
+      } catch (error) {
+        this.log.error(`Failed to update status card: ${error}`);
+      }
+    } finally {
+      this.updatingStreams.delete(streamId);
     }
   }
 

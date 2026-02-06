@@ -77,7 +77,7 @@ export class TeamsBot extends TeamsActivityHandler {
     const conversationId = activity.conversation?.id ?? "unknown";
 
     this.log.info(`Message received from ${userName} (${userId}) in conversation ${conversationId}`);
-    this.log.debug(`Message text: "${text.substring(0, 100)}${text.length > 100 ? "..." : ""}"`);
+    this.log.debug(`Message length: ${text.length} chars`);
 
     const cleanedText = this.stripBotMentionFromTeamsMessage(activity);
 
@@ -106,7 +106,7 @@ export class TeamsBot extends TeamsActivityHandler {
     const actionData = (invokeValue.action?.data as Record<string, unknown>) ?? {};
 
     this.log.info(`Card action received: verb="${verb}"`);
-    this.log.debug(`Card action data: ${JSON.stringify(actionData)}`);
+    this.log.debug(`Card action data keys: ${Object.keys(actionData).join(", ")}`);
 
     if (this.cardActionHandler) {
       try {

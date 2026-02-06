@@ -254,6 +254,7 @@ export class ResponseCardBuilder extends CardBuilder {
       if (this.pageNumber > 1) {
         actions.push(
           this.submitAction("◀ Previous", {
+            verb: "response_page",
             action: "response_page",
             sessionId: this.sessionId,
             page: this.pageNumber - 1,
@@ -263,6 +264,7 @@ export class ResponseCardBuilder extends CardBuilder {
       if (this.pageNumber < this.totalPages) {
         actions.push(
           this.submitAction("Next ▶", {
+            verb: "response_page",
             action: "response_page",
             sessionId: this.sessionId,
             page: this.pageNumber + 1,
