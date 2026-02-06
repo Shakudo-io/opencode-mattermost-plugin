@@ -1,0 +1,68 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "{{AZURE_APP_ID}}",
+  "developer": {
+    "name": "Shakudo",
+    "websiteUrl": "https://shakudo.io",
+    "privacyUrl": "https://shakudo.io/privacy",
+    "termsOfUseUrl": "https://shakudo.io/terms"
+  },
+  "name": {
+    "short": "OpenCode Bot",
+    "full": "OpenCode Teams Integration"
+  },
+  "description": {
+    "short": "Control OpenCode sessions via Teams DMs",
+    "full": "Control OpenCode AI coding assistant remotely via Microsoft Teams direct messages. Send prompts, receive streaming responses, manage sessions, and approve permissions."
+  },
+  "icons": {
+    "color": "icons/color.png",
+    "outline": "icons/outline.png"
+  },
+  "accentColor": "#4F46E5",
+  "bots": [
+    {
+      "botId": "{{AZURE_APP_ID}}",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal", "team", "groupChat"],
+          "commands": [
+            {
+              "title": "help",
+              "description": "Show available commands"
+            },
+            {
+              "title": "sessions",
+              "description": "List all OpenCode sessions"
+            },
+            {
+              "title": "models",
+              "description": "List and select AI models"
+            },
+            {
+              "title": "costs",
+              "description": "Show token usage and costs"
+            },
+            {
+              "title": "stop",
+              "description": "Cancel current operation"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": [
+    "opencode-teams-bot.dev.hyperplane.dev"
+  ],
+  "webApplicationInfo": {
+    "id": "{{AZURE_APP_ID}}",
+    "resource": "api://opencode-teams-bot.dev.hyperplane.dev/{{AZURE_APP_ID}}"
+  }
+}

@@ -352,6 +352,54 @@ export OPENCODE_MM_SUPABASE_ANON_KEY="your-anon-key"
 
 See [Migrating to PostgreSQL](#migrating-to-postgresql) for step-by-step setup.
 
+### MS Teams Integration (Experimental)
+
+The plugin includes experimental support for Microsoft Teams. To enable Teams integration, configure the following environment variables:
+
+```bash
+# Required - Azure AD App Registration
+export AZURE_APP_ID="your-azure-app-client-id"
+export AZURE_APP_PASSWORD="your-azure-app-client-secret"
+export AZURE_TENANT_ID="your-azure-tenant-id"
+export AZURE_AD_AUTHORIZED_GROUP_ID="azure-ad-group-id-for-authorization"
+
+# Optional - Server Configuration (with defaults)
+export TEAMS_BOT_PORT="3978"              # Bot Framework standard port
+export TEAMS_BASE_PATH="/api"             # Base path for endpoints
+export TEAMS_MESSAGES_PATH="/messages"    # Bot Framework messages endpoint
+export TEAMS_HEALTH_PATH="/health"        # Health check endpoint
+
+# Optional - Bot Behavior (with defaults)
+export TEAMS_CARD_UPDATE_INTERVAL="5000"  # Card update interval during streaming (ms)
+export TEAMS_MAX_CARD_SIZE="25000"        # Max card size before pagination (bytes)
+export TEAMS_RATE_LIMIT="30"              # Teams API rate limit (RPS, max 50)
+export TEAMS_QUESTION_EXPIRATION_MS="1800000"    # 30 minutes
+export TEAMS_PERMISSION_EXPIRATION_MS="300000"   # 5 minutes
+export TEAMS_GUEST_APPROVAL_EXPIRATION_MS="1800000"  # 30 minutes
+export TEAMS_AUTH_CACHE_DURATION_MS="3600000"    # 1 hour
+
+# Optional - Logging (with defaults)
+export TEAMS_LOG_FILE="/tmp/opencode-teams-plugin.log"
+export TEAMS_DEBUG="false"
+
+# Optional - OpenCode Connection (with defaults)
+export OPENCODE_SERVER_URL="http://localhost:4096"
+export OPENCODE_CONNECTION_TIMEOUT="5000"
+export OPENCODE_RECONNECT_INTERVAL="5000"
+export OPENCODE_MAX_RECONNECT_ATTEMPTS="10"
+
+# Optional - Custom Bot Endpoint (for multi-tenant scenarios)
+export TEAMS_BOT_ENDPOINT="https://your-bot.azurewebsites.net/api/messages"
+```
+
+**Prerequisites for Teams:**
+1. Azure AD application registration with Bot Framework messaging endpoint
+2. Bot Channels Registration in Azure
+3. Teams channel enabled for the bot
+4. Azure AD security group for user authorization
+
+See `scripts/azure/setup-azure-bot.sh` for automated Azure resource provisioning.
+
 ### OpenCode Configuration
 
 Add to global config (`~/.config/opencode/opencode.json`):

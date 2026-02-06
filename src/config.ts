@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { log as fileLog } from "./logger.js";
+import {
+  type TeamsConfig,
+  loadTeamsConfig,
+  validateTeamsConfig,
+  logTeamsConfig,
+} from "./teams/teams-config.js";
 
 // Configuration schema
 const MattermostConfigSchema = z.object({
@@ -82,6 +88,13 @@ export type FilesConfig = z.infer<typeof FilesConfigSchema>;
 export type SessionSelectionConfig = z.infer<typeof SessionSelectionConfigSchema>;
 export type PostgresConfig = z.infer<typeof PostgresConfigSchema>;
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;
+
+export interface CombinedConfig {
+  mattermost: PluginConfig;
+  teams: TeamsConfig | null;
+}
+
+export { type TeamsConfig, loadTeamsConfig, validateTeamsConfig, logTeamsConfig };
 
 // Default Mattermost configuration
 // NOTE: These are example URLs - you must configure your own Mattermost instance
@@ -179,6 +192,29 @@ export function loadConfig(): PluginConfig {
 
   // Validate configuration
   return PluginConfigSchema.parse(config);
+}
+
+export function loadCombinedConfig(): CombinedConfig {
+  const mattermostConfig = loadConfig();
+
+  let teamsConfig: TeamsConfig | null = null;
+  const teamsValidation = validateTeamsConfig();
+
+  if (teamsValidation.isValid) {
+    try {
+      teamsConfig = loadTeamsConfig();
+      fileLog.info("Teams configuration loaded successfully");
+    } catch (error) {
+      fileLog.warn("Failed to load Teams config (Teams integration disabled):", error);
+    }
+  } else if (process.env.AZURE_APP_ID) {
+    fileLog.warn("Teams configuration incomplete:", teamsValidation.errors.join(", "));
+  }
+
+  return {
+    mattermost: mattermostConfig,
+    teams: teamsConfig,
+  };
 }
 
 export function createLogger(debug: boolean) {

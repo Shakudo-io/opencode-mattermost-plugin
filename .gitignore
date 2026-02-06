@@ -12,6 +12,7 @@ dist/
 .env
 .env.local
 .env.*.local
+scripts/azure/.env.azure
 
 # OS files
 .DS_Store
