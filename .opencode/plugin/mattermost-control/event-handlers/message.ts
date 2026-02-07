@@ -29,6 +29,10 @@ export async function handleMessageUpdated(event: any): Promise<void> {
   const ctx = PluginState.activeResponseContexts.get(msgInfo.sessionID);
   if (!ctx) return;
   
+  if (msgInfo.agent) {
+    ctx.agentName = msgInfo.agent;
+  }
+  
   // Detect compaction summary messages
   if (msgInfo.agent === "compaction" || msgInfo.summary === true) {
     log.info(`[Compaction] Detected compaction summary message for session ${msgInfo.sessionID.substring(0, 8)}, suppressing text accumulation`);

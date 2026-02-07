@@ -1,6 +1,34 @@
 import type { ResponseContext, TodoItem, ActiveTool, CostInfo, EditDiff } from "./types.js";
 
 export const RESPONSE_UPDATE_INTERVAL_MS = 1000;
+
+/**
+ * Reformats verbose background task notifications into compact format.
+ * 
+ * Converts:
+ *   [TUI] <system-reminder>
+ *   [BACKGROUND TASK COMPLETED]
+ *   ID: bg_6a6a3d50
+ *   Description: Research Hono backend patterns
+ *   Duration: 1m 48s
+ *   3 tasks still in progress...
+ *   </system-reminder>
+ * 
+ * Into:
+ *   ✅ `bg_6a6a3d50` done (1m 48s) — Research Hono backend patterns
+ *      ↳ 3 tasks in progress
+ */
+export function reformatBackgroundTaskNotification(text: string): string {
+  const bgTaskPattern = /\[TUI\]\s*<system-reminder>\s*\[BACKGROUND TASK COMPLETED\]\s*ID:\s*(bg_[a-f0-9]+)\s*Description:\s*(.+?)\s*Duration:\s*(\S+)\s*(?:(\d+)\s*tasks?\s*still\s*in\s*progress\..*?)?(?:Do NOT poll.*?)?(?:Use\s*`?background_output.*?)?<\/system-reminder>/gis;
+  
+  return text.replace(bgTaskPattern, (_match, id, description, duration, tasksRemaining) => {
+    let result = `✅ \`${id}\` done (${duration}) — ${description.trim()}`;
+    if (tasksRemaining && parseInt(tasksRemaining) > 0) {
+      result += `\n   ↳ ${tasksRemaining} task${parseInt(tasksRemaining) > 1 ? 's' : ''} in progress`;
+    }
+    return result;
+  });
+}
 export const MAX_SHELL_OUTPUT_LINES = 25;
 export const BASH_HEARTBEAT_THRESHOLD_MS = 10_000;
 export const THINKING_LINE_LIMIT = 500;
@@ -50,13 +78,23 @@ export function formatToolStatus(
   compactionCount: number = 0,
   cost?: CostInfo,
   responseStartTime?: number,
-  awaitingContinuation?: boolean
+  awaitingContinuation?: boolean,
+  agentName?: string
 ): string {
   const parts: string[] = [];
   
-  if (responseStartTime) {
+  if (agentName) {
+    // Title case the agent name (e.g. "build" -> "Build")
+    const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+    parts.push(`🤖 **${title}**`);
+  } else if (responseStartTime) {
+    // Only show "Processing" if we don't have an agent name, to save space
+    // or we can show both. Let's show both but keep it compact.
     const elapsed = formatElapsedTime(Date.now() - responseStartTime);
     parts.push(`💻 Processing (${elapsed})`);
+  } else if (responseStartTime) {
+     const elapsed = formatElapsedTime(Date.now() - responseStartTime);
+     parts.push(`(${elapsed})`);
   }
   
   if (toolCalls.length > 0) {
@@ -134,11 +172,22 @@ export function formatShellOutput(
   return output;
 }
 
+const MAX_EDIT_DIFFS_TO_SHOW = 2;
+
 export function formatEditDiffs(diffs: EditDiff[]): string {
   if (!diffs || diffs.length === 0) return "";
   
+  const totalDiffs = diffs.length;
+  const diffsToShow = diffs.slice(-MAX_EDIT_DIFFS_TO_SHOW);
+  const hiddenCount = totalDiffs - diffsToShow.length;
+  
   let output = "";
-  for (const edit of diffs) {
+  
+  if (hiddenCount > 0) {
+    output += `_${hiddenCount} earlier edit${hiddenCount > 1 ? 's' : ''} hidden_\n\n`;
+  }
+  
+  for (const edit of diffsToShow) {
     output += `📝 **${edit.filePath}**\n`;
     output += "```diff\n" + edit.diff + "\n```\n\n";
   }
@@ -186,7 +235,8 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
     ctx.compactionCount,
     ctx.cost,
     ctx.responseStartTime,
-    ctx.awaitingContinuation
+    ctx.awaitingContinuation,
+    ctx.agentName
   );
   const todoStatus = formatTodoStatus(ctx.todos);
   const thinkingPreview = ctx.thinkingBuffer.length > THINKING_LINE_LIMIT 
@@ -203,19 +253,31 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
     output += todoStatus + "\n";
   }
   
-  // Show live bash output when bash tool is active
-  if ((ctx.shellOutput || ctx.bashCommand) && ctx.activeTool?.name === "bash") {
+  const MAX_BASH_OUTPUTS_TO_SHOW = 2;
+  
+  // Relaxed check: Show shell output if we have content, even if activeTool is not explicitly "bash"
+  // This handles cases where tool events might be out of sync or nested (e.g. task -> bash)
+  const hasActiveBashContent = (ctx.shellOutput || ctx.bashCommand) && (ctx.activeTool?.name === "bash" || !!ctx.shellOutput);
+  
+  if (hasActiveBashContent) {
     const formattedShell = formatShellOutput(
       ctx.shellOutput,
       ctx.bashCommand,
       ctx.shellOutputLastUpdate,
-      ctx.activeTool.startTime
+      ctx.activeTool?.startTime
     );
     output += "```bash\n" + formattedShell + "\n```\n\n";
   } 
-  // Show all completed bash outputs after tools finish (for final response)
   else if (ctx.completedBashOutputs && ctx.completedBashOutputs.length > 0) {
-    for (const bash of ctx.completedBashOutputs) {
+    const totalBash = ctx.completedBashOutputs.length;
+    const bashToShow = ctx.completedBashOutputs.slice(-MAX_BASH_OUTPUTS_TO_SHOW);
+    const hiddenCount = totalBash - bashToShow.length;
+    
+    if (hiddenCount > 0) {
+      output += `_${hiddenCount} earlier command${hiddenCount > 1 ? 's' : ''} hidden_\n\n`;
+    }
+    
+    for (const bash of bashToShow) {
       const formattedShell = formatShellOutput(bash.output, bash.command);
       output += "```bash\n" + formattedShell + "\n```\n\n";
     }
@@ -230,7 +292,7 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
     if (needsSeparator) {
       output += "---\n\n";
     }
-    output += ctx.responseBuffer;
+    output += reformatBackgroundTaskNotification(ctx.responseBuffer);
   }
   
   if (ctx.thinkingBuffer) {

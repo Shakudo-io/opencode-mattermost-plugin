@@ -87,6 +87,8 @@ export interface ResponseContext {
   lastBashCommand?: string;
   /** All completed bash outputs (command + output pairs) for multi-command display */
   completedBashOutputs: Array<{ command: string; output: string }>;
+  /** Name of the active agent (e.g. "Build", "Plan") */
+  agentName?: string;
 }
 
 /**
@@ -126,5 +128,6 @@ export function createEmptyResponseContext(
     lastBashOutput: undefined,
     lastBashCommand: undefined,
     completedBashOutputs: [],
+    agentName: undefined,
   };
 }
