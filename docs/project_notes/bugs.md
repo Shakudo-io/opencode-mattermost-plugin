@@ -1,5 +1,53 @@
 # Bug Log
 
+## 2026-02-07: Scheduled tasks fail with "Empty response from LLM" due to stale session IDs (v0.3.72 → v0.3.73)
+
+**Problem:** All 13 enabled scheduled tasks fail with "Empty response from LLM" after every OpenCode restart. Session IDs are ephemeral — they change on restart — but scheduled tasks persist old session IDs in `mattermost-schedules.json`.
+
+**Example:** 4 stale session IDs across 13 tasks: `ses_4230dc92bffe`, `ses_3d1dc5817ffe`, `ses_3caae02c2ffe`, `ses_3d4bd4e46ffe` — none exist after restart.
+
+**Root Cause:** `SchedulerService.executeSchedule()` calls `ctx.client.session.prompt(schedule.sessionId, ...)`. When the session ID doesn't exist, the prompt silently fails and returns empty, which the scheduler reports as "Empty response from LLM".
+
+**Fix:** Added `rebindStaleSessions(availableSessionIds, fallbackSessionId)` method to `scheduler-service.ts`. Called during `connect.ts` startup after `scheduler.start()`. On each connect:
+1. Gets all available sessions from `openCodeSessionRegistry.listAvailable()`
+2. Gets default session from `openCodeSessionRegistry.getDefault()`
+3. For each schedule whose `sessionId` is NOT in the available set, rebinds it to the fallback (default or first available) session
+4. Persists the updated session ID via `store.update()`
+
+**Files Changed:**
+- `src/scheduler/scheduler-service.ts` — Added `rebindStaleSessions()` method (lines 148-179)
+- `.opencode/plugin/mattermost-control/tools/connect.ts` — Wired rebind call after `scheduler.start()` (lines ~205-215)
+
+**Prevention:** Session IDs are ephemeral by design. Any component that persists session references must handle rebinding on startup. Consider adding a `session.invalidated` event listener for proactive rebinding.
+
+**Verified:** Published v0.3.73. Pending restart verification — logs should show `[SchedulerService] Re-bound N schedules to session ...`
+
+---
+
+## 2026-02-07: Scheduled task prompts leak into wrong Mattermost threads via TUI sync (v0.3.71 → v0.3.72)
+
+**Problem:** Scheduled task prompts (e.g. `functional-standup-feedback-sat`) appeared as `[TUI]` messages in unrelated Mattermost threads. The scheduler injects prompts into a session via `session.prompt()`, which triggers a `chat.message` event. The TUI sync handler in `index.ts` then posted the prompt text to whatever Mattermost thread was mapped to that session — even though the thread had nothing to do with the scheduled task.
+
+**Example:** Standup feedback task prompt appeared in a "Deployment automation" discussion thread in the platform channel.
+
+**Root Cause:** The `chat.message` handler in `index.ts` (line ~997) fires for ALL user messages to any session, including scheduler-injected prompts. All other event handlers (message.ts, session.ts, permission.ts, question.ts, todo.ts, file.ts, tool.ts, compaction.ts) already checked `isScheduledTaskSession()` and suppressed output. The TUI sync handler was the ONLY path missing this check.
+
+**Fix:** Added `schedulerService?.isRunningScheduledTask(input.sessionID)` check at the top of the `chat.message` handler to suppress TUI sync for scheduled task sessions:
+
+```typescript
+// Suppress TUI sync for scheduled task sessions to prevent posting to wrong threads
+if (schedulerService?.isRunningScheduledTask(input.sessionID)) {
+  log.debug(`[TUISync] Suppressing TUI sync for scheduled task session ${input.sessionID.substring(0, 8)}`);
+  return;
+}
+```
+
+**Additional issue found:** All 14 scheduled tasks have stale session IDs (sessions change on OpenCode restart), causing "Empty response from LLM" failures. This is a separate issue to address.
+
+**Verified:** Code review confirms the fix is correct — `PluginState.schedulerService` is accessible (state.ts line 76), `isRunningScheduledTask()` tracks running sessions via `runningScheduledSessions` Set.
+
+---
+
 ## 2026-01-26: Non-DM channel session creation fails after ownership confirmation (v0.3.36 → v0.3.37)
 
 **Problem:** User @mentions bot in a public/private channel thread, bot asks for ownership confirmation, user replies "yes", but then gets error: "This thread is not associated with any OpenCode session."

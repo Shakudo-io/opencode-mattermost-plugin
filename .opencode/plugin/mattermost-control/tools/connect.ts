@@ -202,6 +202,15 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
       return session !== null && session.isAvailable;
     });
     await scheduler.start();
+
+    const defaultSession = openCodeSessionRegistry.getDefault();
+    if (defaultSession) {
+      const rebound = await scheduler.rebindAllToSession(defaultSession.id);
+      if (rebound > 0) {
+        log.info(`[Connect] Re-bound ${rebound} schedules to current session ${defaultSession.id.substring(0, 12)}`);
+      }
+    }
+
     PluginState.setSchedulerService(scheduler);
     log.info(`[SchedulerService] Initialized with ${scheduler.getStats().enabled} active schedules`);
 

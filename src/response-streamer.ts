@@ -21,10 +21,26 @@ export class ResponseStreamer {
   private mmClient: MattermostClient;
   private config: StreamingConfig;
   private activeStreams: Map<string, StreamContext> = new Map();
+  private updateLocks: Map<string, Promise<void>> = new Map();
 
   constructor(mmClient: MattermostClient, config: StreamingConfig) {
     this.mmClient = mmClient;
     this.config = config;
+  }
+
+  private async acquireLock(postId: string): Promise<() => void> {
+    while (this.updateLocks.has(postId)) {
+      await this.updateLocks.get(postId);
+    }
+    let releaseLock: () => void;
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    this.updateLocks.set(postId, lockPromise);
+    return () => {
+      this.updateLocks.delete(postId);
+      releaseLock!();
+    };
   }
 
   async startStream(session: UserSession, threadRootPostId?: string, initialText: string = ""): Promise<StreamContext> {
@@ -240,11 +256,35 @@ export class ResponseStreamer {
   }
 
   private async updateWithSplitting(ctx: StreamContext, content: string): Promise<void> {
+    const releaseLock = await this.acquireLock(ctx.postId);
+    try {
+      await this.updateWithSplittingInternal(ctx, content);
+    } finally {
+      releaseLock();
+    }
+  }
+
+  private async updateWithSplittingInternal(ctx: StreamContext, content: string): Promise<void> {
     const maxLen = this.config.maxPostLength;
     
     if (content.length <= maxLen) {
       await this.mmClient.updatePost(ctx.postId, content);
       ctx.currentPostContent = content;
+      
+      const orphanedPosts = ctx.continuationPostIds.splice(0);
+      for (const postId of orphanedPosts) {
+        try {
+          await this.mmClient.deletePost(postId);
+          log.debug(`[ResponseStreamer] Deleted orphaned continuation post ${postId}`);
+        } catch (e) {
+          log.warn(`[ResponseStreamer] Failed to delete orphaned post ${postId}, will retry as update`);
+          try {
+            await this.mmClient.updatePost(postId, "*(message consolidated above)*");
+          } catch (e2) {
+            log.error(`[ResponseStreamer] Failed to consolidate orphaned post ${postId}:`, e2);
+          }
+        }
+      }
       return;
     }
 
@@ -257,33 +297,43 @@ export class ResponseStreamer {
     await this.mmClient.updatePost(ctx.postId, firstPartWithContinuation);
     ctx.currentPostContent = firstPartWithContinuation;
 
+    const neededContinuations = parts.length - 1;
+    
     for (let i = 1; i < parts.length; i++) {
       const isLast = i === parts.length - 1;
       const partContent = isLast 
         ? `*(continued ${i + 1}/${parts.length})*\n\n${parts[i]}`
         : `*(continued ${i + 1}/${parts.length})*\n\n${parts[i]}\n\n*(continued below...)*`;
 
-      if (ctx.continuationPostIds[i - 1]) {
-        await this.mmClient.updatePost(ctx.continuationPostIds[i - 1], partContent);
+      const existingPostId = ctx.continuationPostIds[i - 1];
+      if (existingPostId) {
+        try {
+          await this.mmClient.updatePost(existingPostId, partContent);
+        } catch (e) {
+          log.warn(`[ResponseStreamer] Failed to update continuation ${existingPostId}, creating new`);
+          const post = await this.mmClient.createPost(ctx.channelId, partContent, ctx.threadRootPostId);
+          ctx.continuationPostIds[i - 1] = post.id;
+        }
       } else {
-        const post = await this.mmClient.createPost(
-          ctx.channelId, 
-          partContent, 
-          ctx.threadRootPostId
-        );
+        const post = await this.mmClient.createPost(ctx.channelId, partContent, ctx.threadRootPostId);
         ctx.continuationPostIds.push(post.id);
       }
     }
 
-    const extraPosts = ctx.continuationPostIds.length - (parts.length - 1);
+    const extraPosts = ctx.continuationPostIds.length - neededContinuations;
     if (extraPosts > 0) {
-      for (let i = 0; i < extraPosts; i++) {
-        const postIdToRemove = ctx.continuationPostIds.pop();
-        if (postIdToRemove) {
+      log.debug(`[ResponseStreamer] Cleaning up ${extraPosts} extra continuation posts`);
+      const postsToRemove = ctx.continuationPostIds.splice(neededContinuations);
+      for (const postId of postsToRemove) {
+        try {
+          await this.mmClient.deletePost(postId);
+          log.debug(`[ResponseStreamer] Deleted extra continuation post ${postId}`);
+        } catch (e) {
+          log.warn(`[ResponseStreamer] Failed to delete extra post ${postId}, updating instead`);
           try {
-            await this.mmClient.updatePost(postIdToRemove, "*(message consolidated above)*");
-          } catch (e) {
-            log.debug("[ResponseStreamer] Could not update orphaned continuation post");
+            await this.mmClient.updatePost(postId, "*(message consolidated above)*");
+          } catch (e2) {
+            log.error(`[ResponseStreamer] Failed to consolidate extra post ${postId}:`, e2);
           }
         }
       }

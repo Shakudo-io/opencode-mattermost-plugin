@@ -995,9 +995,15 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     },
 
     "chat.message": async (input, output) => {
-      const { threadMappingStore, mmClient, threadManager, openCodeSessionRegistry, botUser } = PluginState;
+      const { threadMappingStore, mmClient, threadManager, openCodeSessionRegistry, botUser, schedulerService } = PluginState;
       
       if (!mmClient || !threadMappingStore) {
+        return;
+      }
+
+      // Suppress TUI sync for scheduled task sessions to prevent posting to wrong threads
+      if (schedulerService?.isRunningScheduledTask(input.sessionID)) {
+        log.debug(`[TUISync] Suppressing TUI sync for scheduled task session ${input.sessionID.substring(0, 8)}`);
         return;
       }
 

@@ -39,7 +39,8 @@ export async function handleToolExecuteBefore(input: any): Promise<void> {
     log.info(`[ToolDebug] bash args: ${JSON.stringify(input.args || {})}`);
     if (input.args?.command) {
       ctx.bashCommand = input.args.command;
-      log.info(`[ToolDebug] Captured bash command: ${ctx.bashCommand.substring(0, 100)}`);
+      const cmdDisplay = ctx.bashCommand || "unknown";
+      log.info(`[ToolDebug] Captured bash command: ${cmdDisplay.substring(0, 100)}`);
     }
   }
   

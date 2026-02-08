@@ -145,6 +145,31 @@ export class SchedulerService {
     }
   }
 
+  async rebindAllToSession(currentSessionId: string): Promise<number> {
+    const allSchedules = this.store.listAll();
+    let rebound = 0;
+
+    for (const schedule of allSchedules) {
+      if (schedule.sessionId !== currentSessionId) {
+        const oldSessionId = schedule.sessionId;
+        schedule.sessionId = currentSessionId;
+        await this.store.update(schedule);
+        rebound++;
+        log.info(
+          `[SchedulerService] Re-bound schedule "${schedule.name}" from ${oldSessionId.substring(0, 12)} → ${currentSessionId.substring(0, 12)}`
+        );
+      }
+    }
+
+    if (rebound > 0) {
+      log.info(`[SchedulerService] Re-bound ${rebound} schedules to session ${currentSessionId.substring(0, 12)}`);
+    } else {
+      log.debug(`[SchedulerService] All schedules already bound to current session`);
+    }
+
+    return rebound;
+  }
+
   async start(): Promise<void> {
     if (this.started) {
       log.warn("[SchedulerService] Already started");

@@ -51,10 +51,6 @@ export async function handleSessionCompacted(event: any): Promise<void> {
     );
     ctx.compactionPostId = post.id;
     log.debug(`[Compaction] Created compaction post ${post.id}`);
-    
-    const newStreamCtx2 = await streamer.recreateStreamAtBottom(ctx.streamCtx);
-    ctx.streamCtx = newStreamCtx2;
-    log.debug(`[Compaction] Recreated stream after notification, new postId=${newStreamCtx2.postId}`);
   } catch (e) {
     log.error(`[Compaction] Failed to handle compaction:`, e);
   }
