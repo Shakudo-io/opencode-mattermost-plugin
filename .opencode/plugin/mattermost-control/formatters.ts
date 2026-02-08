@@ -72,6 +72,10 @@ export function formatCostStatus(cost: CostInfo): string {
   return `💰 ${sessionCost}${msgCost}${tokenStr}`;
 }
 
+function agentEmoji(): string {
+  return Math.random() < 0.5 ? "🕵️‍♀️" : "🕵️‍♂️";
+}
+
 export function formatToolStatus(
   toolCalls: string[],
   activeTool: ActiveTool | null,
@@ -88,7 +92,7 @@ export function formatToolStatus(
     // Finalized mode: static snapshot with no dynamic timers
     if (agentName) {
       const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
-      parts.push(`🤖 **${title}**`);
+      parts.push(`${agentEmoji()} **${title}**`);
     }
     if (responseStartTime) {
       const elapsed = formatElapsedTime(Date.now() - responseStartTime);
@@ -97,7 +101,7 @@ export function formatToolStatus(
   } else {
     if (agentName) {
       const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
-      parts.push(`🤖 **${title}**`);
+      parts.push(`${agentEmoji()} **${title}**`);
     }
     if (responseStartTime) {
       const elapsed = formatElapsedTime(Date.now() - responseStartTime);
