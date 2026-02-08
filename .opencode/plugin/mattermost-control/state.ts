@@ -1,4 +1,4 @@
-import type { ResponseContext } from "./types.js";
+import type { ResponseContext, SubagentInfo } from "./types.js";
 import type { MattermostClient } from "../../../src/clients/mattermost-client.js";
 import type { MattermostWebSocketClient } from "../../../src/clients/websocket-client.js";
 import type { SessionManager } from "../../../src/session-manager.js";
@@ -45,6 +45,7 @@ class PluginStateManager {
   private _projectName: string = "";
 
   readonly activeResponseContexts: Map<string, ResponseContext> = new Map();
+  readonly subagentRegistry: Map<string, SubagentInfo> = new Map();
   readonly activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   readonly activeResponseTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private _questionCleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -75,6 +76,7 @@ class PluginStateManager {
   get pendingCleanupTimer(): ReturnType<typeof setInterval> | null { return this._pendingCleanupTimer; }
   get schedulerService(): SchedulerService | null { return this._schedulerService; }
   get teamStore(): TeamStore | null { return this._teamStore; }
+  getSubagentRegistry(): Map<string, SubagentInfo> { return this.subagentRegistry; }
 
   setProjectName(name: string): void {
     this._projectName = name;
@@ -162,6 +164,7 @@ class PluginStateManager {
     }
     this.activeToolTimers.clear();
     this.activeResponseContexts.clear();
+    this.subagentRegistry.clear();
     
     // Release all thread claims before disconnecting
     const pgStore = this._threadMappingStore?.getPgStore();
@@ -198,3 +201,13 @@ class PluginStateManager {
 }
 
 export const PluginState = new PluginStateManager();
+
+export function getSubagentsForParent(parentSessionId: string): SubagentInfo[] {
+  return Array.from(PluginState.subagentRegistry.values()).filter(
+    (entry) => entry.parentSessionId === parentSessionId
+  );
+}
+
+export function getParentForChild(childSessionId: string): SubagentInfo | undefined {
+  return PluginState.subagentRegistry.get(childSessionId);
+}

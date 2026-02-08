@@ -54,6 +54,23 @@ export interface EditDiff {
 }
 
 /**
+ * Tracks a delegated subagent session and its Mattermost reply message
+ */
+export interface SubagentInfo {
+  childSessionId: string;
+  parentSessionId: string;
+  threadRootPostId: string;
+  replyPostId: string;
+  agentType: string;
+  description: string;
+  status: string;
+  startTime: number;
+  toolCount: number;
+  modelId?: string;
+  agentHeader: string;
+}
+
+/**
  * Per-session context tracking an active response stream
  */
 export interface ResponseContext {

@@ -3,8 +3,8 @@
  */
 
 import { PluginState } from "../state.js";
-import { formatFullResponse } from "../formatters.js";
 import { updateResponseStream } from "../timers.js";
+import { handleTaskToolCompleted, handleTaskToolDetected, handleTaskToolError } from "./subagent.js";
 import { log } from "../../../../src/logger.js";
 
 /**
@@ -26,7 +26,8 @@ export async function handleMessageUpdated(event: any): Promise<void> {
     return;
   }
   
-  const ctx = PluginState.activeResponseContexts.get(msgInfo.sessionID);
+  const targetSessionId = msgInfo.sessionID;
+  const ctx = PluginState.activeResponseContexts.get(targetSessionId);
   if (!ctx) return;
   
   if (msgInfo.agent) {
@@ -57,14 +58,26 @@ export async function handleMessageUpdated(event: any): Promise<void> {
 }
 
 export async function handleMessagePartUpdated(event: any): Promise<void> {
-  const { streamer, isConnected } = PluginState;
-  if (!isConnected || !streamer) return;
+  const { isConnected } = PluginState;
+  if (!isConnected) return;
   
   const part = event.properties?.part;
   const delta = event.properties?.delta;
   const sessionId = part?.sessionID || event.properties?.sessionID;
   
   if (!sessionId) return;
+
+  if (part?.type === "tool" && part?.tool === "task") {
+    const status = part?.state?.status;
+    if (status === "running") {
+      await handleTaskToolDetected(event);
+    } else if (status === "completed") {
+      await handleTaskToolCompleted(event);
+    } else if (status === "error") {
+      await handleTaskToolError(event);
+    }
+    return;
+  }
   
   // Skip streaming updates for scheduled task sessions
   if (isScheduledTaskSession(sessionId)) {
@@ -156,13 +169,6 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
   
   if (shouldUpdate) {
     ctx.lastUpdateTime = Date.now();
-    
-    const formattedOutput = formatFullResponse(ctx);
-    
-    try {
-      await streamer.updateStream(ctx.streamCtx, formattedOutput);
-    } catch (e) {
-      log.error("Failed to update stream:", e);
-    }
+    await updateResponseStream(sessionId);
   }
 }

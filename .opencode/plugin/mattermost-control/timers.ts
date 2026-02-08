@@ -8,10 +8,27 @@ export const QUESTION_EXPIRY_MS = 30 * 60 * 1000;
 
 export async function updateResponseStream(sessionId: string): Promise<void> {
   const ctx = PluginState.activeResponseContexts.get(sessionId);
-  if (!ctx || !PluginState.streamer) return;
-  
+  if (!ctx) return;
+
+  const subagentInfo = PluginState.subagentRegistry.get(sessionId);
   const formattedOutput = formatFullResponse(ctx, log.info.bind(log));
-  
+
+  if (subagentInfo) {
+    const mmClient = PluginState.mmClient;
+    if (!mmClient) return;
+    const content = formattedOutput.trim().length > 0
+      ? `${subagentInfo.agentHeader}\n\n---\n\n${formattedOutput}`
+      : subagentInfo.agentHeader;
+    try {
+      await mmClient.updatePost(subagentInfo.replyPostId, content);
+    } catch (e) {
+      log.error("Failed to update subagent reply:", e);
+    }
+    return;
+  }
+
+  if (!PluginState.streamer) return;
+
   try {
     await PluginState.streamer.updateStream(ctx.streamCtx, formattedOutput);
   } catch (e) {

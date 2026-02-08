@@ -2,6 +2,7 @@ import { PluginState } from "../state.js";
 import { formatFullResponse } from "../formatters.js";
 import { stopActiveToolTimer, stopResponseTimer } from "../timers.js";
 import { handleMonitorAlert } from "../../../../src/monitor-service.js";
+import { cleanupSubagentsForParent } from "./subagent.js";
 import { log } from "../../../../src/logger.js";
 
 function isScheduledTaskSession(sessionId: string): boolean {
@@ -33,6 +34,8 @@ export async function handleSessionIdle(event: any): Promise<void> {
   
   const ctx = PluginState.activeResponseContexts.get(eventSessionId);
   if (!ctx) return;
+
+  await cleanupSubagentsForParent(eventSessionId);
   
   // v0.2.70 fix: Don't finalize if we're awaiting continuation after compaction
   if (ctx.awaitingContinuation) {

@@ -12,3 +12,9 @@ export { handleMessageUpdated, handleMessagePartUpdated } from "./message.js";
 export { handleFileEdited } from "./file.js";
 export { handleTodoUpdated } from "./todo.js";
 export { handleToolExecuteBefore, handleToolExecuteAfter } from "./tool.js";
+export {
+  handleTaskToolDetected,
+  handleTaskToolCompleted,
+  handleTaskToolError,
+  cleanupSubagentsForParent,
+} from "./subagent.js";

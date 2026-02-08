@@ -77,6 +77,10 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
   const ctx = PluginState.activeResponseContexts.get(toolSessionId);
   if (ctx) {
     if (ctx.activeTool) {
+      const subagentInfo = PluginState.subagentRegistry.get(toolSessionId);
+      if (subagentInfo) {
+        subagentInfo.toolCount += 1;
+      }
       ctx.toolCalls.push(ctx.activeTool.name);
       if (ctx.activeTool.name === "bash") {
         // Debug: Log all available sources for bash output
