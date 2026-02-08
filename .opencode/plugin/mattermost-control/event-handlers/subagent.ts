@@ -37,7 +37,8 @@ function buildAgentHeader(agentType: string, description: string, threadRootPost
 export async function handleTaskToolDetected(event: any): Promise<void> {
   const part = event.properties?.part;
   if (!part || part.tool !== "task") return;
-  if (part.state?.status !== "running") return;
+  const partStatus = part.state?.status;
+  if (partStatus !== "running" && partStatus !== "completed") return;
 
   const childSessionId = part.state?.metadata?.sessionId;
   const parentSessionId = part.sessionID || event.properties?.sessionID;
@@ -168,7 +169,8 @@ export async function handleTaskToolCompleted(event: any): Promise<void> {
 
   const info = PluginState.subagentRegistry.get(childSessionId);
   if (!info) {
-    log.debug(`[Subagent] Parent task tool completed but no registry entry for child ${childSessionId.substring(0, 8)}`);
+    log.info(`[Subagent] Parent task tool completed but child ${childSessionId.substring(0, 8)} was never detected during "running" — late-registering now`);
+    await handleTaskToolDetected(event);
     return;
   }
 
