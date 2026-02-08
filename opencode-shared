@@ -332,9 +332,41 @@ ensure_supervisor_running() {
 # Configuration for MCP fix
 MCP_FIX_MAX_RETRIES="${OPENCODE_MCP_FIX_RETRIES:-5}"
 MCP_FIX_RETRY_DELAY="${OPENCODE_MCP_FIX_DELAY:-10}"
-MCP_FIX_INITIAL_WAIT="${OPENCODE_MCP_FIX_INITIAL_WAIT:-15}"
+MCP_FIX_API_READY_TIMEOUT="${OPENCODE_MCP_FIX_API_TIMEOUT:-120}"
+MCP_FIX_API_POLL_INTERVAL="${OPENCODE_MCP_FIX_API_POLL:-3}"
 MCP_FIX_READD_TIMEOUT="${OPENCODE_MCP_FIX_READD_TIMEOUT:-60}"
 CONFIG_FILE="${OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.json}"
+
+# Wait until the /mcp API endpoint returns valid JSON (server fully initialized)
+wait_mcp_api_ready() {
+    local elapsed=0
+    log_info "[mcp-fix] Waiting for MCP API to become ready (timeout: ${MCP_FIX_API_READY_TIMEOUT}s)..."
+
+    while [[ $elapsed -lt $MCP_FIX_API_READY_TIMEOUT ]]; do
+        local response
+        response=$(curl -fsS --max-time 5 "${SERVER_URL}/mcp" 2>/dev/null) || true
+
+        if [[ -n "$response" ]]; then
+            # Check if it's valid JSON (not HTML from the web UI)
+            if echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+                local count
+                count=$(echo "$response" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null) || true
+                log_info "[mcp-fix] MCP API ready after ${elapsed}s (${count} servers reported)"
+                return 0
+            else
+                log_info "[mcp-fix] (${elapsed}s) API returned non-JSON response, server still initializing..."
+            fi
+        else
+            log_info "[mcp-fix] (${elapsed}s) API not responding yet..."
+        fi
+
+        sleep "$MCP_FIX_API_POLL_INTERVAL"
+        elapsed=$((elapsed + MCP_FIX_API_POLL_INTERVAL))
+    done
+
+    log_info "[mcp-fix] ⚠ MCP API did not become ready within ${MCP_FIX_API_READY_TIMEOUT}s"
+    return 1
+}
 
 # Get MCP server status summary
 get_mcp_status() {
@@ -521,12 +553,16 @@ main() {
     # Fix failed MCP servers after startup
     # Remote MCPs often lose the startup race when 14+ servers init concurrently
     if [[ "$fresh_start" == "true" ]]; then
-        log_info "[mcp-fix] Fresh start detected — waiting ${MCP_FIX_INITIAL_WAIT}s for MCP servers to initialize..."
-        sleep "$MCP_FIX_INITIAL_WAIT"
+        log_info "[mcp-fix] Fresh start detected — waiting for MCP API to initialize..."
+        if ! wait_mcp_api_ready; then
+            log_info "[mcp-fix] ⚠ Proceeding without MCP fix — API not ready"
+        else
+            fix_failed_mcps
+        fi
     else
         log_info "[mcp-fix] Attached to existing server — checking MCP status..."
+        fix_failed_mcps
     fi
-    fix_failed_mcps
     log_info "[mcp-fix] MCP fix complete, launching TUI..."
     
     # Attach to the server, passing through any additional arguments
