@@ -326,6 +326,169 @@ ensure_supervisor_running() {
 }
 
 # =============================================================================
+# MCP Post-Startup Fix Functions
+# =============================================================================
+
+# Configuration for MCP fix
+MCP_FIX_MAX_RETRIES="${OPENCODE_MCP_FIX_RETRIES:-5}"
+MCP_FIX_RETRY_DELAY="${OPENCODE_MCP_FIX_DELAY:-10}"
+MCP_FIX_INITIAL_WAIT="${OPENCODE_MCP_FIX_INITIAL_WAIT:-15}"
+MCP_FIX_READD_TIMEOUT="${OPENCODE_MCP_FIX_READD_TIMEOUT:-60}"
+CONFIG_FILE="${OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.json}"
+
+# Get MCP server status summary
+get_mcp_status() {
+    curl -fsS --max-time 10 "${SERVER_URL}/mcp" 2>/dev/null | \
+        python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    connected = [k for k, v in d.items() if v.get('status') == 'connected']
+    failed = [k for k, v in d.items() if v.get('status') == 'failed']
+    other = [k for k, v in d.items() if v.get('status') not in ('connected', 'failed')]
+    print(f'CONNECTED={len(connected)} FAILED={len(failed)} OTHER={len(other)}')
+    if failed:
+        print(f'FAILED_LIST={\" \".join(failed)}')
+    for k, v in d.items():
+        status = v.get('status', '?')
+        err = v.get('error', '')
+        symbol = 'OK' if status == 'connected' else 'FAIL' if status == 'failed' else status.upper()
+        line = f'  [{symbol}] {k}'
+        if err:
+            line += f' ({err})'
+        print(line)
+except Exception as e:
+    print(f'ERROR: {e}')
+" 2>/dev/null || echo "ERROR: Could not reach server at ${SERVER_URL}/mcp"
+}
+
+# Get list of failed MCP servers from the running server
+get_failed_mcps() {
+    curl -fsS --max-time 10 "${SERVER_URL}/mcp" 2>/dev/null | \
+        python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    failed = [k for k, v in d.items() if v.get('status') == 'failed']
+    print(' '.join(failed))
+except:
+    pass
+" 2>/dev/null || true
+}
+
+# Re-add a failed MCP server via the POST /mcp API using its config from opencode.json
+readd_mcp() {
+    local name="$1"
+    local payload
+    payload=$(python3 -c "
+import json, sys
+try:
+    with open('${CONFIG_FILE}') as f:
+        cfg = json.load(f)
+    mcp = cfg.get('mcp', {}).get('${name}')
+    if mcp:
+        print(json.dumps({'name': '${name}', 'config': mcp}))
+except Exception as e:
+    sys.stderr.write(str(e) + '\n')
+" 2>/dev/null) || true
+
+    if [[ -z "$payload" ]]; then
+        log_info "  ⚠ [${name}] Could not read config from ${CONFIG_FILE}, skipping"
+        return 1
+    fi
+
+    local mcp_type
+    mcp_type=$(echo "$payload" | python3 -c "import sys,json; print(json.load(sys.stdin).get('config',{}).get('type','?'))" 2>/dev/null) || true
+    log_info "  → [${name}] Re-adding via POST /mcp (type=${mcp_type}, timeout=${MCP_FIX_READD_TIMEOUT}s)..."
+
+    local result
+    result=$(curl -fsS --max-time "$MCP_FIX_READD_TIMEOUT" -X POST "${SERVER_URL}/mcp" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null) || true
+
+    # Check if the specific MCP is now connected
+    local status
+    status=$(echo "$result" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    s = d.get('${name}', {})
+    status = s.get('status', 'unknown')
+    err = s.get('error', '')
+    if err:
+        print(f'{status}|{err}')
+    else:
+        print(status)
+except:
+    print('unknown')
+" 2>/dev/null) || true
+
+    if [[ "$status" == "connected" ]]; then
+        return 0
+    else
+        log_info "  ⚠ [${name}] Server returned status: ${status}"
+        return 1
+    fi
+}
+
+# Fix all failed MCP servers with retries
+fix_failed_mcps() {
+    local retry=0
+
+    log_info "[mcp-fix] Checking MCP server status..."
+    get_mcp_status | while IFS= read -r line; do log_info "[mcp-fix] $line"; done
+
+    while [[ $retry -lt $MCP_FIX_MAX_RETRIES ]]; do
+        local failed
+        failed="$(get_failed_mcps)"
+
+        if [[ -z "$failed" ]]; then
+            log_info "[mcp-fix] ✓ All MCP servers connected"
+            return 0
+        fi
+
+        retry=$((retry + 1))
+        local failed_count
+        failed_count=$(echo "$failed" | wc -w)
+        log_info "[mcp-fix] Fixing ${failed_count} failed MCP server(s) (attempt ${retry}/${MCP_FIX_MAX_RETRIES}): ${failed}"
+
+        for name in $failed; do
+            if readd_mcp "$name"; then
+                log_info "  ✓ ${name} reconnected"
+            else
+                log_info "  ✗ ${name} still failing"
+            fi
+        done
+
+        # Check if any still failed
+        local still_failed
+        still_failed="$(get_failed_mcps)"
+        if [[ -z "$still_failed" ]]; then
+            log_info "[mcp-fix] ✓ All MCP servers connected after attempt ${retry}"
+            return 0
+        fi
+
+        if [[ $retry -lt $MCP_FIX_MAX_RETRIES ]]; then
+            local still_count
+            still_count=$(echo "$still_failed" | wc -w)
+            log_info "[mcp-fix] ${still_count} server(s) still failing: ${still_failed}"
+            log_info "[mcp-fix] Waiting ${MCP_FIX_RETRY_DELAY}s before retry..."
+            sleep "$MCP_FIX_RETRY_DELAY"
+        fi
+    done
+
+    local remaining
+    remaining="$(get_failed_mcps)"
+    if [[ -n "$remaining" ]]; then
+        log_info "[mcp-fix] ⚠ Some MCP servers still failed after ${MCP_FIX_MAX_RETRIES} attempts: ${remaining}"
+        log_info "[mcp-fix] Final status:"
+        get_mcp_status | while IFS= read -r line; do log_info "[mcp-fix] $line"; done
+        log_info "[mcp-fix] Proceeding anyway — they can be reconnected from the UI"
+    fi
+    return 0
+}
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -341,16 +504,30 @@ main() {
     # Clear any stale stop flag
     rm -f "$STOP_FLAG"
     
+    local fresh_start=false
+    
     if is_server_running; then
         log_info "Connecting to existing OpenCode server at ${SERVER_URL}"
     else
         if ! start_server_and_wait; then
             exit 1
         fi
+        fresh_start=true
     fi
     
     # Ensure supervisor is running for auto-restart
     ensure_supervisor_running
+    
+    # Fix failed MCP servers after startup
+    # Remote MCPs often lose the startup race when 14+ servers init concurrently
+    if [[ "$fresh_start" == "true" ]]; then
+        log_info "[mcp-fix] Fresh start detected — waiting ${MCP_FIX_INITIAL_WAIT}s for MCP servers to initialize..."
+        sleep "$MCP_FIX_INITIAL_WAIT"
+    else
+        log_info "[mcp-fix] Attached to existing server — checking MCP status..."
+    fi
+    fix_failed_mcps
+    log_info "[mcp-fix] MCP fix complete, launching TUI..."
     
     # Attach to the server, passing through any additional arguments
     exec opencode attach "$SERVER_URL" "$@"
