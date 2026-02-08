@@ -42,7 +42,14 @@ export async function handleSessionIdle(event: any): Promise<void> {
   const ctx = PluginState.activeResponseContexts.get(eventSessionId);
   if (!ctx) return;
 
-  await cleanupSubagentsForParent(eventSessionId);
+  const runningSubagents = Array.from(PluginState.subagentRegistry.values()).filter(
+    (entry) => entry.parentSessionId === eventSessionId && entry.status === "running"
+  );
+  if (runningSubagents.length > 0) {
+    log.info(`[Subagent] Parent ${eventSessionId.substring(0, 8)} idle but ${runningSubagents.length} subagents still running — skipping cleanup`);
+  } else {
+    await cleanupSubagentsForParent(eventSessionId);
+  }
   
   // v0.2.70 fix: Don't finalize if we're awaiting continuation after compaction
   if (ctx.awaitingContinuation) {
