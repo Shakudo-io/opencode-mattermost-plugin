@@ -19,6 +19,9 @@ export async function handleQuestionAsked(event: any): Promise<void> {
   
   const props = event.properties;
   const eventSessionId = props?.sessionID;
+  const subagentInfo = eventSessionId ? PluginState.subagentRegistry.get(eventSessionId) : undefined;
+  const parentSessionId = subagentInfo?.parentSessionId;
+  const parentCtx = parentSessionId ? PluginState.activeResponseContexts.get(parentSessionId) : undefined;
   
   // Skip question handling for scheduled task sessions - they can't ask questions via DM
   if (eventSessionId && isScheduledTaskSession(eventSessionId)) {
@@ -30,22 +33,29 @@ export async function handleQuestionAsked(event: any): Promise<void> {
   
   if (!eventSessionId || !props?.id || !props?.questions) return;
   
-  // First try thread mapping (per-session thread mode)
-  const mapping = threadMappingStore?.getBySessionId(eventSessionId);
+  // First try parent thread if this is a subagent session
   let targetChannelId: string | undefined;
   let targetThreadId: string | undefined;
-  
-  if (mapping && mapping.status === "active") {
-    targetChannelId = mapping.channelId || mapping.dmChannelId;
-    targetThreadId = mapping.threadRootPostId;
-    log.debug(`[QuestionHandler] Using thread mapping: channel=${targetChannelId}, thread=${targetThreadId}`);
+
+  if (subagentInfo && parentCtx) {
+    targetChannelId = parentCtx.streamCtx?.channelId || parentCtx.mmSession?.dmChannelId;
+    targetThreadId = parentCtx.threadRootPostId || parentCtx.streamCtx?.threadRootPostId;
+    log.debug(`[QuestionHandler] Using parent thread context: channel=${targetChannelId}, thread=${targetThreadId}`);
   } else {
-    // Fall back to active response context (main DM thread mode)
-    const ctx = PluginState.activeResponseContexts.get(eventSessionId);
-    if (ctx && ctx.threadRootPostId) {
-      targetChannelId = ctx.streamCtx?.channelId || ctx.mmSession?.dmChannelId;
-      targetThreadId = ctx.threadRootPostId;
-      log.debug(`[QuestionHandler] Using active response context: channel=${targetChannelId}, thread=${targetThreadId}`);
+    // First try thread mapping (per-session thread mode)
+    const mapping = threadMappingStore?.getBySessionId(eventSessionId);
+    if (mapping && mapping.status === "active") {
+      targetChannelId = mapping.channelId || mapping.dmChannelId;
+      targetThreadId = mapping.threadRootPostId;
+      log.debug(`[QuestionHandler] Using thread mapping: channel=${targetChannelId}, thread=${targetThreadId}`);
+    } else {
+      // Fall back to active response context (main DM thread mode)
+      const ctx = PluginState.activeResponseContexts.get(eventSessionId);
+      if (ctx && ctx.threadRootPostId) {
+        targetChannelId = ctx.streamCtx?.channelId || ctx.mmSession?.dmChannelId;
+        targetThreadId = ctx.threadRootPostId;
+        log.debug(`[QuestionHandler] Using active response context: channel=${targetChannelId}, thread=${targetThreadId}`);
+      }
     }
   }
   
@@ -58,10 +68,11 @@ export async function handleQuestionAsked(event: any): Promise<void> {
     id: props.id,
     sessionID: eventSessionId,
     questions: props.questions,
+    intro: subagentInfo ? `❓ *Question from ${subagentInfo.agentType} subagent:*\n\n` : undefined,
   };
   
   try {
-    const ctx = PluginState.activeResponseContexts.get(eventSessionId);
+    const ctx = subagentInfo ? parentCtx : PluginState.activeResponseContexts.get(eventSessionId);
     if (ctx && streamer) {
       const oldContent = formatFullResponse(ctx);
       const newStreamCtx = await streamer.recreateStreamAtBottom(ctx.streamCtx, oldContent);

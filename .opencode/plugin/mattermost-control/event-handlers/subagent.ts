@@ -5,7 +5,7 @@
 import { PluginState } from "../state.js";
 import { createEmptyResponseContext } from "../types.js";
 import { formatElapsedTime } from "../formatters.js";
-import { startResponseTimer, stopActiveToolTimer, stopResponseTimer } from "../timers.js";
+import { startResponseTimer, stopActiveToolTimer, stopResponseTimer, updateResponseStream } from "../timers.js";
 import { log } from "../../../../src/logger.js";
 
 function normalizeAgentType(agentType?: string): string {
@@ -47,11 +47,6 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
     return;
   }
 
-  if (PluginState.subagentRegistry.has(childSessionId)) {
-    log.debug(`[Subagent] Already registered child ${childSessionId.substring(0, 8)}, skipping`);
-    return;
-  }
-
   const parentCtx = PluginState.activeResponseContexts.get(parentSessionId);
   const mmClient = PluginState.mmClient;
   if (!parentCtx || !mmClient) {
@@ -75,6 +70,55 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
 
   const channelId = parentCtx.streamCtx?.channelId || parentCtx.mmSession?.dmChannelId;
   if (!channelId) return;
+
+  const existingInfo = PluginState.subagentRegistry.get(childSessionId);
+  if (existingInfo?.replyPostId) {
+    if (existingInfo.status === "running") {
+      log.debug(`[Subagent] Child ${childSessionId.substring(0, 8)} already running — skipping`);
+      return;
+    }
+
+    let existingContent = existingInfo.agentHeader;
+    try {
+      const existingPost = await mmClient.getPost(existingInfo.replyPostId);
+      existingContent = existingPost.message || existingContent;
+    } catch (e) {
+      log.debug(`[Subagent] Failed to fetch existing reply post ${existingInfo.replyPostId}: ${e}`);
+    }
+
+    const resumedMessage = `${existingContent}\n\n--- **Resumed** ---\n\n${agentHeader}\n\n---\n\n💻 Starting...`;
+    await mmClient.updatePost(existingInfo.replyPostId, resumedMessage);
+
+    existingInfo.status = "running";
+    existingInfo.startTime = Date.now();
+    existingInfo.toolCount = 0;
+    existingInfo.agentType = agentType;
+    existingInfo.description = description;
+    existingInfo.modelId = modelId;
+    existingInfo.agentHeader = agentHeader;
+    existingInfo.threadRootPostId = threadRootPostId;
+    existingInfo.parentSessionId = parentSessionId;
+
+    const streamCtx = {
+      postId: existingInfo.replyPostId,
+      channelId,
+      threadRootPostId,
+      buffer: "",
+      lastUpdateTime: Date.now(),
+      totalChunks: 0,
+      isCancelled: false,
+      continuationPostIds: [],
+      currentPostContent: resumedMessage,
+    };
+
+    const childCtx = createEmptyResponseContext(childSessionId, parentCtx.mmSession, streamCtx, threadRootPostId, 0);
+    childCtx.agentName = agentType;
+    PluginState.activeResponseContexts.set(childSessionId, childCtx);
+    startResponseTimer(childSessionId);
+
+    log.info(`[Subagent] Resumed child session ${childSessionId.substring(0, 8)} for parent ${parentSessionId.substring(0, 8)}`);
+    return;
+  }
 
   log.info(`[Subagent] Creating reply post in channel=${channelId.substring(0, 8)}, rootPost=${threadRootPostId.substring(0, 8)}`);
   const replyPost = await mmClient.createPost(channelId, initialMessage, threadRootPostId);
@@ -144,6 +188,8 @@ export async function collapseSubagentOnIdle(childSessionId: string): Promise<vo
   await mmClient.updatePost(info.replyPostId, summary);
   info.status = "completed";
 
+  await updateResponseStream(info.parentSessionId);
+
   PluginState.activeResponseContexts.delete(childSessionId);
   stopActiveToolTimer(childSessionId);
   stopResponseTimer(childSessionId);
@@ -169,6 +215,8 @@ export async function handleTaskToolError(event: any): Promise<void> {
   log.info(`[Subagent] Error: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, error=${errorMessage || 'unknown'} — collapsing reply`);
   await mmClient.updatePost(info.replyPostId, summary);
   info.status = "error";
+
+  await updateResponseStream(info.parentSessionId);
 
   PluginState.activeResponseContexts.delete(childSessionId);
   stopActiveToolTimer(childSessionId);

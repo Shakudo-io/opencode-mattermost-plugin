@@ -1,4 +1,4 @@
-import { PluginState } from "./state.js";
+import { PluginState, getSubagentsForParent } from "./state.js";
 import { formatFullResponse } from "./formatters.js";
 import { log } from "../../../src/logger.js";
 
@@ -11,7 +11,18 @@ export async function updateResponseStream(sessionId: string): Promise<void> {
   if (!ctx) return;
 
   const subagentInfo = PluginState.subagentRegistry.get(sessionId);
-  const formattedOutput = formatFullResponse(ctx, log.info.bind(log));
+  let formattedOutput: string;
+  if (subagentInfo) {
+    formattedOutput = formatFullResponse(ctx, log.info.bind(log));
+  } else {
+    const subagents = getSubagentsForParent(sessionId);
+    formattedOutput = formatFullResponse(
+      ctx,
+      log.info.bind(log),
+      undefined,
+      subagents.length > 0 ? subagents : undefined
+    );
+  }
 
   if (subagentInfo) {
     const mmClient = PluginState.mmClient;

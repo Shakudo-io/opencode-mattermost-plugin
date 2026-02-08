@@ -1,4 +1,4 @@
-import type { ResponseContext, TodoItem, ActiveTool, CostInfo, EditDiff } from "./types.js";
+import type { ResponseContext, TodoItem, ActiveTool, CostInfo, EditDiff, SubagentInfo } from "./types.js";
 
 export const RESPONSE_UPDATE_INTERVAL_MS = 1000;
 
@@ -143,6 +143,28 @@ export function formatToolStatus(
   return parts.join(" | ");
 }
 
+export function formatSubagentStatus(subagents: SubagentInfo[]): string {
+  if (!subagents || subagents.length === 0) return "";
+
+  const runningCount = subagents.filter((entry) => entry.status === "running").length;
+  const doneCount = subagents.length - runningCount;
+
+  if (subagents.length > 4) {
+    return `🕵️ ${subagents.length} subagents (${runningCount} running, ${doneCount} done)`;
+  }
+
+  return subagents.map((entry) => {
+    if (entry.status === "completed") {
+      const elapsed = formatElapsedTime(Date.now() - entry.startTime);
+      return `✅ ${entry.agentType} (${elapsed})`;
+    }
+    if (entry.status === "error") {
+      return `❌ ${entry.agentType} (failed)`;
+    }
+    return `🕵️ ${entry.agentType} (${entry.toolCount} tools)`;
+  }).join(" | ");
+}
+
 export function formatShellOutput(
   shellOutput: string,
   bashCommand?: string,
@@ -238,7 +260,12 @@ export function formatTodoStatus(todos: TodoItem[]): string {
   return output;
 }
 
-export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string) => void, finalize?: boolean): string {
+export function formatFullResponse(
+  ctx: ResponseContext,
+  debugLog?: (msg: string) => void,
+  finalize?: boolean,
+  subagents?: SubagentInfo[]
+): string {
   if (debugLog) {
     debugLog(`[FormatDebug] activeTool: ${ctx.activeTool?.name || 'null'}, shellOutput: ${ctx.shellOutput?.length || 0}, lastBashOutput: ${ctx.lastBashOutput?.length || 0}, lastBashCommand: ${ctx.lastBashCommand?.substring(0, 30) || 'none'}, finalize: ${!!finalize}`);
   }
@@ -254,6 +281,7 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
     finalize
   );
   const todoStatus = formatTodoStatus(ctx.todos);
+  const subagentStatus = subagents && subagents.length > 0 ? formatSubagentStatus(subagents) : "";
   const thinkingPreview = ctx.thinkingBuffer.length > THINKING_LINE_LIMIT 
     ? ctx.thinkingBuffer.slice(-THINKING_LINE_LIMIT) + "..." 
     : ctx.thinkingBuffer;
@@ -262,6 +290,10 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
   
   if (toolStatus) {
     output += toolStatus + "\n\n";
+  }
+
+  if (subagentStatus) {
+    output += subagentStatus + "\n\n";
   }
   
   if (todoStatus) {
@@ -303,7 +335,7 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
   }
   
   if (ctx.responseBuffer) {
-    const needsSeparator = toolStatus || todoStatus || ctx.shellOutput;
+    const needsSeparator = toolStatus || subagentStatus || todoStatus || ctx.shellOutput;
     if (needsSeparator) {
       output += "---\n\n";
     }

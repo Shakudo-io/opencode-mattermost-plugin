@@ -2,7 +2,7 @@
  * Compaction event handler - handles session.compacted events
  */
 
-import { PluginState } from "../state.js";
+import { PluginState, getSubagentsForParent } from "../state.js";
 import { formatFullResponse } from "../formatters.js";
 import { log } from "../../../../src/logger.js";
 
@@ -35,7 +35,13 @@ export async function handleSessionCompacted(event: any): Promise<void> {
   log.info(`[Compaction] Set awaitingContinuation=true, inCompactionSummary=false for session ${eventSessionId.substring(0, 8)}`);
   
   try {
-    const oldContent = formatFullResponse(ctx, undefined, true);
+    const subagents = getSubagentsForParent(eventSessionId);
+    const oldContent = formatFullResponse(
+      ctx,
+      undefined,
+      true,
+      subagents.length > 0 ? subagents : undefined
+    );
     const newStreamCtx = await streamer.recreateStreamAtBottom(ctx.streamCtx, oldContent);
     ctx.streamCtx = newStreamCtx;
     log.debug(`[Compaction] Recreated stream at bottom, new postId=${newStreamCtx.postId}`);

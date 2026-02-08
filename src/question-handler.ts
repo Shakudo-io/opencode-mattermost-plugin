@@ -20,6 +20,7 @@ export interface QuestionRequest {
   id: string;
   sessionID: string;
   questions: QuestionInfo[];
+  intro?: string;
   tool?: {
     messageID: string;
     callID: string;
@@ -133,6 +134,10 @@ export class QuestionHandler {
     const totalQuestions = request.questions.length;
     
     let message = "";
+
+    if (request.intro) {
+      message += `${request.intro}`;
+    }
     
     if (totalQuestions > 1) {
       message += `### ❓ Question ${questionIndex + 1}/${totalQuestions}: ${q.header}\n\n`;
