@@ -41,21 +41,33 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
 
   const childSessionId = part.state?.metadata?.sessionId;
   const parentSessionId = part.sessionID || event.properties?.sessionID;
-  if (!childSessionId || !parentSessionId) return;
+  log.info(`[Subagent] handleTaskToolDetected: childSession=${childSessionId?.substring(0, 8) || 'NONE'}, parentSession=${parentSessionId?.substring(0, 8) || 'NONE'}, status=${part.state?.status}`);
+  if (!childSessionId || !parentSessionId) {
+    log.info(`[Subagent] Skipping — missing childSessionId or parentSessionId`);
+    return;
+  }
 
   if (PluginState.subagentRegistry.has(childSessionId)) {
+    log.debug(`[Subagent] Already registered child ${childSessionId.substring(0, 8)}, skipping`);
     return;
   }
 
   const parentCtx = PluginState.activeResponseContexts.get(parentSessionId);
   const mmClient = PluginState.mmClient;
-  if (!parentCtx || !mmClient) return;
+  if (!parentCtx || !mmClient) {
+    log.info(`[Subagent] Skipping — parentCtx=${!!parentCtx}, mmClient=${!!mmClient}`);
+    return;
+  }
 
   const threadRootPostId = parentCtx.threadRootPostId || parentCtx.streamCtx?.threadRootPostId;
-  if (!threadRootPostId) return;
+  if (!threadRootPostId) {
+    log.info(`[Subagent] Skipping — no threadRootPostId on parent context`);
+    return;
+  }
 
   const description = part.state?.input?.description?.trim() ?? "";
   const agentType = normalizeAgentType(part.state?.input?.subagent_type);
+  log.info(`[Subagent] Creating reply for: type=${agentType}, desc="${description.substring(0, 60)}", thread=${threadRootPostId.substring(0, 8)}`);
   const modelId = part.state?.metadata?.model || part.state?.metadata?.modelId;
 
   const agentHeader = buildAgentHeader(agentType, description, threadRootPostId, modelId);
@@ -64,7 +76,9 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
   const channelId = parentCtx.streamCtx?.channelId || parentCtx.mmSession?.dmChannelId;
   if (!channelId) return;
 
+  log.info(`[Subagent] Creating reply post in channel=${channelId.substring(0, 8)}, rootPost=${threadRootPostId.substring(0, 8)}`);
   const replyPost = await mmClient.createPost(channelId, initialMessage, threadRootPostId);
+  log.info(`[Subagent] Reply post created: ${replyPost.id.substring(0, 8)}`);
 
   PluginState.subagentRegistry.set(childSessionId, {
     childSessionId,
@@ -110,11 +124,15 @@ export async function handleTaskToolCompleted(event: any): Promise<void> {
 
   const info = PluginState.subagentRegistry.get(childSessionId);
   const mmClient = PluginState.mmClient;
-  if (!info || !mmClient) return;
+  if (!info || !mmClient) {
+    log.debug(`[Subagent] Completed but no registry entry for child ${childSessionId.substring(0, 8)}`);
+    return;
+  }
 
   const elapsed = formatElapsedTime(Date.now() - info.startTime);
   const summary = `✅ ${formatTaskLabel(info.agentType, info.description)} (${elapsed}, ${info.toolCount} tools)`;
 
+  log.info(`[Subagent] Completed: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, ${elapsed}, ${info.toolCount} tools — collapsing reply ${info.replyPostId.substring(0, 8)}`);
   await mmClient.updatePost(info.replyPostId, summary);
   info.status = "completed";
 
@@ -140,6 +158,7 @@ export async function handleTaskToolError(event: any): Promise<void> {
     ? `❌ ${formatTaskLabel(info.agentType, info.description)} (failed: ${errorMessage})`
     : `❌ ${formatTaskLabel(info.agentType, info.description)} (failed)`;
 
+  log.info(`[Subagent] Error: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, error=${errorMessage || 'unknown'} — collapsing reply`);
   await mmClient.updatePost(info.replyPostId, summary);
   info.status = "error";
 
@@ -156,6 +175,7 @@ export async function cleanupSubagentsForParent(parentSessionId: string): Promis
     (entry) => entry.parentSessionId === parentSessionId
   );
 
+  log.info(`[Subagent] Cleanup: parent=${parentSessionId.substring(0, 8)}, ${entries.length} child subagents to clean up`);
   for (const entry of entries) {
     const summary = `❌ ${formatTaskLabel(entry.agentType, entry.description)} (cancelled)`;
     try {

@@ -80,6 +80,7 @@ export async function handleToolExecuteAfter(input: any): Promise<void> {
       const subagentInfo = PluginState.subagentRegistry.get(toolSessionId);
       if (subagentInfo) {
         subagentInfo.toolCount += 1;
+        log.debug(`[Subagent] Tool completed for child ${toolSessionId.substring(0, 8)}: ${ctx.activeTool.name} (total: ${subagentInfo.toolCount})`);
       }
       ctx.toolCalls.push(ctx.activeTool.name);
       if (ctx.activeTool.name === "bash") {

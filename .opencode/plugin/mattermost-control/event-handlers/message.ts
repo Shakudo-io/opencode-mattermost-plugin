@@ -69,6 +69,7 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
 
   if (part?.type === "tool" && part?.tool === "task") {
     const status = part?.state?.status;
+    log.info(`[Subagent] task tool part: session=${sessionId?.substring(0, 8)}, status=${status}, metadata.sessionId=${part?.state?.metadata?.sessionId?.substring(0, 8) || 'NONE'}`);
     if (status === "running") {
       await handleTaskToolDetected(event);
     } else if (status === "completed") {
@@ -77,6 +78,11 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
       await handleTaskToolError(event);
     }
     return;
+  }
+
+  const subagentInfo = PluginState.subagentRegistry.get(sessionId);
+  if (subagentInfo) {
+    log.debug(`[Subagent] Routing part event to child ${sessionId.substring(0, 8)} (type=${part?.type}, delta=${delta?.length ?? 'null'})`);
   }
   
   // Skip streaming updates for scheduled task sessions
