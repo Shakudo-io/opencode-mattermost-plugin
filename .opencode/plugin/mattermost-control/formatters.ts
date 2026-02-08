@@ -98,7 +98,8 @@ export function formatToolStatus(
     if (agentName) {
       const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
       parts.push(`🤖 **${title}**`);
-    } else if (responseStartTime) {
+    }
+    if (responseStartTime) {
       const elapsed = formatElapsedTime(Date.now() - responseStartTime);
       parts.push(`💻 Processing (${elapsed})`);
     }
