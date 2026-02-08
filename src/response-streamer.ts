@@ -217,11 +217,18 @@ export class ResponseStreamer {
         await this.mmClient.deletePost(ctx.postId);
       }
       
+      // Update continuation posts to minimal content instead of deleting
+      // to avoid Mattermost's (message deleted) soft-delete stubs
       for (const contPostId of ctx.continuationPostIds) {
         try {
-          await this.mmClient.deletePost(contPostId);
+          await this.mmClient.updatePost(contPostId, "⬆️ *(see above)*");
         } catch (e) {
-          log.debug(`[ResponseStreamer] Could not delete continuation post ${contPostId}`);
+          log.debug(`[ResponseStreamer] Could not update continuation post ${contPostId}, attempting delete`);
+          try {
+            await this.mmClient.deletePost(contPostId);
+          } catch (e2) {
+            log.debug(`[ResponseStreamer] Could not delete continuation post ${contPostId}`);
+          }
         }
       }
     } catch (error) {

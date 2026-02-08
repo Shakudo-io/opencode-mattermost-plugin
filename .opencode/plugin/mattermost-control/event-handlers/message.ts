@@ -75,6 +75,11 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
   const ctx = PluginState.activeResponseContexts.get(sessionId);
   if (!ctx) return;
   
+  // Log all incoming part types for debugging reasoning visibility
+  if (part?.type) {
+    log.debug(`[PartDebug] session=${sessionId?.substring(0,8)} part.type=${part.type} delta=${delta?.length ?? 'null'} thinkingBuffer=${ctx.thinkingBuffer.length}`);
+  }
+  
   let shouldUpdate = false;
   
   if (part?.type === "text" && delta) {
@@ -91,7 +96,7 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
     ctx.responseBuffer += delta;
     ctx.textPartCount = (ctx.textPartCount || 0) + 1;
     shouldUpdate = true;
-  } else if (part?.type === "reasoning" && delta) {
+  } else if (part?.type === "reasoning" && delta != null) {
     // Skip compaction summary reasoning
     if (ctx.inCompactionSummary) {
       log.debug(`[Compaction] Suppressing compaction summary reasoning for session ${sessionId.substring(0, 8)}`);
@@ -101,9 +106,10 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
       log.info(`[Compaction] Continuation reasoning received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
       ctx.awaitingContinuation = false;
     }
-    ctx.thinkingBuffer += delta;
+    if (delta) ctx.thinkingBuffer += delta;
     ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
     shouldUpdate = true;
+    log.info(`[Reasoning] Captured reasoning delta (${delta?.length || 0} chars), total buffer: ${ctx.thinkingBuffer.length} chars`);
   } else if (part?.type === "tool" && part?.tool === "bash") {
     const status = part?.state?.status;
     const shellOutput = part.state.metadata?.output || part.state?.output || part.output;

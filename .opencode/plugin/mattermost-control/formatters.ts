@@ -79,22 +79,29 @@ export function formatToolStatus(
   cost?: CostInfo,
   responseStartTime?: number,
   awaitingContinuation?: boolean,
-  agentName?: string
+  agentName?: string,
+  finalize?: boolean
 ): string {
   const parts: string[] = [];
   
-  if (agentName) {
-    // Title case the agent name (e.g. "build" -> "Build")
-    const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
-    parts.push(`🤖 **${title}**`);
-  } else if (responseStartTime) {
-    // Only show "Processing" if we don't have an agent name, to save space
-    // or we can show both. Let's show both but keep it compact.
-    const elapsed = formatElapsedTime(Date.now() - responseStartTime);
-    parts.push(`💻 Processing (${elapsed})`);
-  } else if (responseStartTime) {
-     const elapsed = formatElapsedTime(Date.now() - responseStartTime);
-     parts.push(`(${elapsed})`);
+  if (finalize) {
+    // Finalized mode: static snapshot with no dynamic timers
+    if (agentName) {
+      const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+      parts.push(`🤖 **${title}**`);
+    }
+    if (responseStartTime) {
+      const elapsed = formatElapsedTime(Date.now() - responseStartTime);
+      parts.push(`✅ Completed (${elapsed})`);
+    }
+  } else {
+    if (agentName) {
+      const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+      parts.push(`🤖 **${title}**`);
+    } else if (responseStartTime) {
+      const elapsed = formatElapsedTime(Date.now() - responseStartTime);
+      parts.push(`💻 Processing (${elapsed})`);
+    }
   }
   
   if (toolCalls.length > 0) {
@@ -113,7 +120,8 @@ export function formatToolStatus(
     parts.push(compactionCount > 1 ? `📦 Compacted ×${compactionCount}` : `📦 Compacted`);
   }
   
-  if (awaitingContinuation) {
+  // Don't show "Continuing..." in finalized mode
+  if (awaitingContinuation && !finalize) {
     parts.push(`⏳ Continuing...`);
   }
   
@@ -121,7 +129,8 @@ export function formatToolStatus(
     parts.push(formatCostStatus(cost));
   }
   
-  if (activeTool) {
+  // Don't show active tool timer in finalized mode
+  if (activeTool && !finalize) {
     const elapsed = formatElapsedTime(Date.now() - activeTool.startTime);
     parts.push(`🔧 \`${activeTool.name}\` (${elapsed})...`);
   }
@@ -224,9 +233,9 @@ export function formatTodoStatus(todos: TodoItem[]): string {
   return output;
 }
 
-export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string) => void): string {
+export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string) => void, finalize?: boolean): string {
   if (debugLog) {
-    debugLog(`[FormatDebug] activeTool: ${ctx.activeTool?.name || 'null'}, shellOutput: ${ctx.shellOutput?.length || 0}, lastBashOutput: ${ctx.lastBashOutput?.length || 0}, lastBashCommand: ${ctx.lastBashCommand?.substring(0, 30) || 'none'}`);
+    debugLog(`[FormatDebug] activeTool: ${ctx.activeTool?.name || 'null'}, shellOutput: ${ctx.shellOutput?.length || 0}, lastBashOutput: ${ctx.lastBashOutput?.length || 0}, lastBashCommand: ${ctx.lastBashCommand?.substring(0, 30) || 'none'}, finalize: ${!!finalize}`);
   }
   
   const toolStatus = formatToolStatus(
@@ -236,7 +245,8 @@ export function formatFullResponse(ctx: ResponseContext, debugLog?: (msg: string
     ctx.cost,
     ctx.responseStartTime,
     ctx.awaitingContinuation,
-    ctx.agentName
+    ctx.agentName,
+    finalize
   );
   const todoStatus = formatTodoStatus(ctx.todos);
   const thinkingPreview = ctx.thinkingBuffer.length > THINKING_LINE_LIMIT 
