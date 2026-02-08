@@ -106,6 +106,8 @@ export interface ResponseContext {
   completedBashOutputs: Array<{ command: string; output: string }>;
   /** Name of the active agent (e.g. "Build", "Plan") */
   agentName?: string;
+  /** Model ID for the active session (e.g. "claude-opus-4-6") */
+  modelId?: string;
 }
 
 /**
@@ -146,5 +148,6 @@ export function createEmptyResponseContext(
     lastBashCommand: undefined,
     completedBashOutputs: [],
     agentName: undefined,
+    modelId: undefined,
   };
 }

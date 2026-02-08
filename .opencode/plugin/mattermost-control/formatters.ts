@@ -84,6 +84,7 @@ export function formatToolStatus(
   responseStartTime?: number,
   awaitingContinuation?: boolean,
   agentName?: string,
+  modelId?: string,
   finalize?: boolean
 ): string {
   const parts: string[] = [];
@@ -98,6 +99,9 @@ export function formatToolStatus(
       const elapsed = formatElapsedTime(Date.now() - responseStartTime);
       parts.push(`✅ Completed (${elapsed})`);
     }
+    if (modelId) {
+      parts.push(`🧠 ${modelId}`);
+    }
   } else {
     if (agentName) {
       const title = agentName.charAt(0).toUpperCase() + agentName.slice(1);
@@ -106,6 +110,9 @@ export function formatToolStatus(
     if (responseStartTime) {
       const elapsed = formatElapsedTime(Date.now() - responseStartTime);
       parts.push(`💻 Processing (${elapsed})`);
+    }
+    if (modelId) {
+      parts.push(`🧠 ${modelId}`);
     }
   }
   
@@ -278,6 +285,7 @@ export function formatFullResponse(
     ctx.responseStartTime,
     ctx.awaitingContinuation,
     ctx.agentName,
+    ctx.modelId,
     finalize
   );
   const todoStatus = formatTodoStatus(ctx.todos);

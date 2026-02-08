@@ -64,7 +64,8 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
   const description = part.state?.input?.description?.trim() ?? "";
   const agentType = normalizeAgentType(part.state?.input?.subagent_type);
   log.info(`[Subagent] Creating reply for: type=${agentType}, desc="${description.substring(0, 60)}", thread=${threadRootPostId.substring(0, 8)}`);
-  const modelId = part.state?.metadata?.model || part.state?.metadata?.modelId;
+  const rawModelId = part.state?.metadata?.model || part.state?.metadata?.modelId;
+  const modelId = typeof rawModelId === "object" && rawModelId ? rawModelId.modelID : rawModelId;
 
   const agentHeader = buildAgentHeader(agentType, description, threadRootPostId, modelId);
   const initialMessage = `${agentHeader}\n\n---\n\n💻 Starting...`;
@@ -114,6 +115,9 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
 
     const childCtx = createEmptyResponseContext(childSessionId, parentCtx.mmSession, streamCtx, threadRootPostId, 0);
     childCtx.agentName = agentType;
+    if (modelId) {
+      childCtx.modelId = modelId;
+    }
     PluginState.activeResponseContexts.set(childSessionId, childCtx);
     startResponseTimer(childSessionId);
 
@@ -153,6 +157,9 @@ export async function handleTaskToolDetected(event: any): Promise<void> {
 
   const childCtx = createEmptyResponseContext(childSessionId, parentCtx.mmSession, streamCtx, threadRootPostId, 0);
   childCtx.agentName = agentType;
+  if (modelId) {
+    childCtx.modelId = modelId;
+  }
   PluginState.activeResponseContexts.set(childSessionId, childCtx);
   startResponseTimer(childSessionId);
 

@@ -33,6 +33,10 @@ export async function handleMessageUpdated(event: any): Promise<void> {
   if (msgInfo.agent) {
     ctx.agentName = msgInfo.agent;
   }
+
+  if (msgInfo.modelID) {
+    ctx.modelId = msgInfo.modelID;
+  }
   
   // Detect compaction summary messages
   if (msgInfo.agent === "compaction" || msgInfo.summary === true) {
