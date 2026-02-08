@@ -34,9 +34,13 @@ export async function handleMessageUpdated(event: any): Promise<void> {
     ctx.agentName = msgInfo.agent;
   }
 
-  if (msgInfo.modelID) {
-    ctx.modelId = msgInfo.modelID;
-  }
+   const modelID = msgInfo.modelID || msgInfo.model?.modelID;
+   if (modelID) {
+     ctx.modelId = modelID;
+     log.debug(`[Model] Captured modelID=${modelID} for session ${targetSessionId.substring(0, 8)}`);
+   } else if (msgInfo.role === "assistant" && !ctx.modelId) {
+     log.debug(`[Model] No modelID on assistant msg for ${targetSessionId.substring(0, 8)}, keys: ${Object.keys(msgInfo).join(',')}`);
+   }
   
   // Detect compaction summary messages
   if (msgInfo.agent === "compaction" || msgInfo.summary === true) {
