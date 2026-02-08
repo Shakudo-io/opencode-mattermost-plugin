@@ -2,7 +2,7 @@ import { PluginState } from "../state.js";
 import { formatFullResponse } from "../formatters.js";
 import { stopActiveToolTimer, stopResponseTimer } from "../timers.js";
 import { handleMonitorAlert } from "../../../../src/monitor-service.js";
-import { cleanupSubagentsForParent } from "./subagent.js";
+import { cleanupSubagentsForParent, collapseSubagentOnIdle } from "./subagent.js";
 import { log } from "../../../../src/logger.js";
 
 function isScheduledTaskSession(sessionId: string): boolean {
@@ -32,6 +32,13 @@ export async function handleSessionIdle(event: any): Promise<void> {
     return;
   }
   
+  const subagentInfo = PluginState.subagentRegistry.get(eventSessionId);
+  if (subagentInfo) {
+    log.info(`[Subagent] Child session ${eventSessionId.substring(0, 8)} went idle — collapsing reply`);
+    await collapseSubagentOnIdle(eventSessionId);
+    return;
+  }
+
   const ctx = PluginState.activeResponseContexts.get(eventSessionId);
   if (!ctx) return;
 

@@ -123,16 +123,24 @@ export async function handleTaskToolCompleted(event: any): Promise<void> {
   if (!childSessionId) return;
 
   const info = PluginState.subagentRegistry.get(childSessionId);
-  const mmClient = PluginState.mmClient;
-  if (!info || !mmClient) {
-    log.debug(`[Subagent] Completed but no registry entry for child ${childSessionId.substring(0, 8)}`);
+  if (!info) {
+    log.debug(`[Subagent] Parent task tool completed but no registry entry for child ${childSessionId.substring(0, 8)}`);
     return;
   }
+
+  log.info(`[Subagent] Parent task tool completed for child ${childSessionId.substring(0, 8)} — NOT collapsing yet (waiting for child session.idle)`);
+}
+
+export async function collapseSubagentOnIdle(childSessionId: string): Promise<void> {
+  const info = PluginState.subagentRegistry.get(childSessionId);
+  const mmClient = PluginState.mmClient;
+  if (!info || !mmClient) return;
+  if (info.status !== "running") return;
 
   const elapsed = formatElapsedTime(Date.now() - info.startTime);
   const summary = `✅ ${formatTaskLabel(info.agentType, info.description)} (${elapsed}, ${info.toolCount} tools)`;
 
-  log.info(`[Subagent] Completed: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, ${elapsed}, ${info.toolCount} tools — collapsing reply ${info.replyPostId.substring(0, 8)}`);
+  log.info(`[Subagent] Child idle — collapsing: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, ${elapsed}, ${info.toolCount} tools`);
   await mmClient.updatePost(info.replyPostId, summary);
   info.status = "completed";
 

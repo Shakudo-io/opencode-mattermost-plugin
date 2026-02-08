@@ -16,5 +16,6 @@ export {
   handleTaskToolDetected,
   handleTaskToolCompleted,
   handleTaskToolError,
+  collapseSubagentOnIdle,
   cleanupSubagentsForParent,
 } from "./subagent.js";
