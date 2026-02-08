@@ -67,6 +67,9 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
   
   if (!sessionId) return;
 
+  if (part?.type === "tool") {
+    log.debug(`[Subagent] Tool part seen: session=${sessionId?.substring(0, 8)}, tool=${part?.tool}, status=${part?.state?.status}, keys=${Object.keys(part?.state || {}).join(',')}`);
+  }
   if (part?.type === "tool" && part?.tool === "task") {
     const status = part?.state?.status;
     log.info(`[Subagent] task tool part: session=${sessionId?.substring(0, 8)}, status=${status}, metadata.sessionId=${part?.state?.metadata?.sessionId?.substring(0, 8) || 'NONE'}`);
