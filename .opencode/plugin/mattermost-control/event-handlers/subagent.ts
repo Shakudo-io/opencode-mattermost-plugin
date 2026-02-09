@@ -242,11 +242,15 @@ export async function cleanupSubagentsForParent(parentSessionId: string): Promis
 
   log.info(`[Subagent] Cleanup: parent=${parentSessionId.substring(0, 8)}, ${entries.length} child subagents to clean up`);
   for (const entry of entries) {
-    const summary = `❌ ${formatTaskLabel(entry.agentType, entry.description)} (cancelled)`;
-    try {
-      await mmClient.updatePost(entry.replyPostId, summary);
-    } catch (e) {
-      log.debug(`[Subagent] Failed to collapse reply ${entry.replyPostId}: ${e}`);
+    if (entry.status === "running") {
+      const summary = `❌ ${formatTaskLabel(entry.agentType, entry.description)} (cancelled)`;
+      try {
+        await mmClient.updatePost(entry.replyPostId, summary);
+      } catch (e) {
+        log.debug(`[Subagent] Failed to collapse reply ${entry.replyPostId}: ${e}`);
+      }
+    } else {
+      log.debug(`[Subagent] Cleanup: skipping ${entry.childSessionId.substring(0, 8)} (already ${entry.status})`);
     }
     PluginState.activeResponseContexts.delete(entry.childSessionId);
     stopActiveToolTimer(entry.childSessionId);
