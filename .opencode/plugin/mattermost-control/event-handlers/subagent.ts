@@ -190,8 +190,13 @@ export async function collapseSubagentOnIdle(childSessionId: string): Promise<vo
   if (!info || !mmClient) return;
   if (info.status !== "running") return;
 
+  // Get child context before deleting it
+  const childCtx = PluginState.activeResponseContexts.get(childSessionId);
+
   const elapsed = formatElapsedTime(Date.now() - info.startTime);
-  const summary = `✅ ${formatTaskLabel(info.agentType, info.description)} (${elapsed}, ${info.toolCount} tools)`;
+  const costPart = childCtx?.cost?.currentMessage ? ` | 💰 $${childCtx.cost.currentMessage.toFixed(2)}` : "";
+  const modelPart = info.modelId ? ` | 🧠 ${info.modelId}` : (childCtx?.modelId ? ` | 🧠 ${childCtx.modelId}` : "");
+  const summary = `✅ ${formatTaskLabel(info.agentType, info.description)} (${elapsed}, ${info.toolCount} tools)${costPart}${modelPart}`;
 
   log.info(`[Subagent] Child idle — collapsing: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, ${elapsed}, ${info.toolCount} tools`);
   await mmClient.updatePost(info.replyPostId, summary);
@@ -216,10 +221,15 @@ export async function handleTaskToolError(event: any): Promise<void> {
   const mmClient = PluginState.mmClient;
   if (!info || !mmClient) return;
 
+  // Get child context before deleting it
+  const childCtx = PluginState.activeResponseContexts.get(childSessionId);
+
   const errorMessage = part.state?.error || part.state?.metadata?.error;
+  const costPart = childCtx?.cost?.currentMessage ? ` | 💰 $${childCtx.cost.currentMessage.toFixed(2)}` : "";
+  const modelPart = info.modelId ? ` | 🧠 ${info.modelId}` : (childCtx?.modelId ? ` | 🧠 ${childCtx.modelId}` : "");
   const summary = errorMessage
-    ? `❌ ${formatTaskLabel(info.agentType, info.description)} (failed: ${errorMessage})`
-    : `❌ ${formatTaskLabel(info.agentType, info.description)} (failed)`;
+    ? `❌ ${formatTaskLabel(info.agentType, info.description)} (failed: ${errorMessage})${costPart}${modelPart}`
+    : `❌ ${formatTaskLabel(info.agentType, info.description)} (failed)${costPart}${modelPart}`;
 
   log.info(`[Subagent] Error: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, error=${errorMessage || 'unknown'} — collapsing reply`);
   await mmClient.updatePost(info.replyPostId, summary);
