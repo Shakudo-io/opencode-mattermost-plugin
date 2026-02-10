@@ -9,7 +9,7 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ## Release Notes
 
-### v0.3.95 — Teammate Delegated Sessions (New Feature)
+### v0.3.94 — Teammate Delegated Sessions (New Feature)
 
 **Teammates can now summon the session owner's Kaji on their behalf.**
 

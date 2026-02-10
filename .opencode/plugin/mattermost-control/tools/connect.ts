@@ -530,14 +530,8 @@ function setupWebSocketListeners(
           }
           
           // Non-owner mentioned bot - only allow delegated session creation
-          // They MUST be a team member AND mention the session owner
-          // e.g., "@kaji @christine fix this"
+          // They MUST also mention the session owner (e.g., "@kaji @christine fix this")
           // Just mentioning @kaji alone does nothing for non-owners
-          if (!isTeamMember) {
-            log.debug(`[Channel] Non-team-member @mentioned bot in unmapped thread - ignoring (channel: ${channel.id})`);
-            return;
-          }
-          
           if (ownerUserId && botUser) {
             const mentionedUsers = sessionOwnershipHandler.detectMentionedUsers(
               postData.message,
