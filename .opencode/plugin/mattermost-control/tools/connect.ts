@@ -509,8 +509,23 @@ function setupWebSocketListeners(
           
           const ownerUserId = config.mattermost.ownerUserId;
           
+          // Parse @mentions (excluding the bot) for all paths
+          const otherMentions = botUser ? sessionOwnershipHandler.detectMentionedUsers(
+            postData.message,
+            botUser.username,
+            botUser.id,
+            postData.user_id
+          ) : [];
+          
           if (isOwner) {
-            // Owner herself @mentioned bot - standard ownership confirmation flow
+            // Owner @mentioned bot. But did they also mention someone else?
+            // If so, this is meant for that other person's Kaji — stay silent.
+            if (otherMentions.length > 0) {
+              log.debug(`[Channel] Owner @mentioned bot AND other users (${otherMentions.join(', ')}) - staying silent for other owner's Kaji to handle`);
+              return;
+            }
+            
+            // Owner mentioned only @kaji - standard ownership confirmation flow
             let userUsername = "unknown";
             try {
               const user = await mmClient.getUserById(postData.user_id);
@@ -530,24 +545,23 @@ function setupWebSocketListeners(
           }
           
           // Non-owner mentioned bot - only allow delegated session creation
-          // They MUST also mention the session owner (e.g., "@kaji @christine fix this")
+          // They MUST be a team member AND mention the session owner
+          // e.g., "@kaji @christine fix this"
           // Just mentioning @kaji alone does nothing for non-owners
+          if (!isTeamMember) {
+            log.debug(`[Channel] Non-team-member @mentioned bot in unmapped thread - ignoring (channel: ${channel.id})`);
+            return;
+          }
+          
           if (ownerUserId && botUser) {
-            const mentionedUsers = sessionOwnershipHandler.detectMentionedUsers(
-              postData.message,
-              botUser.username,
-              botUser.id,
-              postData.user_id
-            );
-            
             // Check if the owner was @mentioned
             let ownerMentioned = false;
             let ownerUsername = "unknown";
-            if (mentionedUsers.length > 0) {
+            if (otherMentions.length > 0) {
               try {
                 const ownerUser = await mmClient.getUserById(ownerUserId);
                 ownerUsername = ownerUser.username;
-                ownerMentioned = mentionedUsers.some(
+                ownerMentioned = otherMentions.some(
                   m => m.toLowerCase() === ownerUsername.toLowerCase()
                 );
               } catch (e) {
@@ -556,8 +570,8 @@ function setupWebSocketListeners(
             }
             
             if (!ownerMentioned) {
-              // Non-owner mentioned only @kaji without the owner - silently ignore
-              log.debug(`[Channel] Non-owner @mentioned bot without owner - ignoring (channel: ${channel.id})`);
+              // Team member mentioned @kaji without the owner - silently ignore
+              log.debug(`[Channel] Team member @mentioned bot without owner - ignoring (channel: ${channel.id})`);
               return;
             }
             
@@ -581,7 +595,7 @@ function setupWebSocketListeners(
               log.warn(`[Delegation] Could not fetch initiator username: ${e}`);
             }
             
-            log.info(`[Delegation] @${initiatorUsername} mentioned both bot and owner @${ownerUsername} - creating delegated session`);
+            log.info(`[Delegation] Team member @${initiatorUsername} mentioned both bot and owner @${ownerUsername} - creating delegated session`);
             
             // Set delegation flags on the post for handleUserMessage to process
             const delegatedPost = { ...postData } as any;
