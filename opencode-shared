@@ -525,10 +525,18 @@ fix_failed_mcps() {
 # =============================================================================
 
 main() {
+    local no_attach=false
+    
     # Handle supervisor mode
     if [[ "${1:-}" == "--supervise" ]]; then
         supervise
         exit 0
+    fi
+    
+    # Parse flags
+    if [[ "${1:-}" == "--no-attach" ]]; then
+        no_attach=true
+        shift
     fi
     
     # Normal launcher mode
@@ -563,10 +571,13 @@ main() {
         log_info "[mcp-fix] Attached to existing server — checking MCP status..."
         fix_failed_mcps
     fi
-    log_info "[mcp-fix] MCP fix complete, launching TUI..."
-    
-    # Attach to the server, passing through any additional arguments
-    exec opencode attach "$SERVER_URL" "$@"
+    if [[ "$no_attach" == "true" ]]; then
+        log_info "[mcp-fix] MCP fix complete (--no-attach: skipping TUI)"
+    else
+        log_info "[mcp-fix] MCP fix complete, launching TUI..."
+        # Attach to the server, passing through any additional arguments
+        exec opencode attach "$SERVER_URL" "$@"
+    fi
 }
 
 main "$@"
