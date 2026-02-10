@@ -9,50 +9,16 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ## Release Notes
 
-### v0.3.94 — Teammate Delegated Sessions (New Feature)
+### v0.3.95 — Delegation Access Control
 
-**Teammates can now summon the session owner's Kaji on their behalf.**
+- **Team membership required**: Only teammates (added via `!team add`) can initiate delegated sessions. Non-team-members who tag `@kaji @owner` are silently ignored.
+- **Owner dual-mention passthrough**: When the owner tags `@kaji @another_user`, the owner's Kaji stays silent so the other user's Kaji can handle it. The owner's Kaji only responds when the owner tags `@kaji` alone.
 
-#### Setup
+### v0.3.94 — Teammate Delegated Sessions
 
-The session owner adds teammates via DM with Kaji:
-
-```
-!team add @bonnie
-!team add @yiran
-!team list
-```
-
-#### How It Works
-
-In any channel where **Kaji, the owner, and the teammate** are all members, the teammate tags both:
-
-```
-@kaji @christine please fix the login bug on line 42
-```
-
-This creates a session **owned by @christine**, using her Kaji instance. The teammate is auto-approved and can keep sending prompts and approve others to collaborate in the thread.
-
-#### Rules
-
-| Scenario | Result |
-|----------|--------|
-| Teammate tags `@kaji @owner` in a shared channel | Session created under owner's Kaji |
-| Teammate tags only `@kaji` (without owner) | Owner's Kaji stays silent; teammate's own Kaji may respond |
-| Teammate tags `@kaji @owner` in a channel the owner isn't in | Nothing happens |
-| Non-teammate tags `@kaji @owner` | Owner's Kaji does not respond |
-| Owner tags `@kaji` directly | Standard session creation flow (unchanged) |
-
-#### What the session announcement looks like
-
-```
-:rocket: OpenCode Session Started
-
-Owner: @christine
-Started by: @bonnie
-Project: my-project
-Session: a1b2c3d4
-```
+- **New feature**: Teammates can start sessions on behalf of the session owner by tagging both `@kaji` and the owner in a shared channel.
+- **Channel membership check**: Delegation only works in channels where the owner is a member.
+- **Auto-approval**: The initiating teammate is auto-approved to continue sending prompts.
 
 ---
 
@@ -242,6 +208,7 @@ Users can send these commands via DM to manage sessions:
 - `!current` - Show currently selected session
 - `!models` - List available models and select one for the current session
 - `!model` - Show the currently selected model for this session
+- `!team` - Show team status; `!team add @user` / `!team remove @user` / `!team list`
 - `!help` - Show available commands
 
 ---
@@ -557,6 +524,10 @@ When connected, you can manage multiple OpenCode sessions via DM commands:
 | `!stop` | Cancel the current processing operation |
 | `!merge <url>` | Merge another thread's conversation into the current session |
 | `!reject` | Skip/cancel a pending AI question |
+| `!team` | Show team status and settings |
+| `!team add @user` | Add a teammate (can bypass guest approval, initiate delegation) |
+| `!team remove @user` | Remove a teammate |
+| `!team list` | List all current teammates |
 | `!help` | Display available commands and thread workflow |
 
 **Example:**
@@ -808,6 +779,71 @@ Bot: [Processes Bob's request about security issues]
 Bob: @opencode-bot what about performance?
 Bot: [Processes automatically - Bob is pre-approved]
 ```
+
+### Team Management
+
+Manage who can interact with your Kaji instance using the `!team` commands in a DM with Kaji:
+
+| Command | Description |
+|---------|-------------|
+| `!team add @username` | Add a teammate |
+| `!team remove @username` | Remove a teammate |
+| `!team list` | List all current teammates |
+| `!team` | Show team status and settings |
+
+**Access tiers:**
+
+| Tier | Who | Can do |
+|------|-----|--------|
+| **Owner** | Set via `MATTERMOST_OWNER_USER_ID` | Full access — create sessions, manage team, approve guests |
+| **Team members** | Added via `!team add` | Bypass guest approval, initiate delegated sessions, approve guests in threads |
+| **Everyone else** | Anyone not above | Need per-session approval from owner or team member to use a session |
+
+**Example:**
+```
+You: !team add @bonnie
+Bot: ✅ @bonnie added to your team.
+
+You: !team add @yiran
+Bot: ✅ @yiran added to your team.
+
+You: !team list
+Bot: 👥 Team Members (2)
+     1. @bonnie
+     2. @yiran
+```
+
+### Teammate Delegation
+
+Teammates can start sessions on behalf of the owner by tagging **both Kaji and the owner** in a channel where all three are members.
+
+**Usage:**
+```
+@kaji @christine please fix the login bug on line 42
+```
+
+This creates a session **owned by @christine**, using her Kaji instance. The teammate is auto-approved and can keep sending prompts and approve others to collaborate in the thread.
+
+**Session announcement:**
+```
+🚀 OpenCode Session Started
+
+Owner: @christine
+Started by: @bonnie
+Project: my-project
+Session: a1b2c3d4
+```
+
+**How each scenario is handled:**
+
+| Who | Message | Result |
+|-----|---------|--------|
+| Team member | `@kaji @owner` in shared channel | Delegated session created under owner's Kaji |
+| Team member | `@kaji` only (without owner) | Owner's Kaji stays silent; teammate's own Kaji may respond |
+| Non-team-member | `@kaji @owner` | Owner's Kaji does not respond |
+| Owner | `@kaji` only | Standard session creation (ownership confirmation) |
+| Owner | `@kaji @another_user` | Owner's Kaji stays silent; other user's Kaji handles it |
+| Anyone | `@kaji @owner` in channel owner isn't in | Nothing happens |
 
 ### Multi-User Setup (Shared Bot)
 
