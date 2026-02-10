@@ -502,12 +502,15 @@ function setupWebSocketListeners(
         const mapping = threadMappingStore?.getByThreadRootPostId(threadRootId);
         
         if (!mapping) {
-          // No existing session - only owner can create new sessions
+          // No existing session in this thread
+          const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
+          const mmClient = PluginState.mmClient;
+          if (!mmClient || !sessionOwnershipHandler) return;
+          
+          const ownerUserId = config.mattermost.ownerUserId;
+          
           if (isOwner) {
-            const sessionOwnershipHandler = PluginState.sessionOwnershipHandler;
-            const mmClient = PluginState.mmClient;
-            if (!mmClient || !sessionOwnershipHandler) return;
-            
+            // Owner herself @mentioned bot - standard ownership confirmation flow
             let userUsername = "unknown";
             try {
               const user = await mmClient.getUserById(postData.user_id);
@@ -524,12 +527,78 @@ function setupWebSocketListeners(
               channel.id
             );
             return;
-          } else {
-            // Team members and guests cannot create sessions - silently ignore
-            // (their own OpenCode instance may handle it)
-            log.debug(`[Channel] Non-owner @mention in unmapped thread - ignoring to allow other bots to handle (channel: ${channel.id})`);
+          }
+          
+          // Non-owner mentioned bot - only allow delegated session creation
+          // They MUST also mention the session owner (e.g., "@kaji @christine fix this")
+          // Just mentioning @kaji alone does nothing for non-owners
+          if (ownerUserId && botUser) {
+            const mentionedUsers = sessionOwnershipHandler.detectMentionedUsers(
+              postData.message,
+              botUser.username,
+              botUser.id,
+              postData.user_id
+            );
+            
+            // Check if the owner was @mentioned
+            let ownerMentioned = false;
+            let ownerUsername = "unknown";
+            if (mentionedUsers.length > 0) {
+              try {
+                const ownerUser = await mmClient.getUserById(ownerUserId);
+                ownerUsername = ownerUser.username;
+                ownerMentioned = mentionedUsers.some(
+                  m => m.toLowerCase() === ownerUsername.toLowerCase()
+                );
+              } catch (e) {
+                log.warn(`[Delegation] Could not fetch owner user info: ${e}`);
+              }
+            }
+            
+            if (!ownerMentioned) {
+              // Non-owner mentioned only @kaji without the owner - silently ignore
+              log.debug(`[Channel] Non-owner @mentioned bot without owner - ignoring (channel: ${channel.id})`);
+              return;
+            }
+            
+            // Owner was mentioned - verify the owner is actually in this channel
+            try {
+              const members = await mmClient.getChannelMembers(channel.id);
+              const ownerInChannel = members.some(m => m.user_id === ownerUserId);
+              if (!ownerInChannel) {
+                log.info(`[Delegation] Owner @${ownerUsername} is not a member of channel ${channel.id} - ignoring`);
+                return;
+              }
+            } catch (e) {
+              log.warn(`[Delegation] Could not check channel membership: ${e}`);
+            }
+            
+            let initiatorUsername = "unknown";
+            try {
+              const initiatorUser = await mmClient.getUserById(postData.user_id);
+              initiatorUsername = initiatorUser.username;
+            } catch (e) {
+              log.warn(`[Delegation] Could not fetch initiator username: ${e}`);
+            }
+            
+            log.info(`[Delegation] @${initiatorUsername} mentioned both bot and owner @${ownerUsername} - creating delegated session`);
+            
+            // Set delegation flags on the post for handleUserMessage to process
+            const delegatedPost = { ...postData } as any;
+            delegatedPost._ownershipConfirmed = true;
+            delegatedPost._approvalPolicy = "none";
+            delegatedPost._delegatedOwnerUserId = ownerUserId;
+            delegatedPost._delegatedOwnerUsername = ownerUsername;
+            delegatedPost._delegatedInitiatorUserId = postData.user_id;
+            delegatedPost._delegatedInitiatorUsername = initiatorUsername;
+            
+            await handleUserMessage(delegatedPost);
             return;
           }
+          
+          // No owner configured or bot user not available - ignore
+          log.debug(`[Channel] Non-owner @mention in unmapped thread - ignoring (channel: ${channel.id})`);
+          return;
         }
         
         // Existing session - check access permissions
