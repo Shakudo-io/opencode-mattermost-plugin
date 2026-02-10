@@ -7,6 +7,7 @@ import type { TeamStore } from "./persistence/team-store.js";
 import type { QuestionHandler } from "./question-handler.js";
 import type { ModelSelection } from "./models/index.js";
 import type { UnifiedStore } from "./persistence/unified-store.js";
+import type { SubagentInfo } from "../.opencode/plugin/mattermost-control/types.js";
 import { MergeHandler } from "./merge-handler.js";
 import { log } from "./logger.js";
 import { createMigrationManager, type MigrationManager } from "./persistence/postgres/migration.js";
@@ -32,6 +33,10 @@ export interface CommandContext {
   channelId?: string;
   mattermostBaseUrl?: string;
   unifiedStore?: UnifiedStore | null;
+  subagentRegistry?: Map<string, SubagentInfo>;
+  activeResponseContexts?: Map<string, unknown>;
+  stopResponseTimer?: (sessionId: string) => void;
+  stopActiveToolTimer?: (sessionId: string) => void;
 }
 
 export type CommandResult = {
@@ -62,6 +67,7 @@ export class CommandHandler {
     this.commands.set("model", this.handleModel.bind(this));
     this.commands.set("costs", this.handleCosts.bind(this));
     this.commands.set("stop", this.handleStop.bind(this));
+    this.commands.set("subagents", this.handleSubagents.bind(this));
     this.commands.set("merge", this.handleMerge.bind(this));
     this.commands.set("team", this.handleTeam.bind(this));
     this.commands.set("reject", this.handleReject.bind(this));
@@ -206,6 +212,29 @@ export class CommandHandler {
     return "..." + dir.slice(-(maxLen - 3));
   }
 
+  private formatElapsedTime(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+
+  private formatSubagentStatus(status: string): string {
+    switch (status) {
+      case "running":
+        return "🟢 running";
+      case "completed":
+        return "✅ done";
+      case "error":
+        return "❌ error";
+      case "cancelled":
+        return "❌ cancelled";
+      default:
+        return `❓ ${status}`;
+    }
+  }
+
   private async handleUse(
     command: ParsedCommand,
     context: CommandContext
@@ -322,6 +351,7 @@ export class CommandHandler {
       `| \`${this.commandPrefix}model\` | Show current model for this session |`,
       `| \`${this.commandPrefix}merge <url>\` | Merge another thread into this session |`,
       `| \`${this.commandPrefix}stop\` | Stop/abort the current session (use in thread) |`,
+      `| \`${this.commandPrefix}subagents\` | List subagents and their status. Use \`!subagents stop [#]\` to stop one |`,
       `| \`${this.commandPrefix}reject\` | Skip/reject a pending AI question |`,
       `| \`${this.commandPrefix}team\` | Manage team members (owner only) |`,
     ];
@@ -667,6 +697,152 @@ export class CommandHandler {
         message: `Failed to stop session: ${errorMsg}`,
       };
     }
+  }
+
+  private async handleSubagents(
+    command: ParsedCommand,
+    context: CommandContext
+  ): Promise<CommandResult> {
+    const {
+      sessionId,
+      subagentRegistry,
+      opencodeClient,
+      mmClient,
+      activeResponseContexts,
+      stopActiveToolTimer,
+      stopResponseTimer,
+    } = context;
+
+    if (!sessionId) {
+      return {
+        success: false,
+        message: `Use \`${this.commandPrefix}subagents\` inside a session thread`,
+      };
+    }
+
+    if (!subagentRegistry) {
+      return {
+        success: false,
+        message: "Subagent registry not available.",
+      };
+    }
+
+    const args = command.rawArgs.trim().split(/\s+/).filter(Boolean);
+    const subagents = Array.from(subagentRegistry.values()).filter(
+      (entry) => entry.parentSessionId === sessionId
+    );
+
+    if (!args.length || args[0] === "list") {
+      if (subagents.length === 0) {
+        return {
+          success: true,
+          message: "No subagents for this session.",
+        };
+      }
+
+      const lines: string[] = [
+        `🕵️ **Subagents** (session ${sessionId.substring(0, 8)})`,
+        "",
+        "| # | Status | Agent | Tools | Model | Description |",
+        "|---|--------|-------|-------|-------|-------------|",
+      ];
+
+      subagents.forEach((info, index) => {
+        const statusLabel = this.formatSubagentStatus(info.status);
+        const modelLabel = info.modelId || "—";
+        const baseDescription = info.description || "—";
+        const description = info.status === "running"
+          ? baseDescription
+          : `${baseDescription} (${this.formatElapsedTime(Date.now() - info.startTime)})`;
+        lines.push(
+          `| ${index + 1} | ${statusLabel} | ${info.agentType} | ${info.toolCount} | ${modelLabel} | ${description} |`
+        );
+      });
+
+      return {
+        success: true,
+        message: lines.join("\n"),
+      };
+    }
+
+    if (args[0] === "stop") {
+      if (!opencodeClient) {
+        return {
+          success: false,
+          message: "OpenCode client not available.",
+        };
+      }
+
+      const index = parseInt(args[1], 10);
+      if (!args[1] || Number.isNaN(index)) {
+        return {
+          success: false,
+          message: `Usage: \`${this.commandPrefix}subagents stop <#>\``,
+        };
+      }
+
+      if (subagents.length === 0) {
+        return {
+          success: false,
+          message: "No subagents for this session.",
+        };
+      }
+
+      if (index < 1 || index > subagents.length) {
+        return {
+          success: false,
+          message: `Subagent index out of range. Valid range: 1-${subagents.length}`,
+        };
+      }
+
+      const info = subagents[index - 1];
+      if (info.status !== "running") {
+        return {
+          success: false,
+          message: `Subagent #${index} is already ${info.status}`,
+        };
+      }
+
+      try {
+        await opencodeClient.session.abort({ path: { id: info.childSessionId } });
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        log.error(`[CommandHandler] Failed to abort subagent ${info.childSessionId.substring(0, 8)}: ${errorMsg}`);
+        return {
+          success: false,
+          message: `Failed to stop subagent: ${errorMsg}`,
+        };
+      }
+
+      info.status = "cancelled";
+
+      if (mmClient && info.replyPostId) {
+        const descriptionSuffix = info.description ? ` — ${info.description}` : "";
+        const summary = `❌ ${info.agentType} Task${descriptionSuffix} (stopped by user)`;
+        try {
+          await mmClient.updatePost(info.replyPostId, summary);
+        } catch (e) {
+          log.debug(`[CommandHandler] Failed to update subagent reply ${info.replyPostId}: ${e}`);
+        }
+      }
+
+      if (activeResponseContexts?.has(info.childSessionId)) {
+        activeResponseContexts.delete(info.childSessionId);
+      }
+      stopActiveToolTimer?.(info.childSessionId);
+      stopResponseTimer?.(info.childSessionId);
+
+      const description = info.description || "no description";
+      return {
+        success: true,
+        message: `Stopped subagent #${index} (${info.agentType}: ${description})`,
+      };
+    }
+
+    return {
+      success: false,
+      message: `Unknown subagents command. Use \`${this.commandPrefix}subagents\` or \`${this.commandPrefix}subagents stop <#>\`.`,
+    };
   }
 
   private async handleReject(

@@ -141,6 +141,10 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
           questionHandler: PluginState.questionHandler,
           opencodeClient: client,
           channelId: post.channel_id,
+          subagentRegistry: PluginState.subagentRegistry,
+          activeResponseContexts: PluginState.activeResponseContexts,
+          stopResponseTimer,
+          stopActiveToolTimer,
         });
         await mmClient.createPost(post.channel_id, result.message);
         return;
@@ -314,6 +318,10 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
               sessionId: routeResult.sessionId,
               threadRootPostId: routeResult.threadRootPostId,
               channelId: post.channel_id,
+              subagentRegistry: PluginState.subagentRegistry,
+              activeResponseContexts: PluginState.activeResponseContexts,
+              stopResponseTimer,
+              stopActiveToolTimer,
             });
             await mmClient.createPost(post.channel_id, result.message, routeResult.threadRootPostId);
             return;
