@@ -22,6 +22,17 @@ export interface ExistingSessionOwner {
   found: boolean;
 }
 
+export interface DelegatedSessionRequest {
+  /** The user ID of the person who should own the session (the mentioned session owner) */
+  ownerUserId: string;
+  /** The username of the session owner */
+  ownerUsername: string;
+  /** The user ID of the person who initiated the request (the teammate) */
+  initiatorUserId: string;
+  /** The username of the initiator */
+  initiatorUsername: string;
+}
+
 export class SessionOwnershipHandler {
   private mmClient: any;
   private botUserId: string | null = null;
@@ -289,6 +300,31 @@ _Reply with a number (1, 2, or 3)_`;
         log.warn(`[SessionOwnership] Failed to get ownership from Postgres: ${e}`);
       });
     }
+  }
+
+  /**
+   * Detect @mentions in a message, excluding the bot.
+   * Used to check if a teammate mentioned the session owner for delegation.
+   * Returns usernames (without @) of all mentioned users excluding the bot.
+   */
+  detectMentionedUsers(
+    message: string,
+    botUsername: string,
+    botUserId: string,
+    senderUserId: string
+  ): string[] {
+    const mentionRegex = /@(\w[\w.-]*)/gi;
+    const mentions: string[] = [];
+    let match;
+    
+    while ((match = mentionRegex.exec(message)) !== null) {
+      const mentionedUsername = match[1].toLowerCase();
+      if (mentionedUsername !== botUsername.toLowerCase()) {
+        mentions.push(match[1]); // Keep original casing
+      }
+    }
+    
+    return mentions;
   }
 
   cleanupExpired(): number {

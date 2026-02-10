@@ -194,4 +194,6 @@ export interface ThreadRootPostContent {
   startedAt: Date;
   sessionTitle?: string;
   ownerUsername?: string;
+  /** Username of the teammate who initiated a delegated session (if any) */
+  delegatedByUsername?: string;
 }

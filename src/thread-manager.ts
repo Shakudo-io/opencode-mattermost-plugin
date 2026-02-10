@@ -19,7 +19,8 @@ export class ThreadManager {
     dmChannelId: string,
     userPostId?: string,
     channelId?: string,
-    ownerUsername?: string
+    ownerUsername?: string,
+    delegatedByUsername?: string
   ): Promise<ThreadSessionMapping> {
     const existing = this.store.getBySessionId(sessionInfo.id);
     if (existing) {
@@ -37,6 +38,7 @@ export class ThreadManager {
       startedAt: new Date(),
       sessionTitle: sessionInfo.title,
       ownerUsername,
+      delegatedByUsername,
     };
 
     const message = this.formatThreadRootPost(content);
@@ -195,6 +197,13 @@ export class ThreadManager {
 
     if (content.ownerUsername) {
       lines.splice(2, 0, `**Owner**: @${content.ownerUsername}`);
+    }
+
+    if (content.delegatedByUsername) {
+      const ownerIndex = lines.findIndex(l => l.startsWith("**Owner**:"));
+      if (ownerIndex >= 0) {
+        lines.splice(ownerIndex + 1, 0, `**Started by**: @${content.delegatedByUsername}`);
+      }
     }
 
     lines.push(``, `_Reply in this thread to send prompts to this session._`);
