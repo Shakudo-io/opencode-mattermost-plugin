@@ -566,6 +566,17 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     const { mmClient, threadManager, openCodeSessionRegistry, threadMappingStore } = PluginState;
     if (!mmClient || !threadManager) return null;
     
+    // Check for delegated session creation (teammate starting session on behalf of owner)
+    const delegatedOwnerUserId = (post as any)._delegatedOwnerUserId as string | undefined;
+    const delegatedOwnerUsername = (post as any)._delegatedOwnerUsername as string | undefined;
+    const delegatedInitiatorUserId = (post as any)._delegatedInitiatorUserId as string | undefined;
+    const delegatedInitiatorUsername = (post as any)._delegatedInitiatorUsername as string | undefined;
+    const isDelegated = !!delegatedOwnerUserId && !!delegatedOwnerUsername;
+    
+    // For delegated sessions, the owner is the mentioned user, not the poster
+    const sessionOwnerUserId = isDelegated ? delegatedOwnerUserId : userSession.mattermostUserId;
+    const sessionOwnerUsername = isDelegated ? delegatedOwnerUsername : userSession.mattermostUsername;
+    
     try {
       const result = await client.session.create({
         body: {},
@@ -576,31 +587,37 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         throw new Error("Failed to create session - no data returned");
       }
       
+      const sessionTitle = isDelegated 
+        ? `Session started by @${delegatedInitiatorUsername} for @${sessionOwnerUsername}`
+        : `Mattermost DM session`;
+      
       const sessionInfo: OpenCodeSessionInfo = {
         id: result.data.id,
         shortId: result.data.id.substring(0, 8),
         projectName: projectName,
         directory: directory,
-        title: result.data.title || `Mattermost DM session`,
+        title: result.data.title || sessionTitle,
         lastUpdated: new Date(),
         isAvailable: true,
       };
       
       const threadRootId = post.root_id || post.id;
-      log.info(`[CreateSession] post.id=${post.id}, post.root_id=${post.root_id}, threadRootId=${threadRootId}, post.channel_id=${post.channel_id}`);
+      log.info(`[CreateSession] post.id=${post.id}, post.root_id=${post.root_id}, threadRootId=${threadRootId}, post.channel_id=${post.channel_id}${isDelegated ? ` (delegated by @${delegatedInitiatorUsername} for @${sessionOwnerUsername})` : ''}`);
       const mapping = await threadManager.createThread(
         sessionInfo,
-        userSession.mattermostUserId,
+        sessionOwnerUserId,
         userSession.dmChannelId,
         threadRootId,
         post.channel_id,
-        userSession.mattermostUsername
+        sessionOwnerUsername,
+        isDelegated ? delegatedInitiatorUsername : undefined
       );
       
       const approvalPolicy = (post as any)._approvalPolicy as string | undefined;
-      if (approvalPolicy && threadMappingStore) {
+      if (threadMappingStore) {
         const updatedMapping = threadMappingStore.getBySessionId(result.data.id);
         if (updatedMapping) {
+          // Apply approval policy if set
           if (approvalPolicy === "approve_all") {
             updatedMapping.approveAllUsers = true;
             log.info(`[CreateSession] Applied approve_all policy to session ${sessionInfo.shortId}`);
@@ -608,13 +625,29 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
             updatedMapping.approveNextMessage = true;
             log.info(`[CreateSession] Applied approve_next policy to session ${sessionInfo.shortId}`);
           }
+          
+          // For delegated sessions, auto-approve the initiating teammate
+          if (isDelegated && delegatedInitiatorUserId) {
+            if (!updatedMapping.approvedUsers) {
+              updatedMapping.approvedUsers = [];
+            }
+            if (!updatedMapping.approvedUsers.includes(delegatedInitiatorUserId)) {
+              updatedMapping.approvedUsers.push(delegatedInitiatorUserId);
+              log.info(`[Delegation] Auto-approved initiator @${delegatedInitiatorUsername} (${delegatedInitiatorUserId}) for session ${sessionInfo.shortId}`);
+            }
+          }
+          
           threadMappingStore.update(updatedMapping);
         }
       }
       
       await openCodeSessionRegistry?.refresh();
       
-      log.info(`[CreateSession] Created new session ${sessionInfo.shortId} for @${userSession.mattermostUsername} in channel ${post.channel_id}`);
+      if (isDelegated) {
+        log.info(`[Delegation] Created delegated session ${sessionInfo.shortId} - owner: @${sessionOwnerUsername}, initiated by: @${delegatedInitiatorUsername} in channel ${post.channel_id}`);
+      } else {
+        log.info(`[CreateSession] Created new session ${sessionInfo.shortId} for @${sessionOwnerUsername} in channel ${post.channel_id}`);
+      }
       
       return {
         sessionId: result.data.id,
