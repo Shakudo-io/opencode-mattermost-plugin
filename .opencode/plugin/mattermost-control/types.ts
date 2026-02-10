@@ -65,6 +65,7 @@ export interface SubagentInfo {
   description: string;
   status: string;
   startTime: number;
+  endTime?: number;
   toolCount: number;
   modelId?: string;
   agentHeader: string;

@@ -185,22 +185,23 @@ export async function handleTaskToolCompleted(event: any): Promise<void> {
 }
 
 export async function collapseSubagentOnIdle(childSessionId: string): Promise<void> {
-  const info = PluginState.subagentRegistry.get(childSessionId);
-  const mmClient = PluginState.mmClient;
-  if (!info || !mmClient) return;
-  if (info.status !== "running") return;
+   const info = PluginState.subagentRegistry.get(childSessionId);
+   const mmClient = PluginState.mmClient;
+   if (!info || !mmClient) return;
+   if (info.status !== "running") return;
 
-  // Get child context before deleting it
-  const childCtx = PluginState.activeResponseContexts.get(childSessionId);
+   // Get child context before deleting it
+   const childCtx = PluginState.activeResponseContexts.get(childSessionId);
 
-  const elapsed = formatElapsedTime(Date.now() - info.startTime);
-  const costPart = childCtx?.cost?.currentMessage ? ` | 💰 $${childCtx.cost.currentMessage.toFixed(2)}` : "";
-  const modelPart = info.modelId ? ` | 🧠 ${info.modelId}` : (childCtx?.modelId ? ` | 🧠 ${childCtx.modelId}` : "");
-  const summary = `✅ ${formatTaskLabel(info.agentType, info.description)} (${elapsed}, ${info.toolCount} tools)${costPart}${modelPart}`;
+   info.endTime = Date.now();
+   const elapsed = formatElapsedTime(info.endTime - info.startTime);
+   const costPart = childCtx?.cost?.currentMessage ? ` | 💰 $${childCtx.cost.currentMessage.toFixed(2)}` : "";
+   const modelPart = info.modelId ? ` | 🧠 ${info.modelId}` : (childCtx?.modelId ? ` | 🧠 ${childCtx.modelId}` : "");
+   const summary = `✅ ${formatTaskLabel(info.agentType, info.description)} (${elapsed}, ${info.toolCount} tools)${costPart}${modelPart}`;
 
-  log.info(`[Subagent] Child idle — collapsing: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, ${elapsed}, ${info.toolCount} tools`);
-  await mmClient.updatePost(info.replyPostId, summary);
-  info.status = "completed";
+   log.info(`[Subagent] Child idle — collapsing: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, ${elapsed}, ${info.toolCount} tools`);
+   await mmClient.updatePost(info.replyPostId, summary);
+   info.status = "completed";
 
   await updateResponseStream(info.parentSessionId);
 
@@ -210,30 +211,31 @@ export async function collapseSubagentOnIdle(childSessionId: string): Promise<vo
 }
 
 export async function handleTaskToolError(event: any): Promise<void> {
-  const part = event.properties?.part;
-  if (!part || part.tool !== "task") return;
-  if (part.state?.status !== "error") return;
+   const part = event.properties?.part;
+   if (!part || part.tool !== "task") return;
+   if (part.state?.status !== "error") return;
 
-  const childSessionId = part.state?.metadata?.sessionId;
-  if (!childSessionId) return;
+   const childSessionId = part.state?.metadata?.sessionId;
+   if (!childSessionId) return;
 
-  const info = PluginState.subagentRegistry.get(childSessionId);
-  const mmClient = PluginState.mmClient;
-  if (!info || !mmClient) return;
+   const info = PluginState.subagentRegistry.get(childSessionId);
+   const mmClient = PluginState.mmClient;
+   if (!info || !mmClient) return;
 
-  // Get child context before deleting it
-  const childCtx = PluginState.activeResponseContexts.get(childSessionId);
+   // Get child context before deleting it
+   const childCtx = PluginState.activeResponseContexts.get(childSessionId);
 
-  const errorMessage = part.state?.error || part.state?.metadata?.error;
-  const costPart = childCtx?.cost?.currentMessage ? ` | 💰 $${childCtx.cost.currentMessage.toFixed(2)}` : "";
-  const modelPart = info.modelId ? ` | 🧠 ${info.modelId}` : (childCtx?.modelId ? ` | 🧠 ${childCtx.modelId}` : "");
-  const summary = errorMessage
-    ? `❌ ${formatTaskLabel(info.agentType, info.description)} (failed: ${errorMessage})${costPart}${modelPart}`
-    : `❌ ${formatTaskLabel(info.agentType, info.description)} (failed)${costPart}${modelPart}`;
+   info.endTime = Date.now();
+   const errorMessage = part.state?.error || part.state?.metadata?.error;
+   const costPart = childCtx?.cost?.currentMessage ? ` | 💰 $${childCtx.cost.currentMessage.toFixed(2)}` : "";
+   const modelPart = info.modelId ? ` | 🧠 ${info.modelId}` : (childCtx?.modelId ? ` | 🧠 ${childCtx.modelId}` : "");
+   const summary = errorMessage
+     ? `❌ ${formatTaskLabel(info.agentType, info.description)} (failed: ${errorMessage})${costPart}${modelPart}`
+     : `❌ ${formatTaskLabel(info.agentType, info.description)} (failed)${costPart}${modelPart}`;
 
-  log.info(`[Subagent] Error: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, error=${errorMessage || 'unknown'} — collapsing reply`);
-  await mmClient.updatePost(info.replyPostId, summary);
-  info.status = "error";
+   log.info(`[Subagent] Error: child=${childSessionId.substring(0, 8)}, type=${info.agentType}, error=${errorMessage || 'unknown'} — collapsing reply`);
+   await mmClient.updatePost(info.replyPostId, summary);
+   info.status = "error";
 
   await updateResponseStream(info.parentSessionId);
 
@@ -243,28 +245,29 @@ export async function handleTaskToolError(event: any): Promise<void> {
 }
 
 export async function cleanupSubagentsForParent(parentSessionId: string): Promise<void> {
-  const mmClient = PluginState.mmClient;
-  if (!mmClient) return;
+   const mmClient = PluginState.mmClient;
+   if (!mmClient) return;
 
-  const entries = Array.from(PluginState.subagentRegistry.values()).filter(
-    (entry) => entry.parentSessionId === parentSessionId
-  );
+   const entries = Array.from(PluginState.subagentRegistry.values()).filter(
+     (entry) => entry.parentSessionId === parentSessionId
+   );
 
-  log.info(`[Subagent] Cleanup: parent=${parentSessionId.substring(0, 8)}, ${entries.length} child subagents to clean up`);
-  for (const entry of entries) {
-    if (entry.status === "running") {
-      const summary = `❌ ${formatTaskLabel(entry.agentType, entry.description)} (cancelled)`;
-      try {
-        await mmClient.updatePost(entry.replyPostId, summary);
-      } catch (e) {
-        log.debug(`[Subagent] Failed to collapse reply ${entry.replyPostId}: ${e}`);
-      }
-    } else {
-      log.debug(`[Subagent] Cleanup: skipping ${entry.childSessionId.substring(0, 8)} (already ${entry.status})`);
-    }
-    PluginState.activeResponseContexts.delete(entry.childSessionId);
-    stopActiveToolTimer(entry.childSessionId);
-    stopResponseTimer(entry.childSessionId);
-    PluginState.subagentRegistry.delete(entry.childSessionId);
-  }
+   log.info(`[Subagent] Cleanup: parent=${parentSessionId.substring(0, 8)}, ${entries.length} child subagents to clean up`);
+   for (const entry of entries) {
+     if (entry.status === "running") {
+       entry.endTime = Date.now();
+       const summary = `❌ ${formatTaskLabel(entry.agentType, entry.description)} (cancelled)`;
+       try {
+         await mmClient.updatePost(entry.replyPostId, summary);
+       } catch (e) {
+         log.debug(`[Subagent] Failed to collapse reply ${entry.replyPostId}: ${e}`);
+       }
+     } else {
+       log.debug(`[Subagent] Cleanup: skipping ${entry.childSessionId.substring(0, 8)} (already ${entry.status})`);
+     }
+     PluginState.activeResponseContexts.delete(entry.childSessionId);
+     stopActiveToolTimer(entry.childSessionId);
+     stopResponseTimer(entry.childSessionId);
+     PluginState.subagentRegistry.delete(entry.childSessionId);
+   }
 }

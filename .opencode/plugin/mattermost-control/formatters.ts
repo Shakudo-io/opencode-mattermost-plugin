@@ -160,16 +160,16 @@ export function formatSubagentStatus(subagents: SubagentInfo[]): string {
     return `🕵️ ${subagents.length} subagents (${runningCount} running, ${doneCount} done)`;
   }
 
-  return subagents.map((entry) => {
-    if (entry.status === "completed") {
-      const elapsed = formatElapsedTime(Date.now() - entry.startTime);
-      return `✅ ${entry.agentType} (${elapsed})`;
-    }
-    if (entry.status === "error") {
-      return `❌ ${entry.agentType} (failed)`;
-    }
-    return `🕵️ ${entry.agentType} (${entry.toolCount} tools)`;
-  }).join(" | ");
+   return subagents.map((entry) => {
+     if (entry.status === "completed") {
+       const elapsed = formatElapsedTime((entry.endTime || Date.now()) - entry.startTime);
+       return `✅ ${entry.agentType} (${elapsed})`;
+     }
+     if (entry.status === "error") {
+       return `❌ ${entry.agentType} (failed)`;
+     }
+     return `🕵️ ${entry.agentType} (${entry.toolCount} tools)`;
+   }).join(" | ");
 }
 
 export function formatShellOutput(
