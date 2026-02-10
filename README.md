@@ -5,6 +5,57 @@
 
 Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages. Send prompts to your OpenCode session by messaging a bot user, and receive real-time streaming responses.
 
+---
+
+## Release Notes
+
+### v0.3.95 — Teammate Delegated Sessions (New Feature)
+
+**Teammates can now summon the session owner's Kaji on their behalf.**
+
+#### Setup
+
+The session owner adds teammates via DM with Kaji:
+
+```
+!team add @bonnie
+!team add @yiran
+!team list
+```
+
+#### How It Works
+
+In any channel where **Kaji, the owner, and the teammate** are all members, the teammate tags both:
+
+```
+@kaji @christine please fix the login bug on line 42
+```
+
+This creates a session **owned by @christine**, using her Kaji instance. The teammate is auto-approved and can keep sending prompts and approve others to collaborate in the thread.
+
+#### Rules
+
+| Scenario | Result |
+|----------|--------|
+| Teammate tags `@kaji @owner` in a shared channel | Session created under owner's Kaji |
+| Teammate tags only `@kaji` (without owner) | Owner's Kaji stays silent; teammate's own Kaji may respond |
+| Teammate tags `@kaji @owner` in a channel the owner isn't in | Nothing happens |
+| Non-teammate tags `@kaji @owner` | Owner's Kaji does not respond |
+| Owner tags `@kaji` directly | Standard session creation flow (unchanged) |
+
+#### What the session announcement looks like
+
+```
+:rocket: OpenCode Session Started
+
+Owner: @christine
+Started by: @bonnie
+Project: my-project
+Session: a1b2c3d4
+```
+
+---
+
 ## Features
 
 ### Core Features
