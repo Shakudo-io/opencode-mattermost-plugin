@@ -7,18 +7,10 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ---
 
-## Release Notes
+## Changelog
 
-### v0.3.95 — Delegation Access Control
-
-- **Team membership required**: Only teammates (added via `!team add`) can initiate delegated sessions. Non-team-members who tag `@kaji @owner` are silently ignored.
-- **Owner dual-mention passthrough**: When the owner tags `@kaji @another_user`, the owner's Kaji stays silent so the other user's Kaji can handle it. The owner's Kaji only responds when the owner tags `@kaji` alone.
-
-### v0.3.94 — Teammate Delegated Sessions
-
-- **New feature**: Teammates can start sessions on behalf of the session owner by tagging both `@kaji` and the owner in a shared channel.
-- **Channel membership check**: Delegation only works in channels where the owner is a member.
-- **Auto-approval**: The initiating teammate is auto-approved to continue sending prompts.
+- **0.3.95** — Delegation requires team membership; owner tagging `@kaji @other_user` stays silent for other Kaji to handle
+- **0.3.94** — Teammate delegated sessions: tag `@kaji` + `@owner` to start a session on behalf of the owner
 
 ---
 
