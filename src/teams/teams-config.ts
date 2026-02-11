@@ -126,6 +126,25 @@ export type TeamsConfig = z.infer<typeof TeamsConfigSchema>;
 // Configuration Loading
 // =============================================================================
 
+const maskSecret = (value: string): string => {
+  if (!value) {
+    return "(not set)";
+  }
+  if (value.length < 4) {
+    return "****";
+  }
+  return `${value.substring(0, 4)}****`;
+};
+
+const requireEnv = (name: string): string => {
+  const value = process.env[name];
+  if (!value) {
+    log.error(`Missing required environment variable: ${name}`);
+    throw new Error(`${name} environment variable is required`);
+  }
+  return value;
+};
+
 /**
  * Load Teams configuration from environment variables
  *
@@ -146,43 +165,117 @@ export type TeamsConfig = z.infer<typeof TeamsConfigSchema>;
  * @throws ZodError if required config is missing or invalid
  */
 export function loadTeamsConfig(): TeamsConfig {
-  const config: TeamsConfig = {
+  log.debug("loadTeamsConfig entry");
+  const appId = requireEnv("AZURE_APP_ID");
+  const appPassword = requireEnv("AZURE_APP_PASSWORD");
+  const tenantId = requireEnv("AZURE_TENANT_ID");
+  const authorizedGroupId = requireEnv("AZURE_AD_AUTHORIZED_GROUP_ID");
+  const botEndpoint = process.env.TEAMS_BOT_ENDPOINT || undefined;
+  const port = parseInt(process.env.TEAMS_BOT_PORT || "") || 3978;
+  const basePath = process.env.TEAMS_BASE_PATH || "/api";
+  const healthPath = process.env.TEAMS_HEALTH_PATH || "/health";
+  const messagesPath = process.env.TEAMS_MESSAGES_PATH || "/messages";
+  const cardUpdateInterval = parseInt(process.env.TEAMS_CARD_UPDATE_INTERVAL || "") || 5000;
+  const maxCardSize = parseInt(process.env.TEAMS_MAX_CARD_SIZE || "") || 25000;
+  const rateLimit = parseInt(process.env.TEAMS_RATE_LIMIT || "") || 30;
+  const questionExpirationMs = parseInt(process.env.TEAMS_QUESTION_EXPIRATION_MS || "") || 30 * 60 * 1000;
+  const permissionExpirationMs = parseInt(process.env.TEAMS_PERMISSION_EXPIRATION_MS || "") || 5 * 60 * 1000;
+  const guestApprovalExpirationMs =
+    parseInt(process.env.TEAMS_GUEST_APPROVAL_EXPIRATION_MS || "") || 30 * 60 * 1000;
+  const authCacheDurationMs = parseInt(process.env.TEAMS_AUTH_CACHE_DURATION_MS || "") || 60 * 60 * 1000;
+  const logFile = process.env.TEAMS_LOG_FILE || "/tmp/opencode-teams-plugin.log";
+  const debug = process.env.TEAMS_DEBUG === "true";
+  const serverUrl = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
+  const connectionTimeout = parseInt(process.env.OPENCODE_CONNECTION_TIMEOUT || "") || 5000;
+  const reconnectInterval = parseInt(process.env.OPENCODE_RECONNECT_INTERVAL || "") || 5000;
+  const maxReconnectAttempts = parseInt(process.env.OPENCODE_MAX_RECONNECT_ATTEMPTS || "") || 10;
+
+  log.info("Loaded Teams config values", {
     azure: {
-      appId: process.env.AZURE_APP_ID || "",
-      appPassword: process.env.AZURE_APP_PASSWORD || "",
-      tenantId: process.env.AZURE_TENANT_ID || "",
-      authorizedGroupId: process.env.AZURE_AD_AUTHORIZED_GROUP_ID || "",
-      botEndpoint: process.env.TEAMS_BOT_ENDPOINT || undefined,
+      appId: maskSecret(appId),
+      appPassword: maskSecret(appPassword),
+      tenantId: maskSecret(tenantId),
+      authorizedGroupId: maskSecret(authorizedGroupId),
+      botEndpoint: botEndpoint ?? "(not set)",
     },
     server: {
-      port: parseInt(process.env.TEAMS_BOT_PORT || "") || 3978,
-      basePath: process.env.TEAMS_BASE_PATH || "/api",
-      healthPath: process.env.TEAMS_HEALTH_PATH || "/health",
-      messagesPath: process.env.TEAMS_MESSAGES_PATH || "/messages",
+      port,
+      basePath,
+      healthPath,
+      messagesPath,
     },
     bot: {
-      cardUpdateInterval: parseInt(process.env.TEAMS_CARD_UPDATE_INTERVAL || "") || 5000,
-      maxCardSize: parseInt(process.env.TEAMS_MAX_CARD_SIZE || "") || 25000,
-      rateLimit: parseInt(process.env.TEAMS_RATE_LIMIT || "") || 30,
-      questionExpirationMs: parseInt(process.env.TEAMS_QUESTION_EXPIRATION_MS || "") || 30 * 60 * 1000,
-      permissionExpirationMs: parseInt(process.env.TEAMS_PERMISSION_EXPIRATION_MS || "") || 5 * 60 * 1000,
-      guestApprovalExpirationMs: parseInt(process.env.TEAMS_GUEST_APPROVAL_EXPIRATION_MS || "") || 30 * 60 * 1000,
-      authCacheDurationMs: parseInt(process.env.TEAMS_AUTH_CACHE_DURATION_MS || "") || 60 * 60 * 1000,
+      cardUpdateInterval,
+      maxCardSize,
+      rateLimit,
+      questionExpirationMs,
+      permissionExpirationMs,
+      guestApprovalExpirationMs,
+      authCacheDurationMs,
     },
     logging: {
-      logFile: process.env.TEAMS_LOG_FILE || "/tmp/opencode-teams-plugin.log",
-      debug: process.env.TEAMS_DEBUG === "true",
+      logFile,
+      debug,
     },
     opencode: {
-      serverUrl: process.env.OPENCODE_SERVER_URL || "http://localhost:4096",
-      connectionTimeout: parseInt(process.env.OPENCODE_CONNECTION_TIMEOUT || "") || 5000,
-      reconnectInterval: parseInt(process.env.OPENCODE_RECONNECT_INTERVAL || "") || 5000,
-      maxReconnectAttempts: parseInt(process.env.OPENCODE_MAX_RECONNECT_ATTEMPTS || "") || 10,
+      serverUrl,
+      connectionTimeout,
+      reconnectInterval,
+      maxReconnectAttempts,
+    },
+  });
+
+  const config: TeamsConfig = {
+    azure: {
+      appId,
+      appPassword,
+      tenantId,
+      authorizedGroupId,
+      botEndpoint,
+    },
+    server: {
+      port,
+      basePath,
+      healthPath,
+      messagesPath,
+    },
+    bot: {
+      cardUpdateInterval,
+      maxCardSize,
+      rateLimit,
+      questionExpirationMs,
+      permissionExpirationMs,
+      guestApprovalExpirationMs,
+      authCacheDurationMs,
+    },
+    logging: {
+      logFile,
+      debug,
+    },
+    opencode: {
+      serverUrl,
+      connectionTimeout,
+      reconnectInterval,
+      maxReconnectAttempts,
     },
   };
 
   // Validate configuration
-  return TeamsConfigSchema.parse(config);
+  try {
+    const validated = TeamsConfigSchema.parse(config);
+    log.debug("loadTeamsConfig exit: configuration validated");
+    return validated;
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      for (const issue of error.issues) {
+        log.error(`Teams config validation error on ${issue.path.join(".")}: ${issue.message}`);
+      }
+    } else {
+      log.error(`Teams config validation error: ${error}`);
+    }
+    log.debug("loadTeamsConfig exit: validation failed");
+    throw error;
+  }
 }
 
 /**
@@ -191,26 +284,32 @@ export function loadTeamsConfig(): TeamsConfig {
  * @returns Object with isValid flag and array of error messages
  */
 export function validateTeamsConfig(): { isValid: boolean; errors: string[] } {
+  log.debug("validateTeamsConfig entry");
   const errors: string[] = [];
 
   // Check required Azure config
   if (!process.env.AZURE_APP_ID) {
     errors.push("AZURE_APP_ID is required - Azure AD application (client) ID");
+    log.error("Validation error: AZURE_APP_ID is required");
   }
   if (!process.env.AZURE_APP_PASSWORD) {
     errors.push("AZURE_APP_PASSWORD is required - Azure AD application secret");
+    log.error("Validation error: AZURE_APP_PASSWORD is required");
   }
   if (!process.env.AZURE_TENANT_ID) {
     errors.push("AZURE_TENANT_ID is required - Azure AD tenant ID");
+    log.error("Validation error: AZURE_TENANT_ID is required");
   }
   if (!process.env.AZURE_AD_AUTHORIZED_GROUP_ID) {
     errors.push("AZURE_AD_AUTHORIZED_GROUP_ID is required - Azure AD group ID for user authorization");
+    log.error("Validation error: AZURE_AD_AUTHORIZED_GROUP_ID is required");
   }
 
   // Validate port if provided
   const port = parseInt(process.env.TEAMS_BOT_PORT || "");
   if (process.env.TEAMS_BOT_PORT && (isNaN(port) || port < 1 || port > 65535)) {
     errors.push("TEAMS_BOT_PORT must be a valid port number (1-65535)");
+    log.error("Validation error: TEAMS_BOT_PORT must be a valid port number (1-65535)");
   }
 
   // Validate URLs if provided
@@ -219,6 +318,7 @@ export function validateTeamsConfig(): { isValid: boolean; errors: string[] } {
       new URL(process.env.TEAMS_BOT_ENDPOINT);
     } catch {
       errors.push("TEAMS_BOT_ENDPOINT must be a valid URL");
+      log.error("Validation error: TEAMS_BOT_ENDPOINT must be a valid URL");
     }
   }
 
@@ -227,13 +327,16 @@ export function validateTeamsConfig(): { isValid: boolean; errors: string[] } {
       new URL(process.env.OPENCODE_SERVER_URL);
     } catch {
       errors.push("OPENCODE_SERVER_URL must be a valid URL");
+      log.error("Validation error: OPENCODE_SERVER_URL must be a valid URL");
     }
   }
 
-  return {
+  const result = {
     isValid: errors.length === 0,
     errors,
   };
+  log.debug("validateTeamsConfig exit", { isValid: result.isValid, errorCount: errors.length });
+  return result;
 }
 
 /**
@@ -242,16 +345,13 @@ export function validateTeamsConfig(): { isValid: boolean; errors: string[] } {
  * @param config Validated TeamsConfig object
  */
 export function logTeamsConfig(config: TeamsConfig): void {
-  const redact = (value: string): string => {
-    if (!value) return "(not set)";
-    if (value.length <= 8) return "****";
-    return value.substring(0, 4) + "****" + value.substring(value.length - 4);
-  };
+  log.debug("logTeamsConfig entry");
+  const redact = (value: string): string => maskSecret(value);
 
   log.info("=== MS Teams Bot Configuration ===");
   log.info("Azure Configuration:");
   log.info(`  App ID: ${redact(config.azure.appId)}`);
-  log.info(`  App Password: ****[REDACTED]****`);
+  log.info(`  App Password: ${redact(config.azure.appPassword)}`);
   log.info(`  Tenant ID: ${redact(config.azure.tenantId)}`);
   log.info(`  Authorized Group ID: ${redact(config.azure.authorizedGroupId)}`);
   log.info(`  Bot Endpoint: ${config.azure.botEndpoint || "(not set)"}`);
@@ -280,6 +380,7 @@ export function logTeamsConfig(config: TeamsConfig): void {
   log.info(`  Max Reconnect Attempts: ${config.opencode.maxReconnectAttempts}`);
 
   log.info("=================================");
+  log.debug("logTeamsConfig exit");
 }
 
 // =============================================================================
@@ -295,9 +396,11 @@ let cachedConfig: TeamsConfig | null = null;
  * @throws ZodError if configuration is invalid
  */
 export function getTeamsConfig(): TeamsConfig {
+  log.debug("getTeamsConfig entry");
   if (!cachedConfig) {
     cachedConfig = loadTeamsConfig();
   }
+  log.debug("getTeamsConfig exit");
   return cachedConfig;
 }
 
@@ -305,5 +408,7 @@ export function getTeamsConfig(): TeamsConfig {
  * Clear cached configuration (useful for testing)
  */
 export function clearTeamsConfigCache(): void {
+  log.debug("clearTeamsConfigCache entry");
   cachedConfig = null;
+  log.debug("clearTeamsConfigCache exit");
 }

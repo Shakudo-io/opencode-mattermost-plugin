@@ -49,6 +49,7 @@ export class TeamsQuestionHandler {
     this.cleanupTimer = setInterval(() => {
       this.cleanupExpired();
     }, 60000);
+    this.log.info("Question cleanup timer started intervalMs=60000");
   }
 
   async handleQuestionAsked(
@@ -68,7 +69,9 @@ export class TeamsQuestionHandler {
     const { id, sessionId, questions } = questionData;
     const firstQuestion = questions[0];
 
-    this.log.info(`Question asked: ${id} with ${questions.length} question(s)`);
+    this.log.info(
+      `Question asked questionId=${id} sessionId=${sessionId} questionLength=${firstQuestion.question.length} optionCount=${firstQuestion.options.length} questionCount=${questions.length}`
+    );
 
     const activity = await context.sendActivity({
       attachments: [
@@ -86,9 +89,14 @@ export class TeamsQuestionHandler {
       ],
     });
 
+    const threadRootMessageId = this.getRequiredThreadRootMessageId(
+      context,
+      "question asked"
+    );
+
     const pending = createDefaultPendingQuestion({
       sessionId,
-      threadRootMessageId: context.activity.replyToId ?? context.activity.id ?? "",
+      threadRootMessageId,
       questionData: {
         header: firstQuestion.header,
         question: firstQuestion.question,
@@ -117,6 +125,15 @@ export class TeamsQuestionHandler {
     const verb = actionData.verb as string;
     const questionId = actionData.questionId as string;
     const sessionId = actionData.sessionId as string;
+    const userId = context.activity.from?.id;
+    if (!userId) {
+      this.log.error("Missing Teams userId while handling question card action");
+      throw new Error("Missing Teams userId while handling question card action");
+    }
+
+    this.log.info(
+      `Question card action entry verb=${verb} userId=${userId} actionKeys=${Object.keys(actionData).join(",")}`
+    );
 
     if (!questionId || !sessionId) {
       this.log.warn(`Card action missing questionId or sessionId`);
@@ -135,13 +152,14 @@ export class TeamsQuestionHandler {
     const now = new Date();
     const expiresAt = new Date(pending.expiresAt);
     if (now > expiresAt) {
-      this.log.info(`Question expired: ${questionId}`);
+      const ageMs = now.getTime() - new Date(pending.createdAt).getTime();
+      this.log.info(`Question expired questionId=${questionId} ageMs=${ageMs}`);
       this.pendingQuestions.delete(questionId);
       this.sessionToQuestion.delete(sessionId);
 
       await context.updateActivity({
         ...context.activity,
-        id: pending.questionCardId ?? context.activity.replyToId ?? context.activity.id ?? "",
+        id: pending.questionCardId ?? this.getRequiredThreadRootMessageId(context, "question expired"),
         attachments: [createQuestionExpiredCard(pending.questionData.header)],
       });
 
@@ -149,14 +167,14 @@ export class TeamsQuestionHandler {
     }
 
     if (verb === "reject_question") {
-      this.log.info(`Question rejected: ${questionId}`);
+      this.log.info(`Question rejected questionId=${questionId} userId=${userId}`);
       pending.status = "rejected";
       this.pendingQuestions.delete(questionId);
       this.sessionToQuestion.delete(sessionId);
 
       await context.updateActivity({
         ...context.activity,
-        id: pending.questionCardId ?? context.activity.replyToId ?? context.activity.id ?? "",
+        id: pending.questionCardId ?? this.getRequiredThreadRootMessageId(context, "question rejected"),
         attachments: [createQuestionRejectedCard(pending.questionData.header)],
       });
 
@@ -184,7 +202,9 @@ export class TeamsQuestionHandler {
         return { error: "no_answer" };
       }
 
-      this.log.info(`Question answered: ${questionId} with ${JSON.stringify(answer)}`);
+      this.log.info(
+        `Question answered questionId=${questionId} answerCount=${answer.length} hasCustomAnswer=${Boolean(customAnswer?.trim())}`
+      );
       pending.status = "answered";
       pending.answeredAt = now.toISOString();
       pending.answer = {
@@ -197,7 +217,7 @@ export class TeamsQuestionHandler {
 
       await context.updateActivity({
         ...context.activity,
-        id: pending.questionCardId ?? context.activity.replyToId ?? context.activity.id ?? "",
+        id: pending.questionCardId ?? this.getRequiredThreadRootMessageId(context, "question answered"),
         attachments: [createQuestionAnsweredCard(pending.questionData.header, answer)],
       });
 
@@ -208,13 +228,22 @@ export class TeamsQuestionHandler {
   }
 
   hasPendingQuestion(sessionId: string): boolean {
-    return this.sessionToQuestion.has(sessionId);
+    const hasPending = this.sessionToQuestion.has(sessionId);
+    this.log.debug(`Has pending question sessionId=${sessionId} result=${hasPending}`);
+    return hasPending;
   }
 
   getPendingQuestion(sessionId: string): PendingQuestion | undefined {
     const questionId = this.sessionToQuestion.get(sessionId);
-    if (!questionId) return undefined;
-    return this.pendingQuestions.get(questionId);
+    if (!questionId) {
+      this.log.debug(`Get pending question sessionId=${sessionId} found=false`);
+      return undefined;
+    }
+    const pending = this.pendingQuestions.get(questionId);
+    this.log.debug(
+      `Get pending question sessionId=${sessionId} questionId=${questionId} found=${Boolean(pending)}`
+    );
+    return pending;
   }
 
   cancelQuestion(questionId: string): void {
@@ -237,6 +266,10 @@ export class TeamsQuestionHandler {
     const now = new Date();
     let cleaned = 0;
 
+    this.log.debug(
+      `Question cleanup timer fired pendingCount=${this.pendingQuestions.size}`
+    );
+
     for (const [id, pending] of this.pendingQuestions.entries()) {
       const expiresAt = new Date(pending.expiresAt);
       if (now > expiresAt) {
@@ -246,9 +279,7 @@ export class TeamsQuestionHandler {
       }
     }
 
-    if (cleaned > 0) {
-      this.log.info(`Cleaned up ${cleaned} expired questions`);
-    }
+    this.log.info(`Question cleanup complete expiredCount=${cleaned}`);
 
     return cleaned;
   }
@@ -257,8 +288,18 @@ export class TeamsQuestionHandler {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;
+      this.log.info("Question cleanup timer stopped");
     }
     this.log.info("QuestionHandler destroyed");
+  }
+
+  private getRequiredThreadRootMessageId(context: TurnContext, purpose: string): string {
+    const threadRootMessageId = context.activity.replyToId ?? context.activity.id;
+    if (!threadRootMessageId) {
+      this.log.error(`Missing thread root message id purpose=${purpose}`);
+      throw new Error(`Missing thread root message id (${purpose})`);
+    }
+    return threadRootMessageId;
   }
 }
 

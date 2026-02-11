@@ -177,7 +177,9 @@ export class TeamsCommandHandler {
    */
   isCommand(text: string): boolean {
     const trimmed = text.trim();
-    return trimmed.startsWith("!");
+    const result = trimmed.startsWith("!");
+    this.log.debug(`isCommand result=${result} textLength=${text.length}`);
+    return result;
   }
 
   /**
@@ -185,12 +187,20 @@ export class TeamsCommandHandler {
    */
   isNumericResponse(text: string, conversationId: string): boolean {
     const pending = this.pendingModelSelections.get(conversationId);
-    if (!pending) return false;
-    if (Date.now() > pending.expiresAt) {
-      this.pendingModelSelections.delete(conversationId);
+    if (!pending) {
+      this.log.debug(`isNumericResponse=false conversationId=${conversationId} pending=false`);
       return false;
     }
-    return /^\d+$/.test(text.trim());
+    if (Date.now() > pending.expiresAt) {
+      this.pendingModelSelections.delete(conversationId);
+      this.log.debug(`isNumericResponse=false conversationId=${conversationId} expired=true`);
+      return false;
+    }
+    const isNumeric = /^\d+$/.test(text.trim());
+    this.log.debug(
+      `isNumericResponse result=${isNumeric} conversationId=${conversationId} textLength=${text.length}`
+    );
+    return isNumeric;
   }
 
   /**
@@ -202,8 +212,15 @@ export class TeamsCommandHandler {
   ): Promise<CommandResult> {
     const trimmed = text.trim();
 
+    this.log.info(
+      `handleCommand entry userId=${context.userId} conversationId=${context.conversationId} textLength=${trimmed.length}`
+    );
+
     // Check for numeric response to model selection
     if (this.isNumericResponse(trimmed, context.conversationId)) {
+      this.log.info(
+        `Numeric response received value=${trimmed} conversationId=${context.conversationId} sessionId=${context.sessionId}`
+      );
       return this.handleModelSelection(trimmed, context);
     }
 
@@ -212,7 +229,13 @@ export class TeamsCommandHandler {
     const commandName = parts[0].toLowerCase();
     const args = parts.slice(1);
 
-    this.log.info(`Handling command: ${commandName} with ${args.length} args`);
+    this.log.info(
+      `Handling command command=${commandName} argsCount=${args.length} userId=${context.userId}`
+    );
+
+    if (["!select", "!new", "!end"].includes(commandName)) {
+      this.log.warn(`Unsupported command attempted command=${commandName} userId=${context.userId}`);
+    }
 
     // Find command registration
     const registration = this.commands.get(commandName);
@@ -223,7 +246,9 @@ export class TeamsCommandHandler {
     try {
       return await registration.handler(args, context);
     } catch (error) {
-      this.log.error(`Command handler error: ${error}`);
+      this.log.error(
+        `Command handler error command=${commandName} argsCount=${args.length} userId=${context.userId} error=${error}`
+      );
       return {
         handled: true,
         card: createErrorCard("Command Error", String(error)),
@@ -242,6 +267,7 @@ export class TeamsCommandHandler {
     _args: string[],
     _context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info("Executing command !help");
     const commands = getDefaultCommands();
     const card = createHelpCard({
       botName: "OpenCode Bot",
@@ -259,6 +285,7 @@ export class TeamsCommandHandler {
     _args: string[],
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(`Executing command !sessions userId=${context.userId}`);
     if (!this.bridge.isConnected()) {
       return {
         handled: true,
@@ -299,6 +326,7 @@ export class TeamsCommandHandler {
     _args: string[],
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(`Executing command !models userId=${context.userId}`);
     // TODO: Get actual models from OpenCode bridge when API is available
     // For now, use mock data
     const providers = this.getMockProviders();
@@ -340,6 +368,9 @@ export class TeamsCommandHandler {
     text: string,
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(
+      `Handling model selection response value=${text} conversationId=${context.conversationId} sessionId=${context.sessionId}`
+    );
     const pending = this.pendingModelSelections.get(context.conversationId);
     if (!pending) {
       return {
@@ -386,6 +417,7 @@ export class TeamsCommandHandler {
     _args: string[],
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(`Executing command !model userId=${context.userId}`);
     const model =
       (context.sessionId ? this.sessionModels.get(context.sessionId) : undefined) ||
       this.sessionModels.get(context.conversationId);
@@ -413,6 +445,7 @@ export class TeamsCommandHandler {
     _args: string[],
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(`Executing command !costs userId=${context.userId} sessionId=${context.sessionId}`);
     // TODO: Get actual costs from OpenCode bridge when API is available
     // For now, show a placeholder or mock data
 
@@ -446,6 +479,7 @@ export class TeamsCommandHandler {
     _args: string[],
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(`Executing command !stop userId=${context.userId} sessionId=${context.sessionId}`);
     if (!context.sessionId) {
       return {
         handled: true,
@@ -470,6 +504,7 @@ export class TeamsCommandHandler {
     _args: string[],
     context: CommandContext
   ): Promise<CommandResult> {
+    this.log.info(`Executing command !reject userId=${context.userId} sessionId=${context.sessionId}`);
     if (!context.sessionId) {
       return {
         handled: true,
@@ -499,6 +534,7 @@ export class TeamsCommandHandler {
     command: string,
     _context: CommandContext
   ): Promise<CommandResult> {
+    this.log.warn(`Unknown command attempted command=${command}`);
     const availableCommands = Array.from(this.commands.values())
       .filter((c, i, arr) => arr.findIndex((x) => x.command === c.command) === i)
       .map((c) => c.command)

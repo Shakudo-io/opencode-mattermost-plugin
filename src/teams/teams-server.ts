@@ -49,9 +49,10 @@ export interface TeamsServer {
  * @returns TeamsServer instance
  */
 export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
+  const log = teamsLog.withContext("TeamsServer");
+  log.debug("createTeamsServer entry");
   const { adapter, bot, config: configOverride } = options;
   const config = configOverride ?? getTeamsConfig();
-  const log = teamsLog.withContext("TeamsServer");
 
   const app = express();
 
@@ -65,9 +66,25 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
   // Parse JSON bodies (required for Bot Framework messages)
   app.use(express.json());
 
+  const sanitizeHeaders = (headers: Request["headers"]): Record<string, unknown> => {
+    const sanitized: Record<string, unknown> = { ...headers };
+    if (sanitized.authorization) {
+      sanitized.authorization = "[REDACTED]";
+    }
+    if (sanitized.Authorization) {
+      sanitized.Authorization = "[REDACTED]";
+    }
+    return sanitized;
+  };
+
   // Request logging middleware
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    log.debug(`${req.method} ${req.path} from ${req.ip}`);
+    log.info("Incoming request", {
+      method: req.method,
+      path: req.path,
+      contentType: req.headers["content-type"],
+      contentLength: req.headers["content-length"],
+    });
     next();
   });
 
@@ -86,7 +103,7 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
       version: "1.0.0",
     };
 
-    log.debug(`Health check: ${JSON.stringify(healthResponse)}`);
+    log.info("Health check", { response: healthResponse });
     res.status(200).json(healthResponse);
   });
 
@@ -97,7 +114,11 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
   const messagesPath = `${config.server.basePath}${config.server.messagesPath}`;
 
   app.post(messagesPath, async (req: Request, res: Response) => {
-    log.info(`Incoming message on ${messagesPath}`);
+    log.info("Incoming message", {
+      path: messagesPath,
+      contentType: req.headers["content-type"],
+      contentLength: req.headers["content-length"],
+    });
 
     try {
       // Validate request has required Bot Framework headers
@@ -122,7 +143,12 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
       });
     } catch (error) {
       // Handle errors that escape the adapter (T029)
-      log.error(`Error processing message: ${error}`);
+      log.error("Error processing message", {
+        error: String(error),
+        path: req.path,
+        method: req.method,
+        headers: sanitizeHeaders(req.headers),
+      });
 
       // Don't send response if headers already sent
       if (!res.headersSent) {
@@ -159,7 +185,8 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
   // ---------------------------------------------------------------------------
 
   // 404 handler for unknown routes
-  app.use((_req: Request, res: Response) => {
+  app.use((req: Request, res: Response) => {
+    log.warn("Route not found", { path: req.path, method: req.method });
     res.status(404).json({
       error: "Not Found",
       message: "The requested endpoint does not exist",
@@ -167,9 +194,14 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
   });
 
   // Global error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    log.error(`Unhandled error: ${err.message}`);
-    log.error(`Stack: ${err.stack}`);
+  app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+    log.error("Unhandled error", {
+      message: err.message,
+      stack: err.stack,
+      method: req.method,
+      path: req.path,
+      headers: sanitizeHeaders(req.headers),
+    });
 
     if (!res.headersSent) {
       res.status(500).json({
@@ -186,40 +218,49 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
   const port = config.server.port;
 
   const start = (): Promise<void> => {
+    log.debug("start entry");
     return new Promise((resolve, reject) => {
       try {
         serverInstance = app.listen(port, () => {
           log.info(`MS Teams bot server started on port ${port}`);
           log.info(`Health endpoint: http://localhost:${port}${healthPath}`);
           log.info(`Messages endpoint: http://localhost:${port}${messagesPath}`);
+          log.debug("start exit: listening");
           resolve();
         });
 
         serverInstance.on("error", (error) => {
           log.error(`Server error: ${error}`);
+          log.debug("start exit: error");
           reject(error);
         });
       } catch (error) {
+        log.error(`Server start failed: ${error}`);
+        log.debug("start exit: exception");
         reject(error);
       }
     });
   };
 
   const stop = (): Promise<void> => {
+    log.debug("stop entry");
     return new Promise((resolve) => {
       if (serverInstance) {
         log.info("Stopping MS Teams bot server...");
         serverInstance.close(() => {
           log.info("MS Teams bot server stopped");
           serverInstance = null;
+          log.debug("stop exit: stopped");
           resolve();
         });
       } else {
+        log.debug("stop exit: no server instance");
         resolve();
       }
     });
   };
 
+  log.debug("createTeamsServer exit");
   return {
     app,
     start,

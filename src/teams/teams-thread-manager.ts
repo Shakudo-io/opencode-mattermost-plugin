@@ -76,6 +76,7 @@ export class TeamsThreadManager {
 
   setBridge(bridge: OpenCodeBridge): void {
     this.bridge = bridge;
+    this.log.info(`Bridge set (connected=${bridge.isConnected()})`);
   }
 
   async createThreadForSession(
@@ -83,12 +84,26 @@ export class TeamsThreadManager {
     session: OpenCodeSessionInfo
   ): Promise<ThreadCreationResult> {
     const activity = context.activity;
-    const userId = activity.from?.id ?? "unknown";
-    const conversationId = activity.conversation?.id ?? "unknown";
+    const userId = activity.from?.id;
+    if (!userId) {
+      this.log.error("Missing Teams userId while creating thread");
+      throw new Error("Missing Teams userId for thread creation");
+    }
+    const conversationId = activity.conversation?.id;
+    if (!conversationId) {
+      this.log.error("Missing Teams conversationId while creating thread");
+      throw new Error("Missing Teams conversationId for thread creation");
+    }
 
-    this.log.info(`Creating thread for session ${session.shortId} (${session.projectName})`);
+    this.log.info(
+      `Creating thread for sessionId=${session.id} shortId=${session.shortId} userId=${userId} conversationId=${conversationId}`
+    );
 
     const conversationReference = TurnContext.getConversationReference(activity) as ConversationReference;
+
+    this.log.debug(
+      `Conversation reference captured sessionId=${session.id} conversationId=${conversationReference.conversation?.id} serviceUrl=${conversationReference.serviceUrl}`
+    );
 
     const rootMessage = this.buildSessionStartCard(session);
     const response = await context.sendActivity(rootMessage);
@@ -122,6 +137,9 @@ export class TeamsThreadManager {
   }
 
   private buildSessionStartCard(session: OpenCodeSessionInfo): Partial<import("botbuilder").Activity> {
+    this.log.debug(
+      `Building session start card sessionId=${session.id} shortId=${session.shortId} project=${session.projectName}`
+    );
     const card = {
       type: "AdaptiveCard",
       $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -159,10 +177,24 @@ export class TeamsThreadManager {
     text: string
   ): Promise<{ handled: boolean; sessionId?: string; error?: string }> {
     const activity = context.activity;
-    const conversationId = activity.conversation?.id ?? "";
+    const conversationId = activity.conversation?.id;
+    if (!conversationId) {
+      this.log.error("Missing Teams conversationId while routing message");
+      throw new Error("Missing Teams conversationId while routing message");
+    }
+    const userId = activity.from?.id;
+    if (!userId) {
+      this.log.error("Missing Teams userId while routing message");
+      throw new Error("Missing Teams userId while routing message");
+    }
     const replyToId = activity.replyToId;
 
+    this.log.info(
+      `Route message entry userId=${userId} conversationId=${conversationId} replyToId=${replyToId} textLength=${text.length}`
+    );
+
     if (!replyToId) {
+      this.log.info(`Route message not in thread conversationId=${conversationId}`);
       return { handled: false, error: "not_in_thread" };
     }
 
@@ -174,6 +206,9 @@ export class TeamsThreadManager {
       );
 
       if (!possibleMapping) {
+        this.log.warn(
+          `Unknown thread replyToId=${replyToId} conversationId=${conversationId}`
+        );
         return { handled: false, error: "unknown_thread" };
       }
     }
@@ -183,10 +218,16 @@ export class TeamsThreadManager {
     );
 
     if (!threadMapping) {
+      this.log.warn(
+        `Thread mapping not found replyToId=${replyToId} conversationId=${conversationId}`
+      );
       return { handled: false, error: "mapping_not_found" };
     }
 
     if (threadMapping.mode === "ended") {
+      this.log.info(
+        `Session ended for thread=${threadMapping.id} sessionId=${threadMapping.openCodeSessionId}`
+      );
       await context.sendActivity(
         MessageFactory.text("❌ This session has ended. Start a new session by sending a message outside this thread.")
       );
@@ -194,20 +235,28 @@ export class TeamsThreadManager {
     }
 
     if (threadMapping.mode === "merged") {
+      this.log.info(
+        `Thread merged thread=${threadMapping.id} sessionId=${threadMapping.openCodeSessionId}`
+      );
       await context.sendActivity(
         MessageFactory.text("🔒 This thread has been merged into another thread.")
       );
       return { handled: true, error: "session_merged" };
     }
 
-    const userId = activity.from?.id ?? "";
     if (!this.store.isUserApproved(threadMapping, userId)) {
+      this.log.warn(
+        `User not approved userId=${userId} thread=${threadMapping.id} sessionId=${threadMapping.openCodeSessionId}`
+      );
       return { handled: false, error: "user_not_approved", sessionId: threadMapping.openCodeSessionId };
     }
 
     await this.store.updateActivity(threadMapping.id);
 
     if (!this.bridge || !this.bridge.isConnected()) {
+      this.log.warn(
+        `Bridge disconnected thread=${threadMapping.id} sessionId=${threadMapping.openCodeSessionId}`
+      );
       await context.sendActivity(
         MessageFactory.text("⚠️ OpenCode is not connected. Please try again later.")
       );
@@ -216,6 +265,9 @@ export class TeamsThreadManager {
 
     const session = this.bridge.getSession(threadMapping.openCodeSessionId);
     if (!session) {
+      this.log.warn(
+        `Session not found for thread=${threadMapping.id} sessionId=${threadMapping.openCodeSessionId}`
+      );
       await context.sendActivity(
         MessageFactory.text("⚠️ The OpenCode session is no longer available.")
       );
@@ -270,6 +322,9 @@ export class TeamsThreadManager {
   }
 
   private buildSessionEndCard(mapping: TeamsThreadMapping): Partial<import("botbuilder").Activity> {
+    this.log.debug(
+      `Building session end card sessionId=${mapping.openCodeSessionId} threadId=${mapping.id} mode=${mapping.mode}`
+    );
     const card = {
       type: "AdaptiveCard",
       $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -361,13 +416,18 @@ export class TeamsThreadManager {
           await context.sendActivity(activity);
         }
       );
+      this.log.info(
+        `Proactive message sent conversationId=${conversationReference.conversation?.id}`
+      );
     } catch (error) {
       this.log.error(`Failed to send proactive message: ${error}`);
     }
   }
 
   getThreadBySessionId(sessionId: string): TeamsThreadMapping | undefined {
-    return this.store.getBySessionId(sessionId);
+    const mapping = this.store.getBySessionId(sessionId);
+    this.log.debug(`Get thread by session sessionId=${sessionId} found=${Boolean(mapping)}`);
+    return mapping;
   }
 
   getThreadByRootMessageId(messageId: string): TeamsThreadMapping | undefined {
@@ -375,7 +435,9 @@ export class TeamsThreadManager {
   }
 
   getActiveThreadsForUser(userId: string): TeamsThreadMapping[] {
-    return this.store.getByTeamsUserId(userId).filter((m) => m.mode === "normal");
+    const threads = this.store.getByTeamsUserId(userId).filter((m) => m.mode === "normal");
+    this.log.debug(`Get active threads for user userId=${userId} count=${threads.length}`);
+    return threads;
   }
 
   getAllActiveThreads(): TeamsThreadMapping[] {
@@ -384,15 +446,23 @@ export class TeamsThreadManager {
 
   async approveUser(threadId: string, userId: string): Promise<boolean> {
     const mapping = this.store.getById(threadId);
-    if (!mapping) return false;
+    if (!mapping) {
+      this.log.warn(`Approve user failed: thread not found threadId=${threadId}`);
+      return false;
+    }
     await this.store.addApprovedUser(threadId, userId);
+    this.log.info(`User approved threadId=${threadId} userId=${userId}`);
     return true;
   }
 
   async setApproveAll(threadId: string, approveAll: boolean): Promise<boolean> {
     const mapping = this.store.getById(threadId);
-    if (!mapping) return false;
+    if (!mapping) {
+      this.log.warn(`Set approve all failed: thread not found threadId=${threadId}`);
+      return false;
+    }
     await this.store.setApproveAll(threadId, approveAll);
+    this.log.info(`Set approve all threadId=${threadId} approveAll=${approveAll}`);
     return true;
   }
 }

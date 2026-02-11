@@ -32,10 +32,13 @@ import { getTeamsConfig, type TeamsConfig } from "./teams-config.js";
  * @returns Configured CloudAdapter instance
  */
 export function createTeamsAdapter(config?: TeamsConfig): CloudAdapter {
-  const teamsConfig = config ?? getTeamsConfig();
-
   const log = teamsLog.withContext("TeamsAdapter");
-  log.info("Creating CloudAdapter for MS Teams bot");
+  log.debug("createTeamsAdapter entry");
+  const teamsConfig = config ?? getTeamsConfig();
+  log.info("Creating CloudAdapter for MS Teams bot", {
+    appId: teamsConfig.azure.appId,
+    tenantId: teamsConfig.azure.tenantId,
+  });
 
   // Build authentication configuration for single-tenant (Shakudo corporate)
   const authConfig: ConfigurationBotFrameworkAuthenticationOptions = {
@@ -56,15 +59,18 @@ export function createTeamsAdapter(config?: TeamsConfig): CloudAdapter {
 
   // Configure error handler
   adapter.onTurnError = async (context, error) => {
-    log.error(`[onTurnError] Unhandled error: ${error.message}`);
-    log.error(`[onTurnError] Stack: ${error.stack}`);
+    log.error("[onTurnError] Unhandled error", {
+      message: error.message,
+      stack: error.stack,
+    });
 
-    // Log activity details for debugging
-    if (context.activity) {
-      log.error(`[onTurnError] Activity type: ${context.activity.type}`);
-      log.error(`[onTurnError] Activity channel: ${context.activity.channelId}`);
-      log.error(`[onTurnError] Conversation ID: ${context.activity.conversation?.id}`);
-    }
+    const activity = context.activity;
+    log.error("[onTurnError] Activity context", {
+      type: activity?.type,
+      fromId: activity?.from?.id,
+      conversationId: activity?.conversation?.id,
+      channelId: activity?.channelId,
+    });
 
     // Send a generic error message to the user (if possible)
     // This might fail if the error is related to sending messages
@@ -81,6 +87,7 @@ export function createTeamsAdapter(config?: TeamsConfig): CloudAdapter {
   };
 
   log.info("CloudAdapter created successfully");
+  log.debug("createTeamsAdapter exit");
   return adapter;
 }
 
@@ -99,9 +106,12 @@ let adapterInstance: CloudAdapter | null = null;
  * @returns CloudAdapter instance
  */
 export function getTeamsAdapter(): CloudAdapter {
+  const log = teamsLog.withContext("TeamsAdapter");
+  log.debug("getTeamsAdapter entry");
   if (!adapterInstance) {
     adapterInstance = createTeamsAdapter();
   }
+  log.debug("getTeamsAdapter exit");
   return adapterInstance;
 }
 
@@ -111,7 +121,11 @@ export function getTeamsAdapter(): CloudAdapter {
  * Useful for testing or when configuration changes.
  */
 export function clearAdapterInstance(): void {
+  const log = teamsLog.withContext("TeamsAdapter");
+  log.info("clearAdapterInstance called");
+  log.debug("clearAdapterInstance entry");
   adapterInstance = null;
+  log.debug("clearAdapterInstance exit");
 }
 
 // =============================================================================
@@ -128,7 +142,7 @@ export function clearAdapterInstance(): void {
  */
 export function validateAdapterConfig(): boolean {
   const log = teamsLog.withContext("TeamsAdapter");
-
+  log.debug("validateAdapterConfig entry");
   try {
     const config = getTeamsConfig();
 
@@ -148,10 +162,15 @@ export function validateAdapterConfig(): boolean {
       return false;
     }
 
-    log.debug("Adapter configuration validated successfully");
+    log.info("Adapter configuration validated successfully", {
+      appId: config.azure.appId,
+      tenantId: config.azure.tenantId,
+    });
+    log.debug("validateAdapterConfig exit: success");
     return true;
   } catch (error) {
     log.error(`Configuration validation failed: ${error}`);
+    log.debug("validateAdapterConfig exit: failure");
     return false;
   }
 }

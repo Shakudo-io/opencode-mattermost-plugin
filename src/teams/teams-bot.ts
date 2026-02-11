@@ -43,6 +43,8 @@ export class TeamsBot extends TeamsActivityHandler {
   constructor(options: TeamsBotOptions) {
     super();
 
+    this.log.debug("constructor entry");
+
     this.config = options.config;
     this.messageHandler = options.onMessage;
     this.cardActionHandler = options.onCardAction;
@@ -50,9 +52,11 @@ export class TeamsBot extends TeamsActivityHandler {
     this.registerHandlers();
 
     this.log.info("TeamsBot initialized");
+    this.log.debug("constructor exit");
   }
 
   private registerHandlers(): void {
+    this.log.debug("registerHandlers entry");
     this.onMessage(async (context: TurnContext, next: () => Promise<void>): Promise<void> => {
       await this.handleMessage(context);
       await next();
@@ -67,17 +71,42 @@ export class TeamsBot extends TeamsActivityHandler {
       await this.handleMembersRemoved(context);
       await next();
     });
+
+    this.log.debug("registerHandlers exit");
   }
 
   private async handleMessage(context: TurnContext): Promise<void> {
+    this.log.debug("handleMessage entry");
     const activity = context.activity;
     const text = activity.text?.trim() ?? "";
-    const userId = activity.from?.id ?? "unknown";
-    const userName = activity.from?.name ?? "unknown";
-    const conversationId = activity.conversation?.id ?? "unknown";
+    const userId = activity.from?.id;
+    if (!userId) {
+      this.log.error("Missing required activity.from.id", {
+        activityType: activity.type,
+        conversationId: activity.conversation?.id,
+      });
+      throw new Error("Missing required field: activity.from.id");
+    }
+    const conversationId = activity.conversation?.id;
+    if (!conversationId) {
+      this.log.error("Missing required activity.conversation.id", {
+        activityType: activity.type,
+        fromId: activity.from?.id,
+      });
+      throw new Error("Missing required field: activity.conversation.id");
+    }
+    const userName = activity.from?.name ?? activity.from?.id ?? "unknown";
+    const isReply = Boolean(activity.replyToId);
+    const replyToId = activity.replyToId;
 
-    this.log.info(`Message received from ${userName} (${userId}) in conversation ${conversationId}`);
-    this.log.debug(`Message length: ${text.length} chars`);
+    this.log.info("Message received", {
+      userId,
+      userName,
+      conversationId,
+      textLength: text.length,
+      isReply,
+      replyToId,
+    });
 
     const cleanedText = this.stripBotMentionFromTeamsMessage(activity);
 
@@ -85,7 +114,13 @@ export class TeamsBot extends TeamsActivityHandler {
       try {
         await this.messageHandler(context, cleanedText);
       } catch (error) {
-        this.log.error(`Error in message handler: ${error}`);
+        this.log.error("Error in message handler", {
+          error: String(error),
+          userId,
+          userName,
+          conversationId,
+          activityType: activity.type,
+        });
         await context.sendActivity(
           MessageFactory.text("Sorry, I encountered an error processing your message. Please try again.")
         );
@@ -96,24 +131,39 @@ export class TeamsBot extends TeamsActivityHandler {
         MessageFactory.text(`I received your message: "${cleanedText.substring(0, 50)}${cleanedText.length > 50 ? "..." : ""}"`)
       );
     }
+
+    this.log.debug("handleMessage exit");
   }
 
   protected async onAdaptiveCardInvoke(
     context: TurnContext,
     invokeValue: AdaptiveCardInvokeValue
   ): Promise<AdaptiveCardInvokeResponse> {
+    this.log.debug("onAdaptiveCardInvoke entry");
     const verb = invokeValue.action?.verb ?? "unknown";
     const actionData = (invokeValue.action?.data as Record<string, unknown>) ?? {};
+    const userId = context.activity.from?.id;
 
-    this.log.info(`Card action received: verb="${verb}"`);
-    this.log.debug(`Card action data keys: ${Object.keys(actionData).join(", ")}`);
+    this.log.info("Card action received", {
+      verb,
+      userId,
+      dataKeys: Object.keys(actionData),
+    });
 
     if (this.cardActionHandler) {
       try {
         await this.cardActionHandler(context, { verb, ...actionData });
+        this.log.debug("onAdaptiveCardInvoke exit: handled");
         return { statusCode: 200, type: "application/vnd.microsoft.activity.message", value: { result: "OK" } };
       } catch (error) {
-        this.log.error(`Error in card action handler: ${error}`);
+        this.log.error("Error in card action handler", {
+          error: String(error),
+          verb,
+          userId,
+          activityType: context.activity.type,
+          conversationId: context.activity.conversation?.id,
+        });
+        this.log.debug("onAdaptiveCardInvoke exit: error");
         return {
           statusCode: 500,
           type: "application/vnd.microsoft.error",
@@ -122,16 +172,18 @@ export class TeamsBot extends TeamsActivityHandler {
       }
     }
 
+    this.log.debug("onAdaptiveCardInvoke exit: no handler");
     return { statusCode: 200, type: "application/vnd.microsoft.activity.message", value: { result: "OK" } };
   }
 
   private async handleMembersAdded(context: TurnContext): Promise<void> {
+    this.log.debug("handleMembersAdded entry");
     const membersAdded = context.activity.membersAdded ?? [];
     const botId = context.activity.recipient?.id;
 
     for (const member of membersAdded) {
       if (member.id !== botId) {
-        this.log.info(`User ${member.name ?? member.id} joined the conversation`);
+        this.log.info("Member added", { memberId: member.id, memberName: member.name });
       } else {
         this.log.info("Bot was added to the conversation");
         await context.sendActivity(
@@ -141,17 +193,23 @@ export class TeamsBot extends TeamsActivityHandler {
         );
       }
     }
+
+    this.log.debug("handleMembersAdded exit");
   }
 
   private async handleMembersRemoved(context: TurnContext): Promise<void> {
+    this.log.debug("handleMembersRemoved entry");
     const membersRemoved = context.activity.membersRemoved ?? [];
 
     for (const member of membersRemoved) {
-      this.log.info(`User ${member.name ?? member.id} left the conversation`);
+      this.log.info("Member removed", { memberId: member.id, memberName: member.name });
     }
+
+    this.log.debug("handleMembersRemoved exit");
   }
 
   private stripBotMentionFromTeamsMessage(activity: Activity): string {
+    this.log.debug("stripBotMentionFromTeamsMessage entry");
     const text = activity.text ?? "";
     const mentions = activity.entities?.filter((e) => e.type === "mention") ?? [];
 
@@ -164,19 +222,32 @@ export class TeamsBot extends TeamsActivityHandler {
         }
       }
     }
-
+    this.log.info("Mention stripping", {
+      originalLength: text.length,
+      cleanedLength: cleanedText.length,
+      mentionCount: mentions.length,
+    });
+    this.log.debug("stripBotMentionFromTeamsMessage exit");
     return cleanedText;
   }
 
   setMessageHandler(handler: MessageHandler): void {
+    this.log.debug("setMessageHandler entry");
     this.messageHandler = handler;
+    this.log.debug("setMessageHandler exit");
   }
 
   setCardActionHandler(handler: CardActionHandler): void {
+    this.log.debug("setCardActionHandler entry");
     this.cardActionHandler = handler;
+    this.log.debug("setCardActionHandler exit");
   }
 
   static getConversationReference(activity: Activity): Partial<ConversationReference> {
-    return TurnContext.getConversationReference(activity);
+    const log = teamsLog.withContext("TeamsBot");
+    log.debug("getConversationReference entry");
+    const reference = TurnContext.getConversationReference(activity);
+    log.debug("getConversationReference exit");
+    return reference;
   }
 }

@@ -41,6 +41,7 @@ export class TeamsPermissionHandler {
     this.cleanupTimer = setInterval(() => {
       this.cleanupExpired();
     }, 30000);
+    this.log.info("Permission cleanup timer started intervalMs=30000");
   }
 
   async handlePermissionRequested(
@@ -55,13 +56,22 @@ export class TeamsPermissionHandler {
     }
   ): Promise<PendingPermission> {
     this.log.info(
+      `Permission requested sessionId=${permissionData.sessionId} type=${permissionData.type} commandLength=${permissionData.command?.length ?? 0} filePath=${permissionData.filePath} descriptionLength=${permissionData.description.length}`
+    );
+
+    const threadRootMessageId = this.getRequiredThreadRootMessageId(
+      context,
+      "permission requested"
+    );
+
+    this.log.info(
       `Permission requested: ${permissionData.type} for session ${permissionData.sessionId}`
     );
 
     const pending = createDefaultPendingPermission({
       id: permissionData.id,
       sessionId: permissionData.sessionId,
-      threadRootMessageId: context.activity.replyToId ?? context.activity.id ?? "",
+      threadRootMessageId,
       permissionData: {
         type: permissionData.type,
         command: permissionData.command,
@@ -97,6 +107,15 @@ export class TeamsPermissionHandler {
   > {
     const verb = actionData.verb as string;
     const permissionId = actionData.permissionId as string;
+    const userId = context.activity.from?.id;
+    if (!userId) {
+      this.log.error("Missing Teams userId while handling permission card action");
+      throw new Error("Missing Teams userId while handling permission card action");
+    }
+
+    this.log.info(
+      `Permission card action entry verb=${verb} userId=${userId} permissionId=${permissionId}`
+    );
 
     if (verb !== "approve_permission" && verb !== "deny_permission") {
       return { error: "unknown_verb" };
@@ -114,7 +133,8 @@ export class TeamsPermissionHandler {
     const now = new Date();
     const expiresAt = new Date(pending.expiresAt);
     if (now > expiresAt) {
-      this.log.warn(`Permission expired: ${permissionId}`);
+      const ageMs = now.getTime() - new Date(pending.createdAt).getTime();
+      this.log.warn(`Permission expired permissionId=${permissionId} ageMs=${ageMs}`);
       const card = createPermissionExpiredCard(pending.permissionData.description);
       await context.sendActivity({ attachments: [card] });
       this.pendingPermissions.delete(permissionId);
@@ -125,9 +145,12 @@ export class TeamsPermissionHandler {
     if (verb === "approve_permission") {
       pending.status = "approved";
       pending.resolvedAt = now.toISOString();
-      pending.resolvedBy = context.activity.from?.id ?? "unknown";
+      pending.resolvedBy = userId;
 
-      this.log.info(`Permission approved: ${permissionId} by ${pending.resolvedBy}`);
+      const toolName = pending.permissionData.command ?? pending.permissionData.type;
+      this.log.info(
+        `Permission approved permissionId=${permissionId} userId=${userId} tool=${toolName}`
+      );
 
       const card = createPermissionApprovedCard(pending.permissionData.description);
       await context.sendActivity({ attachments: [card] });
@@ -143,9 +166,12 @@ export class TeamsPermissionHandler {
     } else {
       pending.status = "denied";
       pending.resolvedAt = now.toISOString();
-      pending.resolvedBy = context.activity.from?.id ?? "unknown";
+      pending.resolvedBy = userId;
 
-      this.log.info(`Permission denied: ${permissionId} by ${pending.resolvedBy}`);
+      const toolName = pending.permissionData.command ?? pending.permissionData.type;
+      this.log.info(
+        `Permission denied permissionId=${permissionId} userId=${userId} tool=${toolName}`
+      );
 
       const card = createPermissionDeniedCard(pending.permissionData.description);
       await context.sendActivity({ attachments: [card] });
@@ -193,6 +219,10 @@ export class TeamsPermissionHandler {
     const now = new Date();
     let expiredCount = 0;
 
+    this.log.debug(
+      `Permission cleanup timer fired pendingCount=${this.pendingPermissions.size}`
+    );
+
     for (const [permissionId, pending] of this.pendingPermissions.entries()) {
       const expiresAt = new Date(pending.expiresAt);
       if (now > expiresAt) {
@@ -204,9 +234,7 @@ export class TeamsPermissionHandler {
       }
     }
 
-    if (expiredCount > 0) {
-      this.log.info(`Cleaned up ${expiredCount} expired permissions`);
-    }
+    this.log.info(`Permission cleanup complete expiredCount=${expiredCount}`);
 
     return expiredCount;
   }
@@ -215,10 +243,20 @@ export class TeamsPermissionHandler {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;
+      this.log.info("Permission cleanup timer stopped");
     }
     this.pendingPermissions.clear();
     this.sessionToPermission.clear();
     this.log.info("Permission handler destroyed");
+  }
+
+  private getRequiredThreadRootMessageId(context: TurnContext, purpose: string): string {
+    const threadRootMessageId = context.activity.replyToId ?? context.activity.id;
+    if (!threadRootMessageId) {
+      this.log.error(`Missing thread root message id purpose=${purpose}`);
+      throw new Error(`Missing thread root message id (${purpose})`);
+    }
+    return threadRootMessageId;
   }
 }
 

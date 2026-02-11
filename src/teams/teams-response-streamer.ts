@@ -12,6 +12,7 @@ import {
 } from "./cards/index.js";
 
 export interface StreamingSession {
+  streamId: string;
   sessionId: string;
   prompt: string;
   startTime: number;
@@ -57,9 +58,12 @@ export class TeamsResponseStreamer {
     const streamId = `${sessionId}-${Date.now()}`;
     const startTime = Date.now();
 
-    this.log.info(`Starting streaming session ${streamId}`);
+    this.log.info(
+      `Start streaming streamId=${streamId} sessionId=${sessionId} promptLength=${prompt.length}`
+    );
 
     const session: StreamingSession = {
+      streamId,
       sessionId,
       prompt,
       startTime,
@@ -99,15 +103,27 @@ export class TeamsResponseStreamer {
       return;
     }
 
+    const contentLength = chunk.content?.length ?? chunk.error?.length ?? 0;
+    this.log.debug(
+      `Handle chunk streamId=${streamId} sessionId=${session.sessionId} type=${chunk.type} contentLength=${contentLength}`
+    );
+
     switch (chunk.type) {
       case "text":
         if (chunk.content) {
           session.chunks.push(chunk.content);
+          const totalLength = session.chunks.join("").length;
+          this.log.debug(
+            `Chunk text streamId=${streamId} totalLength=${totalLength}`
+          );
         }
         break;
 
       case "tool_start":
         if (chunk.toolName) {
+          this.log.info(
+            `Chunk tool_start streamId=${streamId} tool=${chunk.toolName}`
+          );
           session.tools.push({
             name: chunk.toolName,
             status: "running",
@@ -119,6 +135,9 @@ export class TeamsResponseStreamer {
 
       case "tool_end":
         if (chunk.toolName) {
+          this.log.info(
+            `Chunk tool_end streamId=${streamId} tool=${chunk.toolName}`
+          );
           const tool = session.tools.find(
             (t) => t.name === chunk.toolName && t.status === "running"
           );
@@ -131,7 +150,10 @@ export class TeamsResponseStreamer {
         break;
 
       case "error":
-        session.error = chunk.error ?? "Unknown error";
+        session.error = chunk.error || "error chunk received with no message";
+        this.log.warn(
+          `Chunk error streamId=${streamId} sessionId=${session.sessionId} errorLength=${session.error.length}`
+        );
         const errorTool = session.tools.find((t) => t.status === "running");
         if (errorTool) {
           errorTool.status = "error";
@@ -141,6 +163,9 @@ export class TeamsResponseStreamer {
         break;
 
       case "complete":
+        this.log.info(
+          `Chunk complete streamId=${streamId} sessionId=${session.sessionId}`
+        );
         session.isComplete = true;
         break;
     }
@@ -171,11 +196,15 @@ export class TeamsResponseStreamer {
 
   cancelStreaming(streamId: string): void {
     const session = this.activeSessions.get(streamId);
-    if (!session) return;
+    if (!session) {
+      this.log.warn(`Cancel streaming streamId=${streamId} reason=not_found`);
+      return;
+    }
 
     this.stopPeriodicUpdates(streamId);
     this.activeSessions.delete(streamId);
-    this.log.info(`Streaming session ${streamId} cancelled`);
+    const reason = session.error ? "error" : "cancelled";
+    this.log.info(`Cancel streaming streamId=${streamId} reason=${reason}`);
   }
 
   private startPeriodicUpdates(streamId: string): void {
@@ -184,6 +213,9 @@ export class TeamsResponseStreamer {
     }, this.config.updateIntervalMs);
 
     this.updateTimers.set(streamId, timer);
+    this.log.debug(
+      `Start periodic updates streamId=${streamId} intervalMs=${this.config.updateIntervalMs}`
+    );
   }
 
   private stopPeriodicUpdates(streamId: string): void {
@@ -191,6 +223,7 @@ export class TeamsResponseStreamer {
     if (timer) {
       clearInterval(timer);
       this.updateTimers.delete(streamId);
+      this.log.debug(`Stop periodic updates streamId=${streamId}`);
     }
   }
 
@@ -207,13 +240,19 @@ export class TeamsResponseStreamer {
         ? currentContent.slice(-previewLength)
         : currentContent;
 
-      const card = createStatusCard({
-        sessionId: session.sessionId,
-        prompt: session.prompt,
-        startTime: session.startTime,
-        tools: session.tools,
-        currentOutput: preview,
-      });
+    const card = createStatusCard({
+      sessionId: session.sessionId,
+      prompt: session.prompt,
+      startTime: session.startTime,
+      tools: session.tools,
+      currentOutput: preview,
+    });
+
+    const cardSizeBytes = Buffer.byteLength(JSON.stringify(card), "utf8");
+    const elapsedMs = Date.now() - session.startTime;
+    this.log.debug(
+      `Update status card attempt streamId=${streamId} cardBytes=${cardSizeBytes} toolsCount=${session.tools.length} elapsedMs=${elapsedMs}`
+    );
 
       try {
         await this.checkRateLimit();
@@ -238,6 +277,9 @@ export class TeamsResponseStreamer {
     session: StreamingSession,
     content: string
   ): Promise<void> {
+    this.log.info(
+      `Send final response card streamId=${session.streamId} contentLength=${content.length} paginated=no pageCount=1`
+    );
     const responseCard = createResponseCard({
       sessionId: session.sessionId,
       content,
@@ -310,6 +352,10 @@ export class TeamsResponseStreamer {
       content
     );
 
+    this.log.info(
+      `Send paginated response streamId=${session.streamId} contentLength=${content.length} paginated=yes pageCount=${cards.length}`
+    );
+
     try {
       if (session.statusMessageId && cards.length > 0) {
         await this.checkRateLimit();
@@ -343,7 +389,9 @@ export class TeamsResponseStreamer {
     if (this.requestTimes.length >= this.config.rateLimitRps) {
       const waitTime = 1000 - (now - this.requestTimes[0]);
       if (waitTime > 0) {
-        this.log.debug(`Rate limit reached, waiting ${waitTime}ms`);
+        this.log.warn(
+          `Rate limit reached currentRps=${this.requestTimes.length} limit=${this.config.rateLimitRps} waitMs=${waitTime}`
+        );
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }

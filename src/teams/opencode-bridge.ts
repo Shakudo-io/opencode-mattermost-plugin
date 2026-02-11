@@ -81,6 +81,7 @@ export class OpenCodeBridge {
   private readonly sessionRegistry: OpenCodeSessionRegistry;
 
   private connectionState: ConnectionState = "disconnected";
+  private stateTransitionReason: string | undefined;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
@@ -140,6 +141,10 @@ export class OpenCodeBridge {
       return true;
     }
 
+    this.log.info(
+      `Connect entry serverUrl=${this.config.serverUrl} currentState=${this.connectionState}`
+    );
+    this.markStateTransitionReason("connect_called");
     this.setConnectionState("connecting");
     this.log.info(`Connecting to OpenCode server at ${this.config.serverUrl}`);
 
@@ -164,12 +169,14 @@ export class OpenCodeBridge {
       this.startHealthCheckTimer();
 
       this.reconnectAttempts = 0;
+      this.markStateTransitionReason("connect_success");
       this.setConnectionState("connected");
       this.log.info(`Connected to OpenCode server. Found ${this.sessionRegistry.countAvailable()} sessions.`);
 
       return true;
     } catch (error) {
       this.log.error(`Failed to connect to OpenCode: ${error}`);
+      this.markStateTransitionReason("connect_failed");
       this.setConnectionState("error");
       this.scheduleReconnect();
       return false;
@@ -193,6 +200,7 @@ export class OpenCodeBridge {
     // Clear active prompts
     this.activePrompts.clear();
 
+    this.markStateTransitionReason("disconnect_called");
     this.setConnectionState("disconnected");
     this.log.info("Disconnected from OpenCode server");
   }
@@ -201,13 +209,22 @@ export class OpenCodeBridge {
    * Check connection health
    */
   private async checkHealth(): Promise<boolean> {
+    const startTime = Date.now();
+    const url = `${this.config.serverUrl}/`;
+    this.log.debug(`Health check request url=${url}`);
     try {
-      const response = await fetch(`${this.config.serverUrl}/`, {
+      const response = await fetch(url, {
         method: "GET",
         signal: AbortSignal.timeout(this.config.connectionTimeout),
       });
+      const elapsedMs = Date.now() - startTime;
+      this.log.debug(
+        `Health check response url=${url} status=${response.status} ok=${response.ok} latencyMs=${elapsedMs}`
+      );
       return response.ok;
-    } catch {
+    } catch (error) {
+      const elapsedMs = Date.now() - startTime;
+      this.log.warn(`Health check failed url=${url} latencyMs=${elapsedMs} error=${error}`);
       return false;
     }
   }
@@ -216,21 +233,34 @@ export class OpenCodeBridge {
    * List sessions from the OpenCode server
    */
   private async listSessionsFromServer(): Promise<{ data: OpenCodeSession[] | undefined }> {
+    const startTime = Date.now();
+    const url = `${this.config.serverUrl}/session`;
+    this.log.debug(`List sessions request url=${url}`);
     try {
-      const response = await fetch(`${this.config.serverUrl}/session`, {
+      const response = await fetch(url, {
         method: "GET",
         headers: { "Content-Type": "application/json" },
         signal: AbortSignal.timeout(this.config.connectionTimeout),
       });
 
       if (!response.ok) {
+        const elapsedMs = Date.now() - startTime;
+        this.log.warn(
+          `List sessions failed url=${url} status=${response.status} latencyMs=${elapsedMs}`
+        );
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
       const data = await response.json() as OpenCodeSession[];
+      const elapsedMs = Date.now() - startTime;
+      this.log.debug(
+        `List sessions response url=${url} status=${response.status} count=${data.length} latencyMs=${elapsedMs}`
+      );
       return { data };
     } catch (error) {
+      const elapsedMs = Date.now() - startTime;
       this.log.error(`Failed to list sessions: ${error}`);
+      this.log.debug(`List sessions error url=${url} latencyMs=${elapsedMs}`);
       return { data: undefined };
     }
   }
@@ -245,10 +275,12 @@ export class OpenCodeBridge {
       const isHealthy = await this.checkHealth();
       if (!isHealthy && this.connectionState === "connected") {
         this.log.warn("OpenCode server health check failed, attempting reconnect");
+        this.markStateTransitionReason("health_check_failed");
         this.setConnectionState("reconnecting");
         this.scheduleReconnect();
       }
     }, 30000);
+    this.log.info("Health check timer started intervalMs=30000");
   }
 
   /**
@@ -258,6 +290,7 @@ export class OpenCodeBridge {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
+      this.log.info("Health check timer stopped");
     }
   }
 
@@ -268,6 +301,7 @@ export class OpenCodeBridge {
     if (this.reconnectTimer) return;
     if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
       this.log.error(`Max reconnect attempts (${this.config.maxReconnectAttempts}) reached`);
+      this.markStateTransitionReason("max_reconnect_attempts_reached");
       this.setConnectionState("error");
       return;
     }
@@ -276,6 +310,7 @@ export class OpenCodeBridge {
     this.reconnectAttempts++;
 
     this.log.info(`Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`);
+    this.log.debug(`Reconnect timer started delayMs=${delay} attempt=${this.reconnectAttempts}`);
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
@@ -290,6 +325,7 @@ export class OpenCodeBridge {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      this.log.debug("Reconnect timer stopped");
     }
   }
 
@@ -298,9 +334,18 @@ export class OpenCodeBridge {
    */
   private setConnectionState(state: ConnectionState): void {
     if (this.connectionState === state) return;
+    const previousState = this.connectionState;
+    const reason = this.stateTransitionReason ?? "unspecified";
     this.connectionState = state;
-    this.log.debug(`Connection state changed to: ${state}`);
+    this.stateTransitionReason = undefined;
+    this.log.info(
+      `Connection state changed from=${previousState} to=${state} reason=${reason}`
+    );
     this.connectionStateCallback?.(state);
+  }
+
+  private markStateTransitionReason(reason: string): void {
+    this.stateTransitionReason = reason;
   }
 
   // ===========================================================================
@@ -370,7 +415,10 @@ export class OpenCodeBridge {
       return null;
     }
 
-    this.log.info(`Sending prompt to session ${session.shortId}: "${prompt.substring(0, 50)}..."`);
+    const promptUrl = `${this.config.serverUrl}/session/${sessionId}/prompt`;
+    this.log.info(
+      `Send prompt entry sessionId=${sessionId} shortId=${session.shortId} promptLength=${prompt.length} url=${promptUrl}`
+    );
 
     // Track active prompt for aggregation
     const promptId = `${sessionId}-${Date.now()}`;
@@ -381,7 +429,8 @@ export class OpenCodeBridge {
     });
 
     try {
-      const response = await fetch(`${this.config.serverUrl}/session/${sessionId}/prompt`, {
+      const startTime = Date.now();
+      const response = await fetch(promptUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -389,6 +438,10 @@ export class OpenCodeBridge {
         },
         body: JSON.stringify({ prompt }),
       });
+      const elapsedMs = Date.now() - startTime;
+      this.log.info(
+        `Send prompt response sessionId=${sessionId} status=${response.status} latencyMs=${elapsedMs}`
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -404,7 +457,7 @@ export class OpenCodeBridge {
 
       return aggregatedResponse;
     } catch (error) {
-      this.log.error(`Failed to send prompt: ${error}`);
+      this.log.error(`Failed to send prompt sessionId=${sessionId} error=${error}`);
 
       // Emit error chunk
       const errorChunk: ResponseChunk = {
@@ -458,6 +511,7 @@ export class OpenCodeBridge {
           if (line.startsWith("data: ")) {
             const data = line.slice(6);
             if (data === "[DONE]") {
+              this.log.debug(`SSE event received type=done dataLength=${data.length}`);
               // Stream complete
               const completeChunk: ResponseChunk = {
                 type: "complete",
@@ -469,7 +523,11 @@ export class OpenCodeBridge {
             }
 
             try {
-              const event = JSON.parse(data);
+              const event = JSON.parse(data) as Record<string, unknown>;
+              const eventType = String(event.type ?? "unknown");
+              this.log.debug(
+                `SSE event received type=${eventType} dataLength=${data.length}`
+              );
               const chunk = this.parseSSEEvent(event, sessionId);
               if (chunk) {
                 // Aggregate text chunks
@@ -481,7 +539,11 @@ export class OpenCodeBridge {
                 onChunk?.(chunk);
                 this.responseChunkCallback?.(chunk);
               }
-            } catch {
+            } catch (error) {
+              this.log.warn(
+                `SSE event parse failed dataLength=${data.length} error=${error}`
+              );
+              this.log.debug(`SSE event received type=text dataLength=${data.length}`);
               // Not JSON, treat as plain text
               const textChunk: ResponseChunk = {
                 type: "text",
@@ -507,6 +569,8 @@ export class OpenCodeBridge {
    */
   private parseSSEEvent(event: Record<string, unknown>, sessionId: string): ResponseChunk | null {
     const eventType = event.type as string;
+
+    this.log.debug(`Parsed SSE event type=${eventType}`);
 
     switch (eventType) {
       case "text":
@@ -571,6 +635,7 @@ export class OpenCodeBridge {
    * Handle session created event from OpenCode
    */
   handleSessionCreated(session: OpenCodeSession): void {
+    this.log.info(`Handle session created sessionId=${session.id} directory=${session.directory}`);
     this.sessionRegistry.handleSessionCreated(session);
   }
 
@@ -578,6 +643,7 @@ export class OpenCodeBridge {
    * Handle session deleted event from OpenCode
    */
   handleSessionDeleted(sessionId: string): void {
+    this.log.info(`Handle session deleted sessionId=${sessionId}`);
     this.sessionRegistry.handleSessionDeleted(sessionId);
   }
 

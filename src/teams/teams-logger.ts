@@ -5,7 +5,8 @@ import { getTeamsConfig } from "./teams-config.js";
 const getLogFile = (): string => {
   try {
     return getTeamsConfig().logging.logFile;
-  } catch {
+  } catch (error) {
+    console.error("Failed to load teams log file config, using default", error);
     return "/tmp/opencode-teams-plugin.log";
   }
 };
@@ -55,7 +56,8 @@ function serializeArg(arg: unknown): string {
   if (typeof arg === "object") {
     try {
       return JSON.stringify(arg);
-    } catch {
+    } catch (error) {
+      console.error("Failed to serialize log argument", error);
       return String(arg);
     }
   }
@@ -71,7 +73,9 @@ function writeLog(level: string, context: string, message: string, ...args: unkn
     const contextPrefix = context ? `[${context}] ` : "";
     const line = `[${formatTimestamp()}] [TEAMS] [${level}] ${contextPrefix}${message}${formattedArgs}\n`;
     appendFileSync(logFile, line);
-  } catch {}
+  } catch (error) {
+    console.error("Failed to write teams log", error);
+  }
 }
 
 export interface TeamsLogger {
