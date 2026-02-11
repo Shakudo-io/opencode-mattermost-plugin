@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "id": "a9a3d85a-f41b-45c8-af77-568a2eb12bd8",
   "developer": {
     "name": "Shakudo",
@@ -70,7 +70,7 @@
     "messageTeamMembers"
   ],
   "validDomains": [
-    "fea8b5c7-153a-4a46-8637-79d367af558d-webhook.dev.hyperplane.dev",
+    "67af5008-ab8a-47e7-86a6-1741a635f2bf-webhook.dev.hyperplane.dev",
     "token.botframework.com"
   ]
 }
