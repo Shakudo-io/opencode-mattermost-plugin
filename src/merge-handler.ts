@@ -129,8 +129,8 @@ Summary:`;
         sessionId,
         prompt: summaryPrompt,
         model: {
-          providerID: "anthropic",
-          modelID: "claude-3-5-haiku-20241022",
+          providerID: "google",
+          modelID: "gemini-3-flash-preview",
         },
       });
 
