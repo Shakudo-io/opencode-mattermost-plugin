@@ -113,14 +113,20 @@ export function createTeamsServer(options: TeamsServerOptions): TeamsServer {
 
   const messagesPath = `${config.server.basePath}${config.server.messagesPath}`;
 
-  app.post(messagesPath, async (req: Request, res: Response) => {
-    log.info("Incoming message", {
-      path: messagesPath,
-      contentType: req.headers["content-type"],
-      contentLength: req.headers["content-length"],
-    });
+   app.post(messagesPath, async (req: Request, res: Response) => {
+     log.info("Incoming message", {
+       path: messagesPath,
+       contentType: req.headers["content-type"],
+       contentLength: req.headers["content-length"],
+     });
 
-    try {
+     // Log routing fields from activity body
+     const body = req.body;
+     if (body) {
+       log.info(`Activity routing: serviceUrl=${body.serviceUrl}, channelId=${body.channelId}, type=${body.type}, from=${body.from?.id?.substring(0, 8)}`);
+     }
+
+     try {
       // Validate request has required Bot Framework headers
       const authHeader = req.headers.authorization;
       if (!authHeader) {

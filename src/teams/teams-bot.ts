@@ -99,14 +99,16 @@ export class TeamsBot extends TeamsActivityHandler {
     const isReply = Boolean(activity.replyToId);
     const replyToId = activity.replyToId;
 
-    this.log.info("Message received", {
-      userId,
-      userName,
-      conversationId,
-      textLength: text.length,
-      isReply,
-      replyToId,
-    });
+     this.log.info("Message received", {
+       userId,
+       userName,
+       conversationId,
+       textLength: text.length,
+       isReply,
+       replyToId,
+     });
+
+     this.log.info(`Activity details: serviceUrl=${activity.serviceUrl}, channelId=${activity.channelId}, type=${activity.type}, replyToId=${activity.replyToId}`);
 
     const cleanedText = this.stripBotMentionFromTeamsMessage(activity);
 
@@ -188,10 +190,12 @@ export class TeamsBot extends TeamsActivityHandler {
     return { statusCode: 200, type: "application/vnd.microsoft.activity.message", value: { result: "OK" } };
   }
 
-  private async handleMembersAdded(context: TurnContext): Promise<void> {
-    this.log.debug("handleMembersAdded entry");
-    const membersAdded = context.activity.membersAdded ?? [];
-    const botId = context.activity.recipient?.id;
+   private async handleMembersAdded(context: TurnContext): Promise<void> {
+     this.log.debug("handleMembersAdded entry");
+     const activity = context.activity;
+     this.log.info(`Activity details: serviceUrl=${activity.serviceUrl}, channelId=${activity.channelId}, type=${activity.type}, replyToId=${activity.replyToId}`);
+     const membersAdded = activity.membersAdded ?? [];
+     const botId = activity.recipient?.id;
 
     for (const member of membersAdded) {
       if (member.id !== botId) {
