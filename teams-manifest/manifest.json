@@ -1,8 +1,8 @@
 {
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
-  "version": "1.0.1",
-  "id": "{{AZURE_APP_ID}}",
+  "version": "1.0.0",
+  "id": "a9a3d85a-f41b-45c8-af77-568a2eb12bd8",
   "developer": {
     "name": "Shakudo",
     "websiteUrl": "https://shakudo.io",
@@ -24,13 +24,21 @@
   "accentColor": "#4F46E5",
   "bots": [
     {
-      "botId": "{{AZURE_APP_ID}}",
-      "scopes": ["personal", "team", "groupChat"],
+      "botId": "a9a3d85a-f41b-45c8-af77-568a2eb12bd8",
+      "scopes": [
+        "personal",
+        "team",
+        "groupChat"
+      ],
       "supportsFiles": true,
       "isNotificationOnly": false,
       "commandLists": [
         {
-          "scopes": ["personal", "team", "groupChat"],
+          "scopes": [
+            "personal",
+            "team",
+            "groupChat"
+          ],
           "commands": [
             {
               "title": "help",
@@ -57,9 +65,12 @@
       ]
     }
   ],
-  "permissions": ["identity", "messageTeamMembers"],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
   "validDomains": [
-    "bc2cc691-56d8-425d-88b2-70d024e56c12-webhook.dev.hyperplane.dev",
+    "opencode-teams-bot.dev.hyperplane.dev",
     "token.botframework.com"
   ]
 }
