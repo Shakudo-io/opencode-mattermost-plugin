@@ -10,8 +10,8 @@
 
 import {
   CloudAdapter,
+  ConfigurationServiceClientCredentialFactory,
   ConfigurationBotFrameworkAuthentication,
-  ConfigurationBotFrameworkAuthenticationOptions,
 } from "botbuilder";
 import { teamsLog } from "./teams-logger.js";
 import { getTeamsConfig, type TeamsConfig } from "./teams-config.js";
@@ -40,18 +40,24 @@ export function createTeamsAdapter(config?: TeamsConfig): CloudAdapter {
     tenantId: teamsConfig.azure.tenantId,
   });
 
-  // Build authentication configuration for single-tenant (Shakudo corporate)
-  const authConfig: ConfigurationBotFrameworkAuthenticationOptions = {
+  log.debug(`Configuring adapter for tenant: ${teamsConfig.azure.tenantId.substring(0, 8)}...`);
+
+  // Build credentials factory for single-tenant (Shakudo corporate)
+  // This is the pattern used by Microsoft's official Teams samples
+  const credentialsFactory = new ConfigurationServiceClientCredentialFactory({
     MicrosoftAppId: teamsConfig.azure.appId,
     MicrosoftAppPassword: teamsConfig.azure.appPassword,
     MicrosoftAppTenantId: teamsConfig.azure.tenantId,
     MicrosoftAppType: "SingleTenant",
-  };
+  });
 
-  log.debug(`Configuring adapter for tenant: ${teamsConfig.azure.tenantId.substring(0, 8)}...`);
-
-  // Create authentication instance
-  const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication(authConfig);
+  // Create authentication instance with empty config + factory
+  // The empty first arg is critical — it tells the SDK to use the factory's
+  // credential handling instead of the default token endpoint
+  const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication(
+    {},
+    credentialsFactory
+  );
 
   // Create adapter with authentication
   // The CloudAdapter automatically validates tokens on incoming requests
