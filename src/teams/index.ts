@@ -356,9 +356,15 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
         }
 
         if (result.error === "unknown_thread") {
-          await context.sendActivity(
-            MessageFactory.text("This thread is not linked to an OpenCode session. Use `!sessions` to see available sessions.")
-          );
+          try {
+            const result = await context.sendActivity(
+              MessageFactory.text("This thread is not linked to an OpenCode session. Use `!sessions` to see available sessions.")
+            );
+            log.info(`sendActivity result for 'unknown_thread': ${JSON.stringify(result)}`);
+          } catch (sendError) {
+            log.error(`sendActivity FAILED for 'unknown_thread': ${sendError}`);
+            throw sendError;
+          }
           return;
         }
       }
@@ -377,11 +383,23 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
         });
 
         if (cmdResult.handled && cmdResult.card) {
-          await context.sendActivity({ attachments: [cmdResult.card] });
+          try {
+            const result = await context.sendActivity({ attachments: [cmdResult.card] });
+            log.info(`sendActivity result for 'command card': ${JSON.stringify(result)}`);
+          } catch (sendError) {
+            log.error(`sendActivity FAILED for 'command card': ${sendError}`);
+            throw sendError;
+          }
           return;
         }
         if (cmdResult.handled && cmdResult.text) {
-          await context.sendActivity(MessageFactory.text(cmdResult.text));
+          try {
+            const result = await context.sendActivity(MessageFactory.text(cmdResult.text));
+            log.info(`sendActivity result for 'command text': ${JSON.stringify(result)}`);
+          } catch (sendError) {
+            log.error(`sendActivity FAILED for 'command text': ${sendError}`);
+            throw sendError;
+          }
           return;
         }
         if (cmdResult.handled) {
@@ -389,21 +407,33 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
         }
       }
 
-      const sessions = bridge.getSessions();
-      if (sessions.length === 0) {
-        await context.sendActivity(
-          MessageFactory.text("No OpenCode sessions available. Start an OpenCode session first.")
-        );
-        return;
-      }
+       const sessions = bridge.getSessions();
+       if (sessions.length === 0) {
+         try {
+           const result = await context.sendActivity(
+             MessageFactory.text("No OpenCode sessions available. Start an OpenCode session first.")
+           );
+           log.info(`sendActivity result for 'no sessions': ${JSON.stringify(result)}`);
+         } catch (sendError) {
+           log.error(`sendActivity FAILED for 'no sessions': ${sendError}`);
+           throw sendError;
+         }
+         return;
+       }
 
-      const session = sessions[0];
-      const threadResult = await threadManager.createThreadForSession(context, session);
-      log.info(`Created thread ${threadResult.mapping.id} for session ${session.shortId}`);
+       const session = sessions[0];
+       const threadResult = await threadManager.createThreadForSession(context, session);
+       log.info(`Created thread ${threadResult.mapping.id} for session ${session.shortId}`);
 
-      await context.sendActivity(
-        MessageFactory.text(`Session thread created. Reply in the thread to send prompts.`)
-      );
+       try {
+         const result = await context.sendActivity(
+           MessageFactory.text(`Session thread created. Reply in the thread to send prompts.`)
+         );
+         log.info(`sendActivity result for 'session thread created': ${JSON.stringify(result)}`);
+       } catch (sendError) {
+         log.error(`sendActivity FAILED for 'session thread created': ${sendError}`);
+         throw sendError;
+       }
     },
     onCardAction: async (context, actionData) => {
       log.info(`Card action: verb=${actionData.verb}, keys=[${Object.keys(actionData).join(",")}]`);

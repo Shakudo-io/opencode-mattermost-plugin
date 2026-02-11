@@ -114,23 +114,35 @@ export class TeamsBot extends TeamsActivityHandler {
       try {
         await this.messageHandler(context, cleanedText);
       } catch (error) {
-        this.log.error("Error in message handler", {
-          error: String(error),
-          userId,
-          userName,
-          conversationId,
-          activityType: activity.type,
-        });
-        await context.sendActivity(
-          MessageFactory.text("Sorry, I encountered an error processing your message. Please try again.")
-        );
-      }
-    } else {
-      this.log.debug("No message handler registered, sending default response");
-      await context.sendActivity(
-        MessageFactory.text(`I received your message: "${cleanedText.substring(0, 50)}${cleanedText.length > 50 ? "..." : ""}"`)
-      );
-    }
+         this.log.error("Error in message handler", {
+           error: String(error),
+           userId,
+           userName,
+           conversationId,
+           activityType: activity.type,
+         });
+         try {
+           const result = await context.sendActivity(
+             MessageFactory.text("Sorry, I encountered an error processing your message. Please try again.")
+           );
+           this.log.info(`sendActivity result for 'error message': ${JSON.stringify(result)}`);
+         } catch (sendError) {
+           this.log.error(`sendActivity FAILED for 'error message': ${sendError}`);
+           throw sendError;
+         }
+       }
+     } else {
+       this.log.debug("No message handler registered, sending default response");
+       try {
+         const result = await context.sendActivity(
+           MessageFactory.text(`I received your message: "${cleanedText.substring(0, 50)}${cleanedText.length > 50 ? "..." : ""}"`)
+         );
+         this.log.info(`sendActivity result for 'default response': ${JSON.stringify(result)}`);
+       } catch (sendError) {
+         this.log.error(`sendActivity FAILED for 'default response': ${sendError}`);
+         throw sendError;
+       }
+     }
 
     this.log.debug("handleMessage exit");
   }
@@ -184,14 +196,20 @@ export class TeamsBot extends TeamsActivityHandler {
     for (const member of membersAdded) {
       if (member.id !== botId) {
         this.log.info("Member added", { memberId: member.id, memberName: member.name });
-      } else {
-        this.log.info("Bot was added to the conversation");
-        await context.sendActivity(
-          MessageFactory.text(
-            "Hello! I'm the OpenCode bot. Send me a message to start a coding session, or type `!help` for available commands."
-          )
-        );
-      }
+       } else {
+         this.log.info("Bot was added to the conversation");
+         try {
+           const result = await context.sendActivity(
+             MessageFactory.text(
+               "Hello! I'm the OpenCode bot. Send me a message to start a coding session, or type `!help` for available commands."
+             )
+           );
+           this.log.info(`sendActivity result for 'welcome message': ${JSON.stringify(result)}`);
+         } catch (sendError) {
+           this.log.error(`sendActivity FAILED for 'welcome message': ${sendError}`);
+           throw sendError;
+         }
+       }
     }
 
     this.log.debug("handleMembersAdded exit");
