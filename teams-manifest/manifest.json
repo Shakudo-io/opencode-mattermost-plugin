@@ -59,6 +59,7 @@
   ],
   "permissions": ["identity", "messageTeamMembers"],
   "validDomains": [
-    "bc2cc691-56d8-425d-88b2-70d024e56c12-webhook.dev.hyperplane.dev"
+    "bc2cc691-56d8-425d-88b2-70d024e56c12-webhook.dev.hyperplane.dev",
+    "token.botframework.com"
   ]
 }
