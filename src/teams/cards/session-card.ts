@@ -27,6 +27,7 @@ export interface SessionInfo {
   status: "active" | "idle" | "ended";
   lastActivityAt: string;
   model?: string;
+  description?: string;
   threadId?: string;
   costs?: {
     totalCost: number;
@@ -156,6 +157,20 @@ export class SessionListCardBuilder extends CardBuilder {
           spacing: index === 1 ? "medium" : "small",
         }
       ),
+    ];
+
+    if (session.description) {
+      items.push(
+        this.textBlock(`💬 ${session.description}`, {
+          size: "small",
+          isSubtle: true,
+          spacing: "none",
+          wrap: true,
+        })
+      );
+    }
+
+    items.push(
       this.textBlock(`📁 ${session.projectDirectory}`, {
         size: "small",
         isSubtle: true,
@@ -165,8 +180,8 @@ export class SessionListCardBuilder extends CardBuilder {
         size: "small",
         isSubtle: true,
         spacing: "none",
-      }),
-    ];
+      })
+    );
 
     // Add model info if available
     if (session.model) {

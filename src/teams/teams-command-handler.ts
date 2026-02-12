@@ -314,6 +314,7 @@ export class TeamsCommandHandler {
       status: this.getSessionStatus(s),
       lastActivityAt: s.lastUpdated.toISOString(),
       model: this.sessionModels.get(s.id),
+      description: s.title !== s.projectName ? s.title : undefined,
     }));
 
     // Add note if there are more sessions
