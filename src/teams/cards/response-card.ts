@@ -58,6 +58,13 @@ export interface ResponseCardConfig {
   errorMessage?: string;
 }
 
+export interface ResponseMetaCardConfig {
+  sessionId: string;
+  elapsedSeconds: number;
+  contentLength: number;
+  tools?: ToolStatus[];
+}
+
 /**
  * Pagination result for large responses
  */
@@ -453,4 +460,38 @@ export function createPaginatedResponseCards(
       totalPages,
     })
   );
+}
+
+export function createResponseMetaCard(config: ResponseMetaCardConfig): Attachment {
+  const builder = new (class extends CardBuilder {
+    build(): AdaptiveCardContent {
+      const card = this.createBaseCard();
+      const toolsSummary = (config.tools ?? [])
+        .filter((tool) => tool.status === "completed")
+        .map((tool) => tool.name)
+        .slice(0, 5)
+        .join(", ");
+
+      const metaParts = [
+        `⏱️ ${config.elapsedSeconds}s`,
+        `📊 ${config.contentLength} chars`,
+      ];
+
+      if (toolsSummary) {
+        metaParts.push(`🔧 ${toolsSummary}`);
+      }
+
+      card.body.push(
+        this.textBlock(metaParts.join("  ·  "), {
+          size: "small",
+          isSubtle: true,
+          spacing: "none",
+        })
+      );
+
+      return card;
+    }
+  })();
+
+  return builder.toAttachment();
 }

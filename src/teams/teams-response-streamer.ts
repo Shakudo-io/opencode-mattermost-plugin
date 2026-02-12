@@ -7,6 +7,7 @@ import {
   createResponseCard,
   createErrorResponseCard,
   createPaginatedResponseCards,
+  createResponseMetaCard,
   type ToolStatus,
   MAX_CONTENT_LENGTH,
 } from "./cards/index.js";
@@ -277,33 +278,58 @@ export class TeamsResponseStreamer {
     session: StreamingSession,
     content: string
   ): Promise<void> {
+    const elapsedSeconds = Math.round((Date.now() - session.startTime) / 1000);
     this.log.info(
-      `Send final response card streamId=${session.streamId} contentLength=${content.length} paginated=no pageCount=1`
+      `Send final response streamId=${session.streamId} contentLength=${content.length} paginated=no`
     );
-    const responseCard = createResponseCard({
-      sessionId: session.sessionId,
-      content,
-      startTime: session.startTime,
-      endTime: Date.now(),
-      prompt: session.prompt,
-      tools: session.tools,
-    });
 
     try {
       await this.checkRateLimit();
+
+      const markdownMessage = MessageFactory.text(content);
+      markdownMessage.textFormat = "markdown";
 
       if (session.statusMessageId) {
         const updateActivity: Partial<Activity> = {
           id: session.statusMessageId,
           type: "message",
-          attachments: [responseCard],
+          text: content,
+          textFormat: "markdown",
         };
         await session.context.updateActivity(updateActivity);
       } else {
-        await session.context.sendActivity(MessageFactory.attachment(responseCard));
+        await session.context.sendActivity(markdownMessage);
+      }
+
+      if (content.length > 2000) {
+        try {
+          await this.checkRateLimit();
+          const metaCard = createResponseMetaCard({
+            sessionId: session.sessionId,
+            elapsedSeconds,
+            contentLength: content.length,
+            tools: session.tools,
+          });
+          await session.context.sendActivity(MessageFactory.attachment(metaCard));
+        } catch (metaError) {
+          this.log.debug(`Optional meta card failed: ${metaError}`);
+        }
       }
     } catch (error) {
       this.log.error(`Failed to send final response: ${error}`);
+      try {
+        const responseCard = createResponseCard({
+          sessionId: session.sessionId,
+          content,
+          startTime: session.startTime,
+          endTime: Date.now(),
+          prompt: session.prompt,
+          tools: session.tools,
+        });
+        await session.context.sendActivity(MessageFactory.attachment(responseCard));
+      } catch (fallbackError) {
+        this.log.error(`Fallback card also failed: ${fallbackError}`);
+      }
     }
   }
 

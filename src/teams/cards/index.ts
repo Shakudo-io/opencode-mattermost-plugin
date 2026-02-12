@@ -31,11 +31,13 @@ export {
   createSimpleResponseCard,
   createErrorResponseCard,
   createCompleteResponseCard,
+  createResponseMetaCard,
   createPaginatedResponseCards,
   paginateContent,
   estimateCardSize,
   MAX_CARD_SIZE_BYTES,
   MAX_CONTENT_LENGTH,
   type ResponseCardConfig,
+  type ResponseMetaCardConfig,
   type PaginatedResponse,
 } from './response-card.js';

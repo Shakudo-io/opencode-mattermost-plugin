@@ -16,6 +16,7 @@ export interface AdaptiveCardContent {
   version: AdaptiveCardVersion;
   body: AdaptiveCardElement[];
   actions?: CardAction[];
+  msteams?: { width: "Full" };
 }
 
 export type AdaptiveCardElement =
@@ -109,6 +110,7 @@ export abstract class CardBuilder<T extends AdaptiveCardContent = AdaptiveCardCo
       version: this.version,
       body: [],
       actions: [],
+      msteams: { width: "Full" },
     };
   }
 
