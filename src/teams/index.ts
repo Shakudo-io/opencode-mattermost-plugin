@@ -439,20 +439,29 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
          }
        }
 
-       if (activeThreads.length > 1) {
-         try {
-           const result = await context.sendActivity(
-             MessageFactory.text(
-               `You have ${activeThreads.length} active sessions. Use \`!sessions\` to select one.`
-             )
-           );
-           log.info(`sendActivity result for 'multiple active sessions': ${JSON.stringify(result)}`);
-         } catch (sendError) {
-           log.error(`sendActivity FAILED for 'multiple active sessions': ${sendError}`);
-           throw sendError;
-         }
-         return;
-       }
+        if (activeThreads.length > 1) {
+          // Auto-route to the most recently created thread
+          const mostRecent = activeThreads.sort((a, b) => {
+            const aTime = new Date(b.createdAt).getTime();
+            const bTime = new Date(a.createdAt).getTime();
+            return aTime - bTime;
+          })[0];
+
+          const originalReplyToId = context.activity.replyToId;
+          try {
+            context.activity.replyToId = mostRecent.threadRootMessageId;
+            log.info(`Auto-routing to most recent thread: ${mostRecent.id}`);
+            const routeResult = await threadManager.routeMessageToSession(
+              context,
+              text
+            );
+            if (routeResult.handled) {
+              return;
+            }
+          } finally {
+            context.activity.replyToId = originalReplyToId;
+          }
+        }
 
        if (sessions.length === 1) {
          const session = sessions[0];

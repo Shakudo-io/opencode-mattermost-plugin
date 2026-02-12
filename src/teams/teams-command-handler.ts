@@ -298,11 +298,16 @@ export class TeamsCommandHandler {
 
     const sessions = this.bridge.getSessions();
 
-    if (sessions.length === 0) {
+    // Sort by most recent and limit to 10 to prevent oversized Adaptive Cards
+    const recentSessions = [...sessions]
+      .sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime())
+      .slice(0, 10);
+
+    if (recentSessions.length === 0) {
       return { handled: true, card: createNoSessionsCard() };
     }
 
-    const sessionInfos: SessionInfo[] = sessions.map((s) => ({
+    const sessionInfos: SessionInfo[] = recentSessions.map((s) => ({
       id: s.shortId,
       projectName: s.projectName,
       projectDirectory: s.directory,
@@ -311,10 +316,18 @@ export class TeamsCommandHandler {
       model: this.sessionModels.get(s.id),
     }));
 
-    const card = createSessionListCard({
+    // Add note if there are more sessions
+    let card = createSessionListCard({
       sessions: sessionInfos,
       currentSessionId: context.sessionId,
     });
+
+    if (sessions.length > 10) {
+      // Card modification would go here if needed - for now just note it in logs
+      this.log.info(
+        `Showing 10 of ${sessions.length} sessions. User can use !sessions multiple times or !use <sessionId> directly.`
+      );
+    }
 
     return { handled: true, card };
   }
