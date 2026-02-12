@@ -421,6 +421,40 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
          return;
        }
 
+       // Check if user has explicitly selected a session via !use
+       const selectedSessionId = commandHandler.getSelectedSession(userId);
+       if (selectedSessionId) {
+         const selectedSession = bridge.getSession(selectedSessionId);
+         if (selectedSession) {
+           const existingThread = threadManager.getThreadBySessionId(selectedSessionId);
+           if (existingThread) {
+             const originalReplyToId = context.activity.replyToId;
+             try {
+               context.activity.replyToId = existingThread.threadRootMessageId;
+               const routeResult = await threadManager.routeMessageToSession(context, text);
+               if (routeResult.handled) {
+                 return;
+               }
+             } finally {
+               context.activity.replyToId = originalReplyToId;
+             }
+           } else {
+             const threadResult = await threadManager.createThreadForSession(context, selectedSession);
+             log.info(`Created thread for user-selected session ${selectedSession.shortId}`);
+             const originalReplyToId = context.activity.replyToId;
+             try {
+               context.activity.replyToId = threadResult.rootMessageId;
+               const routeResult = await threadManager.routeMessageToSession(context, text);
+               if (routeResult.handled) {
+                 return;
+               }
+             } finally {
+               context.activity.replyToId = originalReplyToId;
+             }
+           }
+         }
+       }
+
        const activeThreads = threadManager
          .getActiveThreadsForUser(userId)
          .filter((thread) => thread.conversationId === conversationId);

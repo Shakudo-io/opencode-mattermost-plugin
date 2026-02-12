@@ -95,6 +95,12 @@ export class TeamsCommandHandler {
   // Track selected models per session/conversation
   private sessionModels: Map<string, string> = new Map();
 
+  // Track last sessions list per conversation for number selection
+  private lastSessionsList: Map<string, { sessions: OpenCodeSessionInfo[]; expiresAt: number }> = new Map();
+
+  // Track user-selected session overrides
+  private userSelectedSession: Map<string, string> = new Map();
+
   constructor(config: TeamsConfig, bridge: OpenCodeBridgeType) {
     this.config = config;
     this.bridge = bridge;
@@ -122,6 +128,12 @@ export class TeamsCommandHandler {
       command: "!sessions",
       aliases: ["!session", "!list"],
       handler: this.handleSessions.bind(this),
+    });
+
+    this.register({
+      command: "!use",
+      aliases: ["!select", "!switch"],
+      handler: this.handleUse.bind(this),
     });
 
     // Model commands
@@ -201,6 +213,13 @@ export class TeamsCommandHandler {
       `isNumericResponse result=${isNumeric} conversationId=${conversationId} textLength=${text.length}`
     );
     return isNumeric;
+  }
+
+  /**
+   * Get the explicitly selected session for a user
+   */
+  getSelectedSession(userId: string): string | undefined {
+    return this.userSelectedSession.get(userId);
   }
 
   /**
@@ -303,6 +322,12 @@ export class TeamsCommandHandler {
       .sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime())
       .slice(0, 10);
 
+    // Store for number-based selection
+    this.lastSessionsList.set(context.conversationId, {
+      sessions: recentSessions,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+
     if (recentSessions.length === 0) {
       return { handled: true, card: createNoSessionsCard() };
     }
@@ -331,6 +356,60 @@ export class TeamsCommandHandler {
     }
 
     return { handled: true, card };
+  }
+
+  /**
+   * !use - Select an OpenCode session by number or short ID
+   */
+  private async handleUse(
+    args: string[],
+    context: CommandContext
+  ): Promise<CommandResult> {
+    this.log.info(`Executing command !use userId=${context.userId}`);
+    if (args.length === 0) {
+      return {
+        handled: true,
+        text:
+          "Usage: `!use <number>` or `!use <session-id>`\n\nRun `!sessions` first, then use a number or the session short ID.",
+      };
+    }
+
+    const arg = args[0];
+    let session: OpenCodeSessionInfo | null = null;
+
+    const num = parseInt(arg, 10);
+    if (!Number.isNaN(num) && num >= 1) {
+      const cached = this.lastSessionsList.get(context.conversationId);
+      if (!cached || Date.now() > cached.expiresAt) {
+        return {
+          handled: true,
+          text: "Session list expired. Run `!sessions` first, then `!use <number>`.",
+        };
+      }
+      if (num > cached.sessions.length) {
+        return {
+          handled: true,
+          text: `Invalid number. Run \`!sessions\` to see available sessions (1-${cached.sessions.length}).`,
+        };
+      }
+      session = cached.sessions[num - 1];
+    } else {
+      session = this.bridge.getSession(arg);
+    }
+
+    if (!session) {
+      return {
+        handled: true,
+        text: `Session "${arg}" not found. Run \`!sessions\` to see available sessions.`,
+      };
+    }
+
+    this.userSelectedSession.set(context.userId, session.id);
+    const desc = session.title !== session.projectName ? ` — ${session.title}` : "";
+    return {
+      handled: true,
+      text: `✅ Switched to session **${session.shortId}** (${session.projectName})${desc}\n\nYour next messages will go to this session.`,
+    };
   }
 
   /**

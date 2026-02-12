@@ -126,7 +126,7 @@ export class SessionListCardBuilder extends CardBuilder {
 
     // Footer
     card.body.push(
-      this.textBlock("Reply in a session thread to send prompts.", {
+      this.textBlock("Use `!use <number>` to select a session.", {
         size: "small",
         isSubtle: true,
         separator: true,
@@ -147,52 +147,59 @@ export class SessionListCardBuilder extends CardBuilder {
   ): AdaptiveCardElement {
     const statusIcon = this.getStatusIcon(session.status);
     const timeSince = this.formatTimeSince(session.lastActivityAt);
-    const currentMarker = isCurrent ? " 👈 Current" : "";
+    const currentMarker = isCurrent ? " 👈" : "";
 
-    const items: AdaptiveCardElement[] = [
-      this.textBlock(
-        `**${index}. ${statusIcon} ${session.projectName}** (${session.id})${currentMarker}`,
-        {
-          wrap: true,
-          spacing: index === 1 ? "medium" : "small",
-        }
-      ),
-    ];
+    const items: AdaptiveCardElement[] = [];
 
     if (session.description) {
       items.push(
-        this.textBlock(`💬 ${session.description}`, {
+        this.textBlock(
+          `${index}. ${statusIcon} ${session.description}${currentMarker}`,
+          {
+            weight: "bolder",
+            wrap: true,
+            spacing: index === 1 ? "medium" : "small",
+          }
+        )
+      );
+      items.push(
+        this.textBlock(`${session.projectName} · \`${session.id}\``, {
           size: "small",
           isSubtle: true,
           spacing: "none",
-          wrap: true,
+        })
+      );
+    } else {
+      items.push(
+        this.textBlock(
+          `${index}. ${statusIcon} ${session.projectName}${currentMarker}`,
+          {
+            weight: "bolder",
+            wrap: true,
+            spacing: index === 1 ? "medium" : "small",
+          }
+        )
+      );
+      items.push(
+        this.textBlock(`\`${session.id}\``, {
+          size: "small",
+          isSubtle: true,
+          spacing: "none",
         })
       );
     }
 
+    const metaParts = [`📁 ${session.projectDirectory}`, `⏱️ ${timeSince}`];
+    if (session.model) {
+      metaParts.push(`🤖 ${session.model}`);
+    }
     items.push(
-      this.textBlock(`📁 ${session.projectDirectory}`, {
-        size: "small",
-        isSubtle: true,
-        spacing: "none",
-      }),
-      this.textBlock(`⏱️ ${timeSince}`, {
+      this.textBlock(metaParts.join("  ·  "), {
         size: "small",
         isSubtle: true,
         spacing: "none",
       })
     );
-
-    // Add model info if available
-    if (session.model) {
-      items.push(
-        this.textBlock(`🤖 ${session.model}`, {
-          size: "small",
-          isSubtle: true,
-          spacing: "none",
-        })
-      );
-    }
 
     return this.container(items, {
       style: isCurrent ? "emphasis" : "default",
