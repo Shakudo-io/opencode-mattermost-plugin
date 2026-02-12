@@ -1,4 +1,4 @@
-# Microsoft Teams OpenCode Bot Setup Guide
+# Microsoft Teams Kaji Setup Guide
 
 Complete step-by-step guide for deploying the OpenCode bot to Microsoft Teams using Azure Bot Framework and Shakudo platform.
 
@@ -375,7 +375,7 @@ Default output: `/tmp/opencode-teams-bot.zip`
 
 After sideloading:
 
-1. Find "OpenCode Bot" in Teams apps
+1. Find "Kaji" in Teams apps
 2. Click Add to start a conversation
 3. The bot should appear in your chat list
 

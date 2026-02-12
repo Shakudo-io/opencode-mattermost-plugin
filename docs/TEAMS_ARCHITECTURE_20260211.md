@@ -1,4 +1,4 @@
-# MS Teams OpenCode Bot - Architecture Documentation
+# MS Teams Kaji - Architecture Documentation
 
 **Document Version**: 2026-02-11  
 **Component**: OpenCode MS Teams Integration  

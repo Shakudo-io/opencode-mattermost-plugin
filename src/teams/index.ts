@@ -421,19 +421,66 @@ export async function startTeamsBot(): Promise<StartTeamsBotResult> {
          return;
        }
 
-       const session = sessions[0];
-       const threadResult = await threadManager.createThreadForSession(context, session);
-       log.info(`Created thread ${threadResult.mapping.id} for session ${session.shortId}`);
+       const activeThreads = threadManager
+         .getActiveThreadsForUser(userId)
+         .filter((thread) => thread.conversationId === conversationId);
+
+       if (activeThreads.length === 1) {
+         const thread = activeThreads[0];
+         const originalReplyToId = context.activity.replyToId;
+         try {
+           context.activity.replyToId = thread.threadRootMessageId;
+           const routeResult = await threadManager.routeMessageToSession(context, text);
+           if (routeResult.handled) {
+             return;
+           }
+         } finally {
+           context.activity.replyToId = originalReplyToId;
+         }
+       }
+
+       if (activeThreads.length > 1) {
+         try {
+           const result = await context.sendActivity(
+             MessageFactory.text(
+               `You have ${activeThreads.length} active sessions. Use \`!sessions\` to select one.`
+             )
+           );
+           log.info(`sendActivity result for 'multiple active sessions': ${JSON.stringify(result)}`);
+         } catch (sendError) {
+           log.error(`sendActivity FAILED for 'multiple active sessions': ${sendError}`);
+           throw sendError;
+         }
+         return;
+       }
+
+       if (sessions.length === 1) {
+         const session = sessions[0];
+         const threadResult = await threadManager.createThreadForSession(context, session);
+         log.info(`Created thread ${threadResult.mapping.id} for session ${session.shortId}`);
+
+         const originalReplyToId = context.activity.replyToId;
+         try {
+           context.activity.replyToId = threadResult.rootMessageId;
+           const routeResult = await threadManager.routeMessageToSession(context, text);
+           if (routeResult.handled) {
+             return;
+           }
+         } finally {
+           context.activity.replyToId = originalReplyToId;
+         }
+       }
 
        try {
          const result = await context.sendActivity(
-           MessageFactory.text(`Session thread created. Reply in the thread to send prompts.`)
+           MessageFactory.text("Multiple sessions available. Use `!sessions` to select one.")
          );
-         log.info(`sendActivity result for 'session thread created': ${JSON.stringify(result)}`);
+         log.info(`sendActivity result for 'multiple sessions available': ${JSON.stringify(result)}`);
        } catch (sendError) {
-         log.error(`sendActivity FAILED for 'session thread created': ${sendError}`);
+         log.error(`sendActivity FAILED for 'multiple sessions available': ${sendError}`);
          throw sendError;
        }
+       return;
     },
     onCardAction: async (context, actionData) => {
       log.info(`Card action: verb=${actionData.verb}, keys=[${Object.keys(actionData).join(",")}]`);

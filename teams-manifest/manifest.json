@@ -10,12 +10,12 @@
     "termsOfUseUrl": "https://shakudo.io/terms"
   },
   "name": {
-    "short": "OpenCode Bot",
-    "full": "OpenCode Teams Integration"
+    "short": "Kaji",
+    "full": "Kaji Teams Integration"
   },
   "description": {
-    "short": "Control OpenCode sessions via Teams DMs",
-    "full": "Control OpenCode AI coding assistant remotely via Microsoft Teams direct messages. Send prompts, receive streaming responses, manage sessions, and approve permissions."
+    "short": "Control Kaji sessions via Teams DMs",
+    "full": "Control the Kaji AI coding assistant remotely via Microsoft Teams direct messages. Send prompts, receive streaming responses, manage sessions, and approve permissions."
   },
   "icons": {
     "color": "icons/color.png",

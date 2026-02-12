@@ -1,4 +1,4 @@
-# Microsoft Teams OpenCode Bot - Complete Deployment Guide
+# Microsoft Teams Kaji - Complete Deployment Guide
 
 **Document Version**: 2026-02-11  
 **Last Updated**: 2026-02-11  
@@ -784,7 +784,7 @@ teams-manifest/
     "outline": "icons/outline.png"
   },
   "name": {
-    "short": "OpenCode Bot",
+    "short": "Kaji",
     "full": "OpenCode AI Coding Assistant"
   },
   "description": {
@@ -941,7 +941,7 @@ Archive:  opencode-teams-bot.zip
 After sideloading (any method):
 
 1. Open **Teams** → **Apps**
-2. Search for "OpenCode Bot"
+2. Search for "Kaji"
 3. Verify the app appears with your color icon
 4. Click **Add** to start a conversation
 
@@ -1269,7 +1269,7 @@ Delete all .log files in /tmp
    Verify `src/teams/teams-adapter.ts` uses two-step pattern (Step 4).
 
 2. **If you recently changed App ID:**
-   - Delete the old app from Teams (Apps → Manage your apps → OpenCode Bot → Uninstall)
+   - Delete the old app from Teams (Apps → Manage your apps → Kaji → Uninstall)
    - Re-package manifest with new App ID (Step 30)
    - Re-sideload (Step 33)
 
@@ -1338,7 +1338,7 @@ This table contains ALL current production values for the deployed OpenCode Team
 | **Teams App Manifest** | | |
 | Manifest ID | `691f2047-0585-4566-9129-d582c82b5e7d` | Must match App ID |
 | App Package Name | `io.shakudo.opencode` | Reverse DNS notation |
-| App Short Name | `OpenCode Bot` | Display name in Teams |
+| App Short Name | `Kaji` | Display name in Teams |
 | Bot ID | `691f2047-0585-4566-9129-d582c82b5e7d` | Must match App ID |
 | Valid Domains | `bc2cc691-56d8-425d-88b2-70d024e56c12-webhook.dev.hyperplane.dev`, `token.botframework.com` | Required for auth redirect |
 

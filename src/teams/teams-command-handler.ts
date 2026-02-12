@@ -270,7 +270,7 @@ export class TeamsCommandHandler {
     this.log.info("Executing command !help");
     const commands = getDefaultCommands();
     const card = createHelpCard({
-      botName: "OpenCode Bot",
+      botName: "Kaji",
       version: "1.0.0",
       commands,
     });

@@ -188,7 +188,7 @@ export class HelpCardBuilder extends CardBuilder {
 
   constructor(config: HelpCardConfig) {
     super();
-    this.botName = config.botName ?? "OpenCode Bot";
+    this.botName = config.botName ?? "Kaji";
     this.botVersion = config.version;
     this.commands = config.commands;
   }

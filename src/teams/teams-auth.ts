@@ -98,7 +98,7 @@ export class TeamsAuthHandler {
         },
         {
           type: "TextBlock",
-          text: "You are not authorized to use this bot. Contact your administrator to request access to the OpenCode Teams Bot Users security group.",
+          text: "You are not authorized to use this bot. Contact your administrator to request access to the OpenCode Teams Bot Users security group to use Kaji.",
           wrap: true,
           spacing: "medium",
         },

@@ -1,6 +1,6 @@
-# Teams App Manifest - OpenCode Bot
+# Teams App Manifest - Kaji
 
-This directory contains the Microsoft Teams app manifest for the OpenCode Teams Integration bot.
+This directory contains the Microsoft Teams app manifest for the Kaji Teams Integration bot.
 
 ## Contents
 
@@ -69,7 +69,7 @@ The script:
 
 ## After Sideloading
 
-1. Find "OpenCode Bot" in Teams apps
+1. Find "Kaji" in Teams apps
 2. Click **Add** to start a conversation
 3. Send a message to test the connection
 4. The bot should respond if the webhook and Azure credentials are configured correctly

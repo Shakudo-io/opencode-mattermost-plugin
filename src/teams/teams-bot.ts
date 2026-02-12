@@ -204,9 +204,9 @@ export class TeamsBot extends TeamsActivityHandler {
          this.log.info("Bot was added to the conversation");
          try {
            const result = await context.sendActivity(
-             MessageFactory.text(
-               "Hello! I'm the OpenCode bot. Send me a message to start a coding session, or type `!help` for available commands."
-             )
+              MessageFactory.text(
+                "Hello! I'm Kaji. Send me a message to start a coding session, or type `!help` for available commands."
+              )
            );
            this.log.info(`sendActivity result for 'welcome message': ${JSON.stringify(result)}`);
          } catch (sendError) {
