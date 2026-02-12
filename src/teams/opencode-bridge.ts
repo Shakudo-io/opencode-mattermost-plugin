@@ -415,7 +415,7 @@ export class OpenCodeBridge {
       return null;
     }
 
-    const promptUrl = `${this.config.serverUrl}/session/${sessionId}/prompt`;
+    const promptUrl = `${this.config.serverUrl}/session/${sessionId}/message`;
     this.log.info(
       `Send prompt entry sessionId=${sessionId} shortId=${session.shortId} promptLength=${prompt.length} url=${promptUrl}`
     );
@@ -434,9 +434,11 @@ export class OpenCodeBridge {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Accept": "text/event-stream",
+          "Accept": "application/json",
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({
+          parts: [{ type: "text", text: prompt }],
+        }),
       });
       const elapsedMs = Date.now() - startTime;
       this.log.info(
@@ -483,17 +485,78 @@ export class OpenCodeBridge {
     response: Response,
     onChunk?: ResponseChunkCallback
   ): Promise<string> {
+    const promptState = this.activePrompts.get(promptId);
+    if (!promptState) {
+      throw new Error("Prompt state not found");
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("text/event-stream")) {
+      return this.handleSSEStream(promptState, sessionId, response, onChunk);
+    }
+
+    const responseData = await response.json() as {
+      info?: { content?: unknown };
+      parts?: Array<{ type?: string; text?: string }>;
+    };
+    const responseText = this.extractPromptResponseText(responseData);
+
+    if (responseText.length > 0) {
+      const textChunk: ResponseChunk = {
+        type: "text",
+        content: responseText,
+        sessionId,
+      };
+      promptState.chunks.push(responseText);
+      onChunk?.(textChunk);
+      this.responseChunkCallback?.(textChunk);
+    }
+
+    const completeChunk: ResponseChunk = {
+      type: "complete",
+      sessionId,
+    };
+    onChunk?.(completeChunk);
+    this.responseChunkCallback?.(completeChunk);
+
+    return promptState.chunks.join("");
+  }
+
+  private extractPromptResponseText(response: {
+    info?: { content?: unknown };
+    parts?: Array<{ type?: string; text?: string }>;
+  }): string {
+    const infoContent =
+      response.info &&
+      typeof response.info === "object" &&
+      "content" in response.info &&
+      typeof response.info.content === "string"
+        ? response.info.content
+        : "";
+
+    if (infoContent.length > 0) {
+      return infoContent;
+    }
+
+    const partsText = (response.parts ?? [])
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+
+    return partsText;
+  }
+
+  private async handleSSEStream(
+    promptState: { sessionId: string; chunks: string[]; startTime: number },
+    sessionId: string,
+    response: Response,
+    onChunk?: ResponseChunkCallback
+  ): Promise<string> {
     const reader = response.body?.getReader();
     if (!reader) {
       throw new Error("No response body reader available");
     }
 
     const decoder = new TextDecoder();
-    const promptState = this.activePrompts.get(promptId);
-    if (!promptState) {
-      throw new Error("Prompt state not found");
-    }
-
     let buffer = "";
 
     try {
