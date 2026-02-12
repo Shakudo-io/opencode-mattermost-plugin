@@ -9,6 +9,8 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ## Changelog
 
+- **1.1.1** — First stable release. Hardened delegation access control (team membership required, early mention parsing), switched merge summarization to Gemini 3 Flash, comprehensive README with full usage examples for all features
+- **0.3.96** — Version bump with delegation fixes merged from feature branch
 - **0.3.95** — Delegation requires team membership; owner tagging `@kaji @other_user` stays silent for other Kaji to handle
 - **0.3.94** — Teammate delegated sessions: tag `@kaji` + `@owner` to start a session on behalf of the owner
 
