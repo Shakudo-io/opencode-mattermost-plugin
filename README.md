@@ -9,6 +9,7 @@ Control [OpenCode](https://opencode.ai) remotely via Mattermost direct messages.
 
 ## Changelog
 
+- **0.3.98** — Delegation now requires explicit `!@owner` syntax (e.g., `@kaji !@christine fix this`); plain `@kaji @person` no longer triggers delegation
 - **0.3.97** — Hardened delegation access control (team membership required, early mention parsing), switched merge summarization to Gemini 3 Flash
 - **0.3.95** — Delegation requires team membership; owner tagging `@kaji @other_user` stays silent for other Kaji to handle
 - **0.3.94** — Teammate delegated sessions: tag `@kaji` + `@owner` to start a session on behalf of the owner
@@ -808,11 +809,13 @@ Bot: 👥 Team Members (2)
 
 ### Teammate Delegation
 
-Teammates can start sessions on behalf of the owner by tagging **both Kaji and the owner** in a channel where all three are members.
+Teammates can start sessions on behalf of the owner by using the **`!@` delegation syntax** — tagging Kaji and using `!@owner` in a channel where all three are members.
+
+The `!@` prefix is deliberate opt-in. Plain `@mentions` of other users alongside `@kaji` do **not** trigger delegation, so casual conversation that happens to mention both won't accidentally start sessions.
 
 **Usage:**
 ```
-@kaji @christine please fix the login bug on line 42
+@kaji !@christine please fix the login bug on line 42
 ```
 
 This creates a session **owned by @christine**, using her Kaji instance. The teammate is auto-approved and can keep sending prompts and approve others to collaborate in the thread.
@@ -831,12 +834,13 @@ Session: a1b2c3d4
 
 | Who | Message | Result |
 |-----|---------|--------|
-| Team member | `@kaji @owner` in shared channel | Delegated session created under owner's Kaji |
+| Team member | `@kaji !@owner` in shared channel | Delegated session created under owner's Kaji |
+| Team member | `@kaji @owner` (without `!`) | No delegation — treated as normal @kaji mention |
 | Team member | `@kaji` only (without owner) | Owner's Kaji stays silent; teammate's own Kaji may respond |
-| Non-team-member | `@kaji @owner` | Owner's Kaji does not respond |
+| Non-team-member | `@kaji !@owner` | Owner's Kaji does not respond (not a team member) |
 | Owner | `@kaji` only | Standard session creation (ownership confirmation) |
-| Owner | `@kaji @another_user` | Owner's Kaji stays silent; other user's Kaji handles it |
-| Anyone | `@kaji @owner` in channel owner isn't in | Nothing happens |
+| Owner | `@kaji !@another_user` | Owner's Kaji stays silent; other user's Kaji handles it |
+| Anyone | `@kaji !@owner` in channel owner isn't in | Nothing happens |
 
 ### Multi-User Setup (Shared Bot)
 

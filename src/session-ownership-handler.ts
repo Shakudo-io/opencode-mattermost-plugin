@@ -303,9 +303,9 @@ _Reply with a number (1, 2, or 3)_`;
   }
 
   /**
-   * Detect @mentions in a message, excluding the bot.
-   * Used to check if a teammate mentioned the session owner for delegation.
-   * Returns usernames (without @) of all mentioned users excluding the bot.
+   * Detect delegation mentions in a message using the !@ prefix.
+   * Only `!@username` triggers delegation — plain `@username` does not.
+   * Returns usernames (without !@) of all delegation-mentioned users.
    */
   detectMentionedUsers(
     message: string,
@@ -313,15 +313,14 @@ _Reply with a number (1, 2, or 3)_`;
     botUserId: string,
     senderUserId: string
   ): string[] {
-    const mentionRegex = /@(\w[\w.-]*)/gi;
+    // Match !@username — the exclamation mark prefix distinguishes delegation
+    // from regular @mentions that shouldn't trigger session creation
+    const mentionRegex = /!@(\w[\w.-]*)/gi;
     const mentions: string[] = [];
     let match;
     
     while ((match = mentionRegex.exec(message)) !== null) {
-      const mentionedUsername = match[1].toLowerCase();
-      if (mentionedUsername !== botUsername.toLowerCase()) {
-        mentions.push(match[1]); // Keep original casing
-      }
+      mentions.push(match[1]); // Keep original casing
     }
     
     return mentions;
