@@ -302,6 +302,18 @@ export function stripBotMention(
 }
 
 /**
+ * Strip delegation mentions (!@username) from a message.
+ * Used to clean the prompt text before sending to OpenCode.
+ */
+export function stripDelegationMentions(message: string): string {
+  // Remove !@username patterns
+  let cleaned = message.replace(/!@\w[\w.-]*/gi, "");
+  // Clean up extra whitespace
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  return cleaned;
+}
+
+/**
  * Escape special regex characters in a string
  */
 function escapeRegExp(str: string): string {

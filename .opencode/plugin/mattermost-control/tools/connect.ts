@@ -17,7 +17,7 @@ import { GuestApprovalHandler } from "../../../../src/guest-approval-handler.js"
 import { SessionOwnershipHandler } from "../../../../src/session-ownership-handler.js";
 import { FileCompletionHandler } from "../../../../src/file-completion-handler.js";
 import { getSchedulerService } from "../../../../src/scheduler/scheduler-service.js";
-import { isBotMentioned } from "../../../../src/context-builder.js";
+import { isBotMentioned, stripDelegationMentions } from "../../../../src/context-builder.js";
 import { loadConfig, type PluginConfig } from "../../../../src/config.js";
 import { log } from "../../../../src/logger.js";
 import { TeamStore } from "../../../../src/persistence/team-store.js";
@@ -509,7 +509,7 @@ function setupWebSocketListeners(
           
           const ownerUserId = config.mattermost.ownerUserId;
           
-          // Parse @mentions (excluding the bot) for all paths
+          // Parse !@mentions (delegation syntax) for all paths
           const otherMentions = botUser ? sessionOwnershipHandler.detectMentionedUsers(
             postData.message,
             botUser.username,
@@ -518,10 +518,10 @@ function setupWebSocketListeners(
           ) : [];
           
           if (isOwner) {
-            // Owner @mentioned bot. But did they also mention someone else?
+            // Owner @mentioned bot. Did they also use !@someone (delegation syntax)?
             // If so, this is meant for that other person's Kaji — stay silent.
             if (otherMentions.length > 0) {
-              log.debug(`[Channel] Owner @mentioned bot AND other users (${otherMentions.join(', ')}) - staying silent for other owner's Kaji to handle`);
+              log.debug(`[Channel] Owner @mentioned bot with !@delegation (${otherMentions.join(', ')}) - staying silent for other owner's Kaji to handle`);
               return;
             }
             
@@ -545,8 +545,8 @@ function setupWebSocketListeners(
           }
           
           // Non-owner mentioned bot - only allow delegated session creation
-          // They MUST be a team member AND mention the session owner
-          // e.g., "@kaji @christine fix this"
+          // They MUST be a team member AND use !@owner delegation syntax
+          // e.g., "@kaji !@christine fix this"
           // Just mentioning @kaji alone does nothing for non-owners
           if (!isTeamMember) {
             log.debug(`[Channel] Non-team-member @mentioned bot in unmapped thread - ignoring (channel: ${channel.id})`);
@@ -554,7 +554,7 @@ function setupWebSocketListeners(
           }
           
           if (ownerUserId && botUser) {
-            // Check if the owner was @mentioned
+            // Check if the owner was !@mentioned (delegation syntax)
             let ownerMentioned = false;
             let ownerUsername = "unknown";
             if (otherMentions.length > 0) {
@@ -570,8 +570,8 @@ function setupWebSocketListeners(
             }
             
             if (!ownerMentioned) {
-              // Team member mentioned @kaji without the owner - silently ignore
-              log.debug(`[Channel] Team member @mentioned bot without owner - ignoring (channel: ${channel.id})`);
+              // Team member mentioned @kaji without !@owner delegation - silently ignore
+              log.debug(`[Channel] Team member @mentioned bot without !@owner delegation - ignoring (channel: ${channel.id})`);
               return;
             }
             
@@ -595,10 +595,12 @@ function setupWebSocketListeners(
               log.warn(`[Delegation] Could not fetch initiator username: ${e}`);
             }
             
-            log.info(`[Delegation] Team member @${initiatorUsername} mentioned both bot and owner @${ownerUsername} - creating delegated session`);
+            log.info(`[Delegation] Team member @${initiatorUsername} used !@${ownerUsername} delegation syntax - creating delegated session`);
             
             // Set delegation flags on the post for handleUserMessage to process
             const delegatedPost = { ...postData } as any;
+            // Strip !@mentions from the message so they don't appear in the prompt
+            delegatedPost.message = stripDelegationMentions(postData.message);
             delegatedPost._ownershipConfirmed = true;
             delegatedPost._approvalPolicy = "none";
             delegatedPost._delegatedOwnerUserId = ownerUserId;
