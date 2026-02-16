@@ -17,6 +17,7 @@ export interface ProviderModel {
   name: string;
   providerID: string;
   providerName: string;
+  supportsImageInput: boolean;
 }
 
 export interface CommandContext {
@@ -415,12 +416,20 @@ export class CommandHandler {
         if (!connectedProviders.has(provider.id)) continue;
         
         for (const [modelId, model] of Object.entries(provider.models || {})) {
-          const m = model as any;
+          const m = model as {
+            name?: string;
+            capabilities?: {
+              input?: {
+                image?: boolean;
+              };
+            };
+          };
           models.push({
             id: modelId,
             name: m.name || modelId,
             providerID: provider.id,
             providerName: provider.name,
+            supportsImageInput: m.capabilities?.input?.image === true,
           });
         }
       }
@@ -441,6 +450,10 @@ export class CommandHandler {
       log.error("[CommandHandler] Failed to fetch models:", e);
       return this.cachedModels;
     }
+  }
+
+  public async getModels(opencodeClient: any): Promise<ProviderModel[]> {
+    return this.fetchModels(opencodeClient);
   }
 
   private async handleModels(
@@ -1393,4 +1406,34 @@ export class CommandHandler {
   getAvailableCommands(): string[] {
     return Array.from(this.commands.keys());
   }
+}
+
+/**
+ * Find a vision-capable model from the cached models list.
+ * Returns the first model that supports image input, or null.
+ * Prefers Anthropic Claude models, then OpenAI GPT-4o models.
+ */
+export async function findVisionCapableModel(
+  opencodeClient: any,
+  commandHandler: CommandHandler
+): Promise<ProviderModel | null> {
+  const models = await commandHandler.getModels(opencodeClient);
+
+  const priorityPatterns = [
+    /claude/i,
+    /gpt-4o/i,
+    /gemini/i,
+  ];
+
+  const visionModels = models.filter((model) => model.supportsImageInput);
+  if (visionModels.length === 0) return null;
+
+  for (const pattern of priorityPatterns) {
+    const match = visionModels.find(
+      (model) => pattern.test(model.id) || pattern.test(model.name)
+    );
+    if (match) return match;
+  }
+
+  return visionModels[0];
 }
