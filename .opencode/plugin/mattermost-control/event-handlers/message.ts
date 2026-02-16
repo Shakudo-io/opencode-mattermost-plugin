@@ -110,9 +110,16 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
     log.debug(`[PartDebug] session=${sessionId?.substring(0,8)} part.type=${part.type} delta=${delta?.length ?? 'null'} thinkingBuffer=${ctx.thinkingBuffer.length}`);
   }
   
+  // Debug: Log full part structure for reasoning parts to find where thinking content lives
+  if (part?.type === "reasoning") {
+    log.info(`[ReasoningDebug] Full part object: ${JSON.stringify(part, null, 2)}`);
+    log.info(`[ReasoningDebug] Full event.properties: ${JSON.stringify(event.properties, null, 2)}`);
+    log.info(`[ReasoningDebug] delta=${delta} part.data=${JSON.stringify(part?.data)} part.thinking=${part?.thinking ? part.thinking.substring(0, 100) + '...' : 'undefined'}`);
+  }
+  
   let shouldUpdate = false;
   
-  if (part?.type === "text" && delta) {
+  if (part?.type === "text") {
     // Skip compaction summary text
     if (ctx.inCompactionSummary) {
       log.debug(`[Compaction] Suppressing compaction summary text for session ${sessionId.substring(0, 8)}`);
@@ -123,10 +130,27 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
       log.info(`[Compaction] Continuation content received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
       ctx.awaitingContinuation = false;
     }
-    ctx.responseBuffer += delta;
-    ctx.textPartCount = (ctx.textPartCount || 0) + 1;
-    shouldUpdate = true;
-  } else if (part?.type === "reasoning" && delta != null) {
+    // Extract text content from either delta (streaming) or part.text (complete)
+    let textContent = delta || (part as any)?.text || "";
+    
+    // Models like MiniMax M2.5 embed thinking as XML tags in text instead of separate reasoning parts
+    const thinkMatch = textContent.match(/<think>([\s\S]*?)<\/think>/);
+    if (thinkMatch) {
+      const thinkingContent = thinkMatch[1].trim();
+      if (thinkingContent) {
+        ctx.thinkingBuffer = thinkingContent;
+        ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
+        log.info(`[Reasoning] Extracted <think> content (${thinkingContent.length} chars) from text part`);
+      }
+      textContent = textContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    }
+    
+    if (textContent) {
+      ctx.responseBuffer = textContent;
+      ctx.textPartCount = (ctx.textPartCount || 0) + 1;
+      shouldUpdate = true;
+    }
+  } else if (part?.type === "reasoning") {
     // Skip compaction summary reasoning
     if (ctx.inCompactionSummary) {
       log.debug(`[Compaction] Suppressing compaction summary reasoning for session ${sessionId.substring(0, 8)}`);
@@ -136,10 +160,17 @@ export async function handleMessagePartUpdated(event: any): Promise<void> {
       log.info(`[Compaction] Continuation reasoning received, resetting awaitingContinuation for session ${sessionId.substring(0, 8)}`);
       ctx.awaitingContinuation = false;
     }
-    if (delta) ctx.thinkingBuffer += delta;
-    ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
-    shouldUpdate = true;
-    log.info(`[Reasoning] Captured reasoning delta (${delta?.length || 0} chars), total buffer: ${ctx.thinkingBuffer.length} chars`);
+    // Extract thinking content from multiple possible locations:
+    // - delta (streaming updates)
+    // - part.text (OpenCode event structure)
+    // - part.data.thinking (TUI serialization format)
+    const thinkingContent = delta || (part as any)?.text || (part?.data?.thinking) || (part as any)?.thinking || "";
+    if (thinkingContent) {
+      ctx.thinkingBuffer = thinkingContent;
+      ctx.reasoningPartCount = (ctx.reasoningPartCount || 0) + 1;
+      shouldUpdate = true;
+      log.info(`[Reasoning] Captured reasoning (${thinkingContent.length} chars), total buffer: ${ctx.thinkingBuffer.length} chars`);
+    }
   } else if (part?.type === "tool" && part?.tool === "bash") {
     const status = part?.state?.status;
     const shellOutput = part.state.metadata?.output || part.state?.output || part.output;
