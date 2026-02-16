@@ -37,6 +37,7 @@ import {
   handleToolExecuteAfter,
 } from "./event-handlers/index.js";
 
+import { findVisionCapableModel } from "../../../src/command-handler.js";
 import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
 import { createUnifiedStore, type UnifiedStore } from "../../../src/persistence/unified-store.js";
 import { buildThreadContext, summarizeContextWithHaiku, formatContextForPrompt, stripBotMention } from "../../../src/context-builder.js";
@@ -883,13 +884,31 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       await statusIndicator.setProcessing();
       
       const mapping = threadMappingStore?.getBySessionId(targetSessionId);
-      const selectedModel = mapping?.model;
+      let selectedModel = mapping?.model;
       
       if (selectedModel) {
         log.debug(`[ModelSelection] Using model ${selectedModel.providerID}/${selectedModel.modelID} for session ${shortId}`);
       }
       
       const allFileParts = [...contextFileParts, ...inboundFileParts];
+
+      const hasImageParts = allFileParts.some((part) => part.mime?.startsWith("image/"));
+      if (hasImageParts && PluginState.commandHandler && client) {
+        try {
+          const visionModel = await findVisionCapableModel(client, PluginState.commandHandler);
+          if (visionModel) {
+            log.info(`[VisionRouting] Images detected. Auto-selecting vision model: ${visionModel.providerID}/${visionModel.id}`);
+            selectedModel = {
+              providerID: visionModel.providerID,
+              modelID: visionModel.id,
+            };
+          } else {
+            log.warn("[VisionRouting] Images detected but no vision-capable model found. Proceeding with default model.");
+          }
+        } catch (e) {
+          log.error(`[VisionRouting] Failed to find vision model: ${e}`);
+        }
+      }
       const promptParts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; filename: string; url: string }> = [
         { type: "text", text: promptMessage },
         ...allFileParts,
