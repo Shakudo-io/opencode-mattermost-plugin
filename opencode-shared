@@ -128,7 +128,7 @@ start_server() {
     log_info "Starting OpenCode shared server on port ${PORT}..."
     
     rm -f "$PIDFILE"
-    nohup opencode serve --port "$PORT" >> "$SERVER_LOG" 2>&1 &
+    nohup opencode serve --port "$PORT" --hostname 0.0.0.0 >> "$SERVER_LOG" 2>&1 &
     local server_pid=$!
     echo "$server_pid" > "$PIDFILE"
     
