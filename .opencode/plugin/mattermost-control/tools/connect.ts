@@ -1,3 +1,4 @@
+import fs from "fs";
 import { PluginState } from "../state.js";
 import { startQuestionCleanupTimer, stopQuestionCleanupTimer } from "../timers.js";
 import { MattermostClient } from "../../../../src/clients/mattermost-client.js";
@@ -62,9 +63,53 @@ export function createStatusTool(projectName: string) {
   };
 }
 
+// ─── Single-instance lock ────────────────────────────────────────────────────
+// Prevents two simultaneous OpenCode processes from both connecting to
+// Mattermost and doubling every incoming message event.
+const LOCK_FILE = "/tmp/opencode-mattermost.lock";
+
+function tryAcquireLock(): { acquired: boolean; holderPid?: number } {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      const content = fs.readFileSync(LOCK_FILE, "utf8").trim();
+      const pid = parseInt(content, 10);
+      if (!isNaN(pid) && pid !== process.pid) {
+        try {
+          process.kill(pid, 0); // throws if process no longer exists
+          return { acquired: false, holderPid: pid };
+        } catch {
+          log.warn(`[Lock] Stale lock (PID ${pid} gone), overwriting`);
+        }
+      }
+    }
+    fs.writeFileSync(LOCK_FILE, String(process.pid));
+    return { acquired: true };
+  } catch (e) {
+    log.warn(`[Lock] Could not acquire lock: ${e} — proceeding anyway`);
+    return { acquired: true };
+  }
+}
+
+function releaseLock(): void {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      const pid = parseInt(fs.readFileSync(LOCK_FILE, "utf8").trim(), 10);
+      if (pid === process.pid) fs.unlinkSync(LOCK_FILE);
+    }
+  } catch { /* best-effort */ }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function handleConnect(ctx: ConnectionContext): Promise<string> {
   if (PluginState.isConnected) {
     return `Already connected to Mattermost as @${PluginState.botUser?.username}. Use /mattermost status for details.`;
+  }
+
+  const lockResult = tryAcquireLock();
+  if (!lockResult.acquired) {
+    const msg = `Another OpenCode process (PID ${lockResult.holderPid}) is already connected to Mattermost. Skipping.`;
+    log.warn(`[Lock] ${msg}`);
+    return msg;
   }
 
   const config = loadConfig();
@@ -240,9 +285,13 @@ async function handleConnect(ctx: ConnectionContext): Promise<string> {
       botUser
     );
 
+    // Release lock when the process exits (crash-safety)
+    process.once("exit", releaseLock);
+
     log.info(`Connected to Mattermost as @${botUser.username}`);
     return `Connected to Mattermost as @${botUser.username}\nListening for DMs\nProject: ${ctx.projectName}\n\nDM @${botUser.username} in Mattermost to send prompts remotely.`;
   } catch (error) {
+    releaseLock(); // Release on failure so the next attempt can succeed
     const errorMsg = error instanceof Error ? error.message : String(error);
     log.error("Connection failed:", errorMsg);
     return `Failed to connect: ${errorMsg}`;
@@ -262,6 +311,7 @@ async function handleDisconnect(): Promise<string> {
       log.info("[SchedulerService] Stopped");
     }
     PluginState.disconnect();
+    releaseLock();
     log.info("Disconnected from Mattermost");
     return "Disconnected from Mattermost";
   } catch (error) {
