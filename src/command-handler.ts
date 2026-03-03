@@ -671,6 +671,53 @@ export class CommandHandler {
       };
     }
 
+    const { activeResponseContexts, stopResponseTimer, stopActiveToolTimer, subagentRegistry, mmClient } = context;
+
+    // Cancel the active response context BEFORE aborting so handleSessionIdle skips it.
+    // Without this, session.idle fires after abort and endStream() posts a second completion message.
+    if (activeResponseContexts?.has(sessionId)) {
+      const ctx = activeResponseContexts.get(sessionId) as any;
+      if (ctx?.streamCtx) {
+        ctx.streamCtx.isCancelled = true;
+        // Update the in-progress stream post to show it was cancelled
+        try {
+          const cancelledContent = (ctx.streamCtx.buffer || "") + "\n\n*(Stopped)*";
+          await mmClient.updatePost(ctx.streamCtx.postId, cancelledContent);
+        } catch { /* best-effort */ }
+      }
+      activeResponseContexts.delete(sessionId);
+      stopResponseTimer?.(sessionId);
+      stopActiveToolTimer?.(sessionId);
+    }
+
+    // Abort running subagent (child) sessions and mark their posts as cancelled
+    if (subagentRegistry && opencodeClient) {
+      for (const [childId, info] of subagentRegistry.entries()) {
+        if (info.parentSessionId === sessionId && info.status === "running") {
+          try {
+            await opencodeClient.session.abort({ path: { id: childId } });
+            log.info(`[CommandHandler] Aborted subagent ${childId.substring(0, 8)} for parent ${sessionId.substring(0, 8)}`);
+          } catch (e) {
+            log.warn(`[CommandHandler] Failed to abort subagent ${childId.substring(0, 8)}: ${e}`);
+          }
+          // Cancel its stream context too
+          if (activeResponseContexts?.has(childId)) {
+            const childCtx = activeResponseContexts.get(childId) as any;
+            if (childCtx?.streamCtx) childCtx.streamCtx.isCancelled = true;
+            activeResponseContexts.delete(childId);
+            stopResponseTimer?.(childId);
+            stopActiveToolTimer?.(childId);
+          }
+          // Update subagent post to show cancelled
+          try {
+            await mmClient.updatePost(info.replyPostId, `❌ ${info.agentType === "explore" ? "🕵️‍♂️ Explore" : info.agentType} | ${info.description} (cancelled)`);
+          } catch { /* best-effort */ }
+          info.status = "error" as any;
+          info.endTime = Date.now();
+        }
+      }
+    }
+
     try {
       await opencodeClient.session.abort({ path: { id: sessionId } });
       log.info(`[CommandHandler] Aborted session ${sessionId.substring(0, 8)}`);
@@ -691,7 +738,7 @@ export class CommandHandler {
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
       log.error(`[CommandHandler] Failed to abort session ${sessionId.substring(0, 8)}: ${errorMsg}`);
-      
+
       return {
         success: false,
         message: `Failed to stop session: ${errorMsg}`,
