@@ -77,13 +77,15 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
     handleUserMessage,
   };
 
-  if (config.mattermost.autoConnect && config.mattermost.token) {
+  if (config.mattermost.autoConnect && config.mattermost.token && !process.env.OPENCODE_ATTACH_MODE) {
     log.info("Auto-connect enabled, connecting to Mattermost...");
     const connectTool = createConnectTool(connectionContext);
     setTimeout(async () => {
       const result = await connectTool.execute();
       log.info(`Auto-connect result: ${result.split('\n')[0]}`);
     }, 100);
+  } else if (process.env.OPENCODE_ATTACH_MODE) {
+    log.info("Loaded in attach mode (OPENCODE_ATTACH_MODE=true) - skipping auto-connect");
   } else {
     log.info("Loaded (not connected - use /mattermost connect)");
   }
@@ -586,11 +588,14 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
       if (!result.data) {
         throw new Error("Failed to create session - no data returned");
       }
-      
-      const sessionTitle = isDelegated 
+
+      // Reserve the session ID so onNewSession callback skips creating a duplicate thread
+      PluginState.pendingSessionIds.add(result.data.id);
+
+      const sessionTitle = isDelegated
         ? `Session started by @${delegatedInitiatorUsername} for @${sessionOwnerUsername}`
         : `Mattermost DM session`;
-      
+
       const sessionInfo: OpenCodeSessionInfo = {
         id: result.data.id,
         shortId: result.data.id.substring(0, 8),
@@ -600,7 +605,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         lastUpdated: new Date(),
         isAvailable: true,
       };
-      
+
       const threadRootId = post.root_id || post.id;
       log.info(`[CreateSession] post.id=${post.id}, post.root_id=${post.root_id}, threadRootId=${threadRootId}, post.channel_id=${post.channel_id}${isDelegated ? ` (delegated by @${delegatedInitiatorUsername} for @${sessionOwnerUsername})` : ''}`);
       const mapping = await threadManager.createThread(
@@ -612,6 +617,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         sessionOwnerUsername,
         isDelegated ? delegatedInitiatorUsername : undefined
       );
+      PluginState.pendingSessionIds.delete(result.data.id);
       
       const approvalPolicy = (post as any)._approvalPolicy as string | undefined;
       if (threadMappingStore) {
@@ -843,10 +849,10 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         todoManager.setThreadRoot(targetSessionId, threadRootPostId, targetChannelId);
       }
 
-      const replyContext = threadRootPostId 
-        ? `[Reply-To: thread=${threadRootPostId} post=${post.id} channel=${targetChannelId}]`
-        : `[Reply-To: post=${post.id} channel=${targetChannelId}]`;
-      
+      // Note: Do NOT include Mattermost thread/channel IDs in the prompt — the AI would
+      // try to call mattermost_post_message to reply directly instead of generating text.
+      // The plugin streams the AI's text response back to Mattermost automatically.
+
       let contextPrefix = "";
       let contextFileParts: Array<{ type: "file"; mime: string; filename: string; url: string }> = [];
       if (isGroupDm && threadRootPostId && botUser) {
@@ -876,7 +882,7 @@ export const MattermostControlPlugin: Plugin = async ({ client, project, directo
         }
       }
       
-      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${replyContext}\n${contextPrefix}${promptText}`;
+      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${contextPrefix}${promptText}`;
       
       log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 150)}..."`);
       

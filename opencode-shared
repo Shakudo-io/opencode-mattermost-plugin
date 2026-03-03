@@ -576,7 +576,7 @@ main() {
     else
         log_info "[mcp-fix] MCP fix complete, launching TUI..."
         # Attach to the server, passing through any additional arguments
-        exec opencode attach "$SERVER_URL" "$@"
+        exec env OPENCODE_ATTACH_MODE=true opencode attach "$SERVER_URL" "$@"
     fi
 }
 

@@ -305,7 +305,13 @@ function setupSessionCallbacks(
 ) {
   registry.onNewSession(async (sessionInfo: OpenCodeSessionInfo) => {
     if (!threadManager || !sessionManager) return;
-    
+
+    // Skip if createNewSessionFromDm is actively creating this session — it will call createThread itself
+    if (PluginState.pendingSessionIds.has(sessionInfo.id)) {
+      log.info(`[AutoThread] Skipping session ${sessionInfo.shortId} — already being handled by createNewSessionFromDm`);
+      return;
+    }
+
     const existingMapping = threadMappingStore?.getBySessionId(sessionInfo.id);
     if (existingMapping) return;
     

@@ -48,6 +48,8 @@ class PluginStateManager {
   readonly subagentRegistry: Map<string, SubagentInfo> = new Map();
   readonly activeToolTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   readonly activeResponseTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /** Session IDs currently being created by createNewSessionFromDm — prevents onNewSession race condition */
+  readonly pendingSessionIds: Set<string> = new Set();
   private _questionCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private _pendingCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -165,6 +167,7 @@ class PluginStateManager {
     this.activeToolTimers.clear();
     this.activeResponseContexts.clear();
     this.subagentRegistry.clear();
+    this.pendingSessionIds.clear();
     
     // Release all thread claims before disconnecting
     const pgStore = this._threadMappingStore?.getPgStore();
