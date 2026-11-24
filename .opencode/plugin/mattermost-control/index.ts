@@ -1,1168 +1,794 @@
-import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
+/**
+ * OpenCode V2 adapter entry for the Shakudo "Mattermost Control" plugin.
+ *
+ * The upstream plugin (v0.3.97) is written against the V1 plugin API:
+ *
+ *   export const MattermostControlPlugin: Plugin = async ({ client, project, directory, serverUrl, $ }) =>
+ *     ({ tool, event, "tool.execute.before", "tool.execute.after", "chat.message" })
+ *
+ * OpenCode v2.x refuses to load that shape ("Plugin must export a default
+ * definition with an id and an effect or setup function"). This file is the
+ * only adapter layer added by the port:
+ *
+ *   1. A V1-style `client.session` object implemented on top of the V2
+ *      session domain (in-process, no network hop).
+ *   2. A local V1-compatible HTTP server (127.0.0.1, ephemeral port)
+ *      implementing the handful of legacy REST endpoints the plugin code
+ *      still fetches directly (/question, /question/:id/reply, /find/file,
+ *      /file/content), bridging to the V2 server via the `opencode api` CLI
+ *      (which handles service discovery + authentication).
+ *   3. A V2 -> V1 event translator feeding the plugin's `event` hook.
+ *   4. Registration of the plugin's 15 tools, its tool.execute.before/after
+ *      hooks, and its chat.message hook (V2 "prompt" session hook).
+ *
+ * The upstream entry itself lives in ./legacy.ts, unmodified. To re-merge a
+ * new upstream release: copy its `.opencode/plugin/mattermost-control/`
+ * (minus this index.ts) and `src/` files over this directory, keep this file,
+ * run `npm install`, done.
+ */
 
+import { Plugin } from "@opencode/plugin";
+import { z } from "zod";
+import { execFile } from "node:child_process";
+
+import { MattermostControlPlugin } from "./legacy.js";
 import { PluginState } from "./state.js";
-import { createEmptyResponseContext } from "./types.js";
-import { startResponseTimer, stopResponseTimer, stopActiveToolTimer } from "./timers.js";
 
-import {
-  createConnectTool,
-  createDisconnectTool,
-  createStatusTool,
-  createListSessionsTool,
-  createSelectSessionTool,
-  createCurrentSessionTool,
-  createMonitorTool,
-  createUnmonitorTool,
-  createSendFileTool,
-  createScheduleAddTool,
-  createScheduleListTool,
-  createScheduleRemoveTool,
-  createScheduleEnableTool,
-  createScheduleDisableTool,
-  createScheduleRunTool,
-} from "./tools/index.js";
+// ---------------------------------------------------------------------------
+// `opencode api` CLI bridge (service discovery + challenge-response auth)
+// ---------------------------------------------------------------------------
 
-import {
-  handlePermissionAsked,
-  handleQuestionAsked,
-  handleSessionIdle,
-  handleSessionStatus,
-  handleSessionCompacted,
-  handleMessageUpdated,
-  handleMessagePartUpdated,
-  handleFileEdited,
-  handleTodoUpdated,
-  handleToolExecuteBefore,
-  handleToolExecuteAfter,
-} from "./event-handlers/index.js";
+const OPENCODE_BIN = process.env.OPENCODE_BIN || "opencode";
 
-import { ThreadMappingStore } from "../../../src/persistence/thread-mapping-store.js";
-import { createUnifiedStore, type UnifiedStore } from "../../../src/persistence/unified-store.js";
-import { buildThreadContext, summarizeContextWithHaiku, formatContextForPrompt, stripBotMention } from "../../../src/context-builder.js";
-import { loadConfig } from "../../../src/config.js";
-import { log } from "../../../src/logger.js";
-import type { Post } from "../../../src/models/index.js";
-import type { UserSession } from "../../../src/session-manager.js";
-import type { InboundRouteResult } from "../../../src/models/routing.js";
-import type { OpenCodeSessionInfo } from "../../../src/opencode-session-registry.js";
+function log(msg: string, ...rest: unknown[]): void {
+  try {
+    console.log(`[mattermost-v2] ${msg}`, ...rest);
+  } catch {}
+}
 
-export const MattermostControlPlugin: Plugin = async ({ client, project, directory, serverUrl, $ }) => {
-  const config = loadConfig();
-  const projectName = directory.split("/").pop() || "opencode";
-  const opencodeBaseUrl = serverUrl.origin;
+async function apiCall(
+  method: "get" | "post",
+  path: string,
+  opts: { data?: unknown; directory?: string } = {}
+): Promise<Buffer> {
+  let url = path;
+  if (opts.directory && !url.includes("location[")) {
+    url += (url.includes("?") ? "&" : "?") + `location[directory]=${encodeURIComponent(opts.directory)}`;
+  }
+  const args = ["api", method, url];
+  if (opts.data !== undefined) args.push("--data", JSON.stringify(opts.data));
+  return await new Promise<Buffer>((resolve, reject) => {
+    execFile(
+      OPENCODE_BIN,
+      args,
+      { timeout: 30_000, maxBuffer: 64 * 1024 * 1024, env: process.env },
+      (err, stdout) => {
+        // execFile types vary by @types/node overload: accept Buffer or string.
+        const out = Buffer.isBuffer(stdout)
+          ? stdout
+          : Buffer.from(stdout as unknown as string, "utf8");
+        if (err) {
+          reject(new Error(`${OPENCODE_BIN} api ${method} ${path} failed: ${err.message}${out.length ? `\n${out.toString("utf8").slice(0, 500)}` : ""}`));
+        } else {
+          resolve(out);
+        }
+      }
+    );
+  });
+}
 
-  PluginState.setProjectName(projectName);
+async function apiJson<T = unknown>(
+  method: "get" | "post",
+  path: string,
+  opts: { data?: unknown; directory?: string } = {}
+): Promise<T> {
+  const raw = await apiCall(method, path, opts);
+  const text = raw.toString("utf8").trim();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
+}
 
-  // Create unified store for Postgres state management (if enabled)
-  let unifiedStore: UnifiedStore | null = null;
-  if (config.postgres.enabled) {
-    log.info(`[Plugin] Postgres enabled, creating unified store (phase ${config.postgres.migrationPhase})`);
-    unifiedStore = createUnifiedStore({ postgresConfig: config.postgres });
-    await unifiedStore.initialize();
-    log.info(`[Plugin] Unified store initialized, postgres=${unifiedStore.isPostgresEnabled()}`);
-  } else {
-    log.info("[Plugin] Postgres disabled, using JSON-only mode");
+// ---------------------------------------------------------------------------
+// V1-compatible HTTP server (question state + replies, file search + content)
+// ---------------------------------------------------------------------------
+
+/** V2 Form.Info -> V1 OpenCodeQuestion[] (the shape question-handler.ts expects). */
+function formsToQuestions(forms: any[]): any[] {
+  return (forms || []).map((f) => ({
+    id: f.id,
+    sessionID: f.sessionID,
+    questions: (f.fields || []).map((field: any) => ({
+      // V2 form fields (built by the V2 `question` tool): key=qN, title=short
+      // header, description=full question text, options value === label.
+      question: field.description || field.title || String(field.key ?? ""),
+      header: field.title || String(field.key ?? ""),
+      options: (field.options || []).map((o: any) => ({ label: o.label, description: o.description || "" })),
+      multiple: field.type === "multiselect",
+      custom: field.custom ?? true,
+    })),
+  }));
+}
+
+async function handleCompatRequest(req: Request, directory: string): Promise<Response> {
+  const u = new URL(req.url, "http://compat.local");
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  // GET /question -> pending V1 questions (V2: forms)
+  if (req.method === "GET" && u.pathname === "/question") {
+    const res = await apiJson<any>("get", "/api/form", { directory });
+    return json(200, formsToQuestions(Array.isArray(res?.data) ? res.data : []));
   }
 
-  const threadMappingStore = new ThreadMappingStore({ unifiedStore: unifiedStore ?? undefined });
-  threadMappingStore.load().catch((e) => log.warn("[Plugin] Failed to load thread mappings:", e));
-  PluginState.setThreadMappingStore(threadMappingStore);
-
-  const connectionContext = {
-    client,
-    directory,
-    projectName,
-    opencodeBaseUrl,
-    handleUserMessage,
-  };
-
-  if (config.mattermost.autoConnect && config.mattermost.token) {
-    log.info("Auto-connect enabled, connecting to Mattermost...");
-    const connectTool = createConnectTool(connectionContext);
-    setTimeout(async () => {
-      const result = await connectTool.execute();
-      log.info(`Auto-connect result: ${result.split('\n')[0]}`);
-    }, 100);
-  } else {
-    log.info("Loaded (not connected - use /mattermost connect)");
+  // POST /question/{id}/reply { answers: string[][] }
+  if (req.method === "POST" && u.pathname.startsWith("/question/") && u.pathname.endsWith("/reply")) {
+    const formId = decodeURIComponent(u.pathname.slice("/question/".length, -"/reply".length));
+    const body = await req.json().catch(() => ({}));
+    const answers: any[] = Array.isArray((body as any)?.answers) ? (body as any).answers : [];
+    const res = await apiJson<any>("get", "/api/form", { directory });
+    const form = ((res?.data || []) as any[]).find((f) => f.id === formId);
+    if (!form) return json(404, { error: `form ${formId} not found (no longer pending?)` });
+    const answer: Record<string, unknown> = {};
+    for (const [i, field] of ((form.fields || []) as any[]).entries()) {
+      const vals = answers[i];
+      if (field.type === "multiselect") {
+        answer[field.key] = Array.isArray(vals) ? vals : [];
+      } else {
+        answer[field.key] = Array.isArray(vals) ? (vals[0] ?? "") : typeof vals === "string" ? vals : "";
+      }
+    }
+    await apiCall("post", `/api/session/${form.sessionID}/form/${form.id}/reply`, {
+      data: { answer },
+      directory,
+    });
+    return json(200, {});
   }
 
-  async function handleUserMessage(post: Post): Promise<void> {
-    const { sessionManager, streamer, notifications, fileHandler, messageRouter, commandHandler, openCodeSessionRegistry, mmClient, threadMappingStore, threadManager } = PluginState;
-    
-    if (!sessionManager || !streamer || !notifications || !fileHandler || !messageRouter || !commandHandler || !openCodeSessionRegistry || !mmClient) return;
+  // GET /find/file?query=&limit= -> plain array of relative file paths
+  if (req.method === "GET" && u.pathname === "/find/file") {
+    const query = u.searchParams.get("query") ?? "";
+    const limit = u.searchParams.get("limit");
+    let p = `/api/fs/find?query=${encodeURIComponent(query)}&type=file`;
+    if (limit) p += `&limit=${encodeURIComponent(limit)}`;
+    const res = await apiJson<any>("get", p, { directory });
+    const paths = ((res?.data || []) as any[]).filter((e) => e?.type === "file").map((e) => e.path);
+    return json(200, paths);
+  }
 
-    let userSession: UserSession;
-    try {
-      userSession = await sessionManager.getOrCreateSession(post.user_id);
-    } catch (error) {
-      log.error("Failed to get/create session:", error);
-      return;
-    }
+  // GET /file/content?path= -> { content: string }
+  if (req.method === "GET" && u.pathname === "/file/content") {
+    const path = u.searchParams.get("path") ?? "";
+    const raw = await apiCall("get", `/api/fs/read/${path.split("/").map(encodeURIComponent).join("/")}`, {
+      directory,
+    });
+    return json(200, { content: raw.toString("utf8") });
+  }
 
-    if (threadManager && threadMappingStore && !(post as any)._ownershipConfirmed) {
-      const availableSessions = openCodeSessionRegistry.listAvailable();
-      for (const sessionInfo of availableSessions) {
-        const existingMapping = threadMappingStore.getBySessionId(sessionInfo.id);
-        if (!existingMapping) {
-          try {
-            await threadManager.createThread(
-              sessionInfo,
-              userSession.mattermostUserId,
-              userSession.dmChannelId,
-              undefined,
-              undefined,
-              userSession.mattermostUsername
-            );
-            log.info(`[AutoThread] Created thread for session ${sessionInfo.shortId} for user ${userSession.mattermostUsername}`);
-          } catch (e) {
-            log.error(`[AutoThread] Failed to create thread:`, e);
-          }
-        }
-      }
-    }
+  return json(404, { error: `no V1-compat route for ${req.method} ${u.pathname}` });
+}
 
-    const routeResult = threadMappingStore 
-      ? messageRouter.routeWithThreads(post)
-      : convertLegacyRoute(messageRouter.route(post), post);
-    
-    log.debug(`[ROUTING] type=${routeResult.type}`);
-
-    switch (routeResult.type) {
-      case "main_dm_command": {
-        const result = await commandHandler.execute(routeResult.command, {
-          userSession,
-          registry: openCodeSessionRegistry,
-          mmClient,
-          threadMappingStore,
-          teamStore: PluginState.teamStore,
-          ownerUserId: config.mattermost.ownerUserId,
-          questionHandler: PluginState.questionHandler,
-          opencodeClient: client,
-          channelId: post.channel_id,
-          subagentRegistry: PluginState.subagentRegistry,
-          activeResponseContexts: PluginState.activeResponseContexts,
-          stopResponseTimer,
-          stopActiveToolTimer,
-        });
-        await mmClient.createPost(post.channel_id, result.message);
-        return;
-      }
-      
-      case "main_dm_prompt": {
-        if (config.sessionSelection.autoCreateSession) {
-          const newSession = await createNewSessionFromDm(userSession, post);
-          if (newSession) {
-            await handleThreadPrompt({
-              sessionId: newSession.sessionId,
-              threadRootPostId: newSession.threadRootPostId,
-              promptText: post.message.trim(),
-              fileIds: post.file_ids,
-            }, userSession, post);
-          }
-          return;
-        }
-        
-        await mmClient.createPost(
-          post.channel_id,
-          `:warning: ${routeResult.errorMessage}\n\n${routeResult.suggestedAction}`
-        );
-        return;
-      }
-      
-      case "unknown_thread": {
-        const channel = await mmClient.getChannel(post.channel_id);
-        const threadRootPostId = routeResult.threadRootPostId;
-        
-        // Handle ownership confirmation for non-DM channels (Group DM, Public, Private)
-        if (channel.type === "G" || channel.type === "O" || channel.type === "P") {
-          // Check if this post was already confirmed via _ownershipConfirmed flag
-          // This flag is set by connect.ts when user replies "yes" to ownership confirmation
-          if ((post as any)._ownershipConfirmed) {
-            log.info(`[SessionOwnership] Post has _ownershipConfirmed flag, creating session in ${channel.type === "G" ? "group DM" : channel.type === "O" ? "public" : "private"} channel ${post.channel_id}`);
-            const newSession = await createNewSessionFromDm(userSession, post);
-            if (newSession) {
-              await handleThreadPrompt({
-                sessionId: newSession.sessionId,
-                threadRootPostId: newSession.threadRootPostId,
-                promptText: post.message.trim(),
-                fileIds: post.file_ids,
-              }, userSession, post);
-            }
-            return;
-          }
-          
-          const { sessionOwnershipHandler } = PluginState;
-          if (sessionOwnershipHandler?.hasPendingConfirmation(post.channel_id, threadRootPostId, post.user_id)) {
-            const confirmResult = await sessionOwnershipHandler.handleReply(
-              post.channel_id,
-              threadRootPostId,
-              post.message.trim()
-            );
-            
-            if (confirmResult.confirmed && confirmResult.post) {
-              log.info(`[SessionOwnership] User confirmed with approval policy: ${confirmResult.approvalPolicy || 'none'}`);
-              const postWithPolicy = confirmResult.post as any;
-              postWithPolicy._ownershipConfirmed = true;
-              postWithPolicy._approvalPolicy = confirmResult.approvalPolicy || "none";
-              const newSession = await createNewSessionFromDm(userSession, postWithPolicy);
-              if (newSession) {
-                await handleThreadPrompt({
-                  sessionId: newSession.sessionId,
-                  threadRootPostId: newSession.threadRootPostId,
-                  promptText: confirmResult.post.message.trim(),
-                  fileIds: confirmResult.post.file_ids,
-                }, userSession, confirmResult.post);
-              }
-            }
-            return;
-          }
-        }
-        
-        await mmClient.createPost(
-          post.channel_id,
-          routeResult.errorMessage,
-          routeResult.threadRootPostId
-        );
-        return;
-      }
-      
-      case "ended_session": {
-        await mmClient.createPost(
-          post.channel_id,
-          `:no_entry: ${routeResult.errorMessage}`,
-          routeResult.threadRootPostId
-        );
-        return;
-      }
-      
-      case "merged_session": {
-        const destMapping = routeResult.mergedInto 
-          ? threadMappingStore?.getBySessionId(routeResult.mergedInto)
-          : null;
-        
-        const baseUrl = config.mattermost.baseUrl.replace(/\/api\/v4$/, "");
-        const redirectLink = destMapping 
-          ? `[here](${baseUrl}/_redirect/pl/${destMapping.threadRootPostId})`
-          : "another thread";
-        
-        await mmClient.createPost(
-          post.channel_id,
-          `:lock: **Thread Merged**\n\nThis thread has been merged into ${redirectLink}.\nPlease continue the conversation there.`,
-          routeResult.threadRootPostId
-        );
-        return;
-      }
-      
-      case "thread_prompt": {
-        let promptText = routeResult.promptText.trim();
-        
-        // Strip bot mention early so commands like "@kaji !merge" work in channels
-        const botUser = PluginState.botUser;
-        if (botUser) {
-          const strippedText = stripBotMention(promptText, botUser.username, botUser.id).trim();
-          if (strippedText !== promptText) {
-            log.debug(`[ThreadPrompt] Stripped bot mention: "${promptText}" -> "${strippedText}"`);
-            promptText = strippedText;
-          }
-        }
-        
-        const { fileCompletionHandler } = PluginState;
-        if (fileCompletionHandler && fileCompletionHandler.hasPendingCompletion(routeResult.sessionId)) {
-          const disambiguationResult = fileCompletionHandler.handleDisambiguationReply(
-            routeResult.sessionId,
-            promptText
-          );
-          
-          if (disambiguationResult.resolved) {
-            if (disambiguationResult.cancelled) {
-              await mmClient.createPost(
-                post.channel_id,
-                `:white_check_mark: File completion cancelled.`,
-                routeResult.threadRootPostId
-              );
-              return;
-            }
-            
-            if (disambiguationResult.result) {
-              log.info(`[FileCompletion] User resolved file references, processing message`);
-              await handleThreadPromptWithFiles(
-                {
-                  sessionId: routeResult.sessionId,
-                  threadRootPostId: routeResult.threadRootPostId,
-                  promptText: disambiguationResult.result.processedMessage,
-                  fileIds: routeResult.fileIds,
-                },
-                userSession,
-                post,
-                disambiguationResult.result.resolvedFilePaths
-              );
-              return;
-            }
-          }
-        }
-        
-        if (promptText.startsWith(config.sessionSelection.commandPrefix)) {
-          const parsed = messageRouter.parseCommand(promptText);
-          if (parsed) {
-            const result = await commandHandler.execute(parsed, {
-              userSession,
-              registry: openCodeSessionRegistry,
-              mmClient,
-              threadMappingStore,
-              teamStore: PluginState.teamStore,
-              ownerUserId: config.mattermost.ownerUserId,
-              questionHandler: PluginState.questionHandler,
-              opencodeClient: client,
-              sessionId: routeResult.sessionId,
-              threadRootPostId: routeResult.threadRootPostId,
-              channelId: post.channel_id,
-              subagentRegistry: PluginState.subagentRegistry,
-              activeResponseContexts: PluginState.activeResponseContexts,
-              stopResponseTimer,
-              stopActiveToolTimer,
-            });
-            await mmClient.createPost(post.channel_id, result.message, routeResult.threadRootPostId);
-            return;
-          }
-        }
-        
-        const numericSelection = parseInt(promptText, 10);
-        if (!isNaN(numericSelection) && commandHandler.isPendingModelSelection(routeResult.sessionId, threadMappingStore)) {
-          const result = await commandHandler.handleModelSelection(numericSelection, {
-            userSession,
-            registry: openCodeSessionRegistry,
-            mmClient,
-            threadMappingStore,
-            teamStore: PluginState.teamStore,
-            ownerUserId: config.mattermost.ownerUserId,
-            questionHandler: PluginState.questionHandler,
-            opencodeClient: client,
-            sessionId: routeResult.sessionId,
-            threadRootPostId: routeResult.threadRootPostId,
+async function startCompatServer(directory: string): Promise<{ url: URL; close: () => Promise<void> }> {
+  const B = (globalThis as any).Bun;
+  if (B?.serve) {
+    const server = B.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req: Request): Promise<Response> {
+        try {
+          return await handleCompatRequest(req, directory);
+        } catch (e: any) {
+          log("compat server error:", e?.message || e);
+          return new Response(JSON.stringify({ error: String(e?.message || e) }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
           });
-          if (result) {
-            await mmClient.createPost(post.channel_id, result.message, routeResult.threadRootPostId);
-            return;
-          }
         }
-        
-        const { guestApprovalHandler, questionHandler } = PluginState;
-        
-        // Check if BOTH guest approval AND question are pending - this is a collision scenario
-        const hasGuestApproval = guestApprovalHandler && threadMappingStore && guestApprovalHandler.hasPendingApproval(routeResult.sessionId);
-        const hasQuestion = questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId);
-        
-        // If both are pending and message looks like a question answer (bare number), prioritize question
-        // Questions are more time-sensitive (AI is actively waiting) and guest approval has alternative syntax
-        if (hasGuestApproval && hasQuestion) {
-          const trimmed = promptText.trim();
-          const looksLikeQuestionAnswer = /^\d+$/.test(trimmed) || /^\d+(,\s*\d+)+$/.test(trimmed); // "1" or "1, 2, 3"
-          const looksLikeGuestApprovalOnly = /^(deny|no|0)$/i.test(trimmed); // Only guest approval uses these
-          
-          if (looksLikeQuestionAnswer && !looksLikeGuestApprovalOnly) {
-            log.info(`[CollisionHandler] Both guest approval and question pending. Message "${trimmed}" looks like question answer - routing to question handler first`);
-            // Fall through to question handler below
-          } else if (looksLikeGuestApprovalOnly) {
-            log.info(`[CollisionHandler] Both pending but message "${trimmed}" is guest approval syntax - routing to guest approval`);
-            const approvalResult = await guestApprovalHandler.handleOwnerReply(
-              routeResult.sessionId,
-              promptText,
-              threadMappingStore,
-              post.channel_id
-            );
-            
-            if (approvalResult.wasApprovalResponse) {
-              if (approvalResult.approved && approvalResult.post) {
-                log.info(`[GuestApproval] Processing approved guest message`);
-                await handleThreadPrompt({
-                  sessionId: routeResult.sessionId,
-                  threadRootPostId: routeResult.threadRootPostId,
-                  promptText: approvalResult.post.message,
-                  fileIds: approvalResult.post.file_ids,
-                }, userSession, approvalResult.post);
-              }
-              return;
-            }
-          } else {
-            // Ambiguous text - could be custom answer or unrecognized. Ask user to clarify.
-            log.info(`[CollisionHandler] Both pending, message "${trimmed}" is ambiguous - asking user to clarify`);
-            await mmClient.createPost(
-              post.channel_id,
-              `:warning: **Multiple pending requests**\n\nI have both a **question** and a **guest approval request** pending.\n\n` +
-              `• To answer the AI question: Reply with a number (e.g., \`1\`) or your answer\n` +
-              `• To respond to guest approval: Use \`approve 1\`, \`approve 2\`, \`approve 3\`, or \`deny\`\n\n` +
-              `_Use explicit prefixes to avoid confusion._`,
-              routeResult.threadRootPostId
-            );
-            return;
-          }
-        } else if (hasGuestApproval) {
-          const approvalResult = await guestApprovalHandler.handleOwnerReply(
-            routeResult.sessionId,
-            promptText,
-            threadMappingStore,
-            post.channel_id
-          );
-          
-          if (approvalResult.wasApprovalResponse) {
-            if (approvalResult.approved && approvalResult.post) {
-              log.info(`[GuestApproval] Processing approved guest message`);
-              await handleThreadPrompt({
-                sessionId: routeResult.sessionId,
-                threadRootPostId: routeResult.threadRootPostId,
-                promptText: approvalResult.post.message,
-                fileIds: approvalResult.post.file_ids,
-              }, userSession, approvalResult.post);
-            }
-            return;
-          }
-          log.info(`[GuestApproval] Owner message not an approval response, processing as regular prompt`);
-        }
-        
-        // Question handler (either only question pending, or collision where we decided to prioritize question)
-        if (questionHandler && questionHandler.hasPendingQuestion(routeResult.sessionId)) {
-          const verifyResult = await questionHandler.verifyQuestionStillPending(routeResult.sessionId);
-          
-          if (!verifyResult.pending) {
-            if (verifyResult.reason === "server_no_longer_pending") {
-              const questionInfo = questionHandler.getPendingQuestionInfo(routeResult.sessionId);
-              const questionHeader = questionInfo?.request.questions[0]?.header || "Unknown";
-              log.warn(`[QuestionHandler] Question "${questionHeader}" is no longer pending on server (expired or already answered)`);
-              await mmClient.createPost(
-                post.channel_id,
-                `:warning: This question has expired or was already answered elsewhere. Your response "${promptText}" was not processed.\n\nThe AI session has likely continued without waiting for your answer.`,
-                routeResult.threadRootPostId
-              );
-              return;
-            }
-          }
-          
-          const replyResult = await questionHandler.handleUserReply(
-            routeResult.sessionId,
-            promptText,
-            post.channel_id,
-            routeResult.threadRootPostId
-          );
-          
-          if (replyResult.handled && replyResult.answers && replyResult.requestId) {
-            try {
-              const ctx = PluginState.activeResponseContexts.get(routeResult.sessionId);
-              if (ctx && streamer) {
-                const newStreamCtx = await streamer.recreateStreamAtBottom(ctx.streamCtx);
-                ctx.streamCtx = newStreamCtx;
-                log.debug(`[QuestionHandler] Recreated stream after answer summary, new postId=${newStreamCtx.postId}`);
-              }
-              
-              const replyUrl = `${opencodeBaseUrl}/question/${replyResult.requestId}/reply`;
-              const response = await fetch(replyUrl, {
-                method: "POST",
-                headers: { 
-                  "Content-Type": "application/json",
-                  "x-opencode-directory": directory,
-                },
-                body: JSON.stringify({ answers: replyResult.answers }),
-              });
-              if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-              }
-              log.info(`[QuestionHandler] Submitted answer for question ${replyResult.requestId}`);
-            } catch (e) {
-              log.error(`[QuestionHandler] Failed to submit answer:`, e);
-              await mmClient.createPost(
-                post.channel_id,
-                `:x: Failed to submit answer: ${e instanceof Error ? e.message : "Unknown error"}`,
-                routeResult.threadRootPostId
-              );
-            }
-            return;
-          }
-          
-          if (replyResult.handled) {
-            return;
-          }
-        }
-        
-        if (fileCompletionHandler && fileCompletionHandler.hasFileReferences(promptText)) {
-            log.info(`[FileCompletion] Message contains !! file references`);
-            
-            const completionResult = await fileCompletionHandler.processMessage(
-              routeResult.sessionId,
-              routeResult.threadRootPostId,
-              post.channel_id,
-              promptText,
-              post.user_id,
-              routeResult.fileIds
-            );
-            
-            if (completionResult.needsDisambiguation) {
-              const disambiguationPrompt = fileCompletionHandler.formatDisambiguationPrompt(
-                completionResult.unresolvedReferences
-              );
-              const disambiguationPost = await mmClient.createPost(
-                post.channel_id,
-                disambiguationPrompt,
-                routeResult.threadRootPostId
-              );
-              fileCompletionHandler.setDisambiguationPostId(
-                routeResult.sessionId,
-                disambiguationPost.id
-              );
-              return;
-            }
-            
-            if (completionResult.resolvedFilePaths.length > 0) {
-              await handleThreadPromptWithFiles(
-                {
-                  sessionId: routeResult.sessionId,
-                  threadRootPostId: routeResult.threadRootPostId,
-                  promptText: completionResult.processedMessage,
-                  fileIds: routeResult.fileIds,
-                },
-                userSession,
-                post,
-                completionResult.resolvedFilePaths
-              );
-              return;
-            }
-        }
-        
-        await handleThreadPrompt(routeResult, userSession, post);
-        return;
-      }
-    }
-  }
-
-  function convertLegacyRoute(legacyResult: { type: string; command?: any; promptText?: string }, post: Post): InboundRouteResult {
-    const { openCodeSessionRegistry } = PluginState;
-    
-    if (legacyResult.type === "command" && legacyResult.command) {
-      return { type: "main_dm_command", command: legacyResult.command };
-    }
-    
-    const defaultSession = openCodeSessionRegistry?.getDefault();
-    if (!defaultSession) {
-      return {
-        type: "main_dm_prompt",
-        errorMessage: "No OpenCode session available.",
-        suggestedAction: "Start an OpenCode session first.",
-      };
-    }
-    
+      },
+    });
     return {
-      type: "thread_prompt",
-      sessionId: defaultSession.id,
-      threadRootPostId: "",
-      promptText: legacyResult.promptText || post.message,
-      fileIds: post.file_ids,
+      url: new URL(server.url),
+      close: () =>
+        new Promise<void>((r) => {
+          try {
+            server.stop(true);
+          } catch {}
+          r();
+        }),
     };
   }
 
-  async function createNewSessionFromDm(
-    userSession: UserSession,
-    post: Post
-  ): Promise<{ sessionId: string; threadRootPostId: string } | null> {
-    const { mmClient, threadManager, openCodeSessionRegistry, threadMappingStore } = PluginState;
-    if (!mmClient || !threadManager) return null;
-    
-    // Check for delegated session creation (teammate starting session on behalf of owner)
-    const delegatedOwnerUserId = (post as any)._delegatedOwnerUserId as string | undefined;
-    const delegatedOwnerUsername = (post as any)._delegatedOwnerUsername as string | undefined;
-    const delegatedInitiatorUserId = (post as any)._delegatedInitiatorUserId as string | undefined;
-    const delegatedInitiatorUsername = (post as any)._delegatedInitiatorUsername as string | undefined;
-    const isDelegated = !!delegatedOwnerUserId && !!delegatedOwnerUsername;
-    
-    // For delegated sessions, the owner is the mentioned user, not the poster
-    const sessionOwnerUserId = isDelegated ? delegatedOwnerUserId : userSession.mattermostUserId;
-    const sessionOwnerUsername = isDelegated ? delegatedOwnerUsername : userSession.mattermostUsername;
-    
+  // node:http fallback (works in Node-based hosts)
+  const { createServer } = await import("node:http");
+  const server = createServer(async (req, res) => {
     try {
-      const result = await client.session.create({
-        body: {},
-        query: { directory }
-      });
-      
-      if (!result.data) {
-        throw new Error("Failed to create session - no data returned");
-      }
-      
-      const sessionTitle = isDelegated 
-        ? `Session started by @${delegatedInitiatorUsername} for @${sessionOwnerUsername}`
-        : `Mattermost DM session`;
-      
-      const sessionInfo: OpenCodeSessionInfo = {
-        id: result.data.id,
-        shortId: result.data.id.substring(0, 8),
-        projectName: projectName,
-        directory: directory,
-        title: result.data.title || sessionTitle,
-        lastUpdated: new Date(),
-        isAvailable: true,
-      };
-      
-      const threadRootId = post.root_id || post.id;
-      log.info(`[CreateSession] post.id=${post.id}, post.root_id=${post.root_id}, threadRootId=${threadRootId}, post.channel_id=${post.channel_id}${isDelegated ? ` (delegated by @${delegatedInitiatorUsername} for @${sessionOwnerUsername})` : ''}`);
-      const mapping = await threadManager.createThread(
-        sessionInfo,
-        sessionOwnerUserId,
-        userSession.dmChannelId,
-        threadRootId,
-        post.channel_id,
-        sessionOwnerUsername,
-        isDelegated ? delegatedInitiatorUsername : undefined
-      );
-      
-      const approvalPolicy = (post as any)._approvalPolicy as string | undefined;
-      if (threadMappingStore) {
-        const updatedMapping = threadMappingStore.getBySessionId(result.data.id);
-        if (updatedMapping) {
-          // Apply approval policy if set
-          if (approvalPolicy === "approve_all") {
-            updatedMapping.approveAllUsers = true;
-            log.info(`[CreateSession] Applied approve_all policy to session ${sessionInfo.shortId}`);
-          } else if (approvalPolicy === "approve_next") {
-            updatedMapping.approveNextMessage = true;
-            log.info(`[CreateSession] Applied approve_next policy to session ${sessionInfo.shortId}`);
-          }
-          
-          // For delegated sessions, auto-approve the initiating teammate
-          if (isDelegated && delegatedInitiatorUserId) {
-            if (!updatedMapping.approvedUsers) {
-              updatedMapping.approvedUsers = [];
-            }
-            if (!updatedMapping.approvedUsers.includes(delegatedInitiatorUserId)) {
-              updatedMapping.approvedUsers.push(delegatedInitiatorUserId);
-              log.info(`[Delegation] Auto-approved initiator @${delegatedInitiatorUsername} (${delegatedInitiatorUserId}) for session ${sessionInfo.shortId}`);
-            }
-          }
-          
-          threadMappingStore.update(updatedMapping);
-        }
-      }
-      
-      await openCodeSessionRegistry?.refresh();
-      
-      if (isDelegated) {
-        log.info(`[Delegation] Created delegated session ${sessionInfo.shortId} - owner: @${sessionOwnerUsername}, initiated by: @${delegatedInitiatorUsername} in channel ${post.channel_id}`);
-      } else {
-        log.info(`[CreateSession] Created new session ${sessionInfo.shortId} for @${sessionOwnerUsername} in channel ${post.channel_id}`);
-      }
-      
-      return {
-        sessionId: result.data.id,
-        threadRootPostId: mapping.threadRootPostId,
-      };
-    } catch (error) {
-      log.error("[CreateSession] Failed:", error);
-      const errorThreadRoot = post.root_id || post.id;
-      await mmClient.createPost(
-        post.channel_id,
-        `:x: Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`,
-        errorThreadRoot
-      );
-      return null;
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = Buffer.concat(chunks).toString("utf8");
+      const request = new Request(`http://127.0.0.1${req.url ?? "/"}`, {
+        method: req.method ?? "GET",
+        headers: Object.fromEntries(Object.entries(req.headers || {}).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : (v as string)])),
+        body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
+      } as RequestInit);
+      const response = await handleCompatRequest(request, directory);
+      const payload = await response.text();
+      res.writeHead(response.status, { "content-type": "application/json" });
+      res.end(payload);
+    } catch (e: any) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: String(e?.message || e) }));
     }
-  }
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  return {
+    url: new URL(`http://127.0.0.1:${port}`),
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
 
-  async function handleThreadPrompt(
-    route: { sessionId: string; threadRootPostId: string; promptText: string; fileIds?: string[] },
-    userSession: UserSession,
-    post: Post
-  ): Promise<void> {
-    const { streamer, notifications, fileHandler, mmClient, threadMappingStore, todoManager } = PluginState;
-    if (!streamer || !notifications || !fileHandler || !mmClient) return;
+// ---------------------------------------------------------------------------
+// V1-style client.session shim (in-process, on top of the V2 session domain)
+// ---------------------------------------------------------------------------
 
-    // Thread claiming for multi-instance coordination
-    const pgStore = threadMappingStore?.getPgStore();
-    const instanceId = threadMappingStore?.getInstanceId() ?? "local";
-    
-    if (pgStore && route.threadRootPostId) {
-      // Check if another instance is already processing this thread
-      const isClaimedByOther = await pgStore.isClaimedByOther(route.threadRootPostId, instanceId);
-      if (isClaimedByOther) {
-        log.info(`[ThreadClaim] Thread ${route.threadRootPostId} is claimed by another instance, skipping`);
-        // Silently skip - the other instance will handle this message
-        return;
-      }
-      
-      // Attempt to claim the thread
-      const claimed = await pgStore.claimThread(route.threadRootPostId, instanceId);
-      if (!claimed) {
-        log.info(`[ThreadClaim] Failed to claim thread ${route.threadRootPostId}, another instance may have claimed it`);
-        // Silently skip - another instance won the race
-        return;
-      }
-      log.info(`[ThreadClaim] Instance ${instanceId} claimed thread ${route.threadRootPostId}`);
-    }
-
-    if (threadMappingStore && route.threadRootPostId) {
-      const mapping = threadMappingStore.getByThreadRootPostId(route.threadRootPostId);
-      if (mapping && mapping.status === "orphaned") {
-        threadMappingStore.reactivate(route.threadRootPostId);
-        log.info(`[ThreadMapping] Reactivated orphaned thread ${route.threadRootPostId} for session ${route.sessionId.substring(0, 8)}`);
-      }
-    }
-
-    userSession.isProcessing = true;
-    userSession.currentPromptPostId = post.id;
-    userSession.lastPrompt = post;
-
-    let promptText = route.promptText;
-    const threadRootPostId = route.threadRootPostId || undefined;
-    const targetSessionId = route.sessionId;
-    const shortId = targetSessionId.substring(0, 8);
-
-    const existingMapping = threadMappingStore?.getBySessionId(targetSessionId);
-    const targetChannelId = existingMapping?.channelId || existingMapping?.dmChannelId || post.channel_id;
-
-    const { openCodeSessionRegistry } = PluginState;
-    const sessionAvailable = openCodeSessionRegistry?.isAvailable(targetSessionId);
-    log.info(`[SessionValidation] Checking session ${shortId}: registry=${!!openCodeSessionRegistry}, available=${sessionAvailable}`);
-    
-    if (openCodeSessionRegistry && !sessionAvailable) {
-      log.warn(`[SessionValidation] Session ${shortId} no longer exists in OpenCode`);
-      
-      if (existingMapping && threadMappingStore) {
-        existingMapping.status = "ended";
-        existingMapping.endedAt = new Date().toISOString();
-        threadMappingStore.update(existingMapping);
-        log.info(`[SessionValidation] Marked mapping for session ${shortId} as ended`);
-      }
-      
-      await mmClient.createPost(
-        targetChannelId,
-        `:warning: **Session No Longer Available**\n\nThe OpenCode session \`${shortId}\` associated with this thread no longer exists. This can happen when OpenCode restarts.\n\n_Start a new conversation to create a new session._`,
-        route.threadRootPostId
-      );
-      
-      userSession.isProcessing = false;
+async function waitForCompletion(
+  ctx: any,
+  sessionID: string,
+  statusMap: Map<string, any>,
+  timeoutMs = 10 * 60 * 1000
+): Promise<void> {
+  const wait = (ctx.session as any)?.wait;
+  if (typeof wait === "function") {
+    try {
+      await wait.call(ctx.session, { sessionID });
       return;
-    }
-
-    const channel = await mmClient.getChannel(post.channel_id);
-    const isGroupDm = channel.type === "G";
-    const botUser = PluginState.botUser;
-
-    const { streamCtx, statusIndicator } = await streamer.startStreamWithStatus(
-      userSession,
-      threadRootPostId,
-      "Checking session status...",
-      targetChannelId
-    );
-    userSession.currentResponsePostId = streamCtx.postId;
-
-    try {
-      let sessionIsBusy = false;
-      let sessionIsRetrying = false;
-      let retryInfo: { attempt?: number; maxAttempts?: number } = {};
-
-      try {
-        const statusResult = await client.session.status();
-        const statusMap = statusResult.data as Record<string, { type: string; attempt?: number; maxAttempts?: number }> | undefined;
-        
-        if (statusMap && statusMap[targetSessionId]) {
-          const sessionStatus = statusMap[targetSessionId];
-          log.debug(`[StatusCheck] Session ${shortId} status: ${sessionStatus.type}`);
-          
-          if (sessionStatus.type === "busy") {
-            sessionIsBusy = true;
-          } else if (sessionStatus.type === "retry") {
-            sessionIsRetrying = true;
-            retryInfo = {
-              attempt: sessionStatus.attempt,
-              maxAttempts: sessionStatus.maxAttempts,
-            };
-          }
-        }
-      } catch (e) {
-        log.debug(`[StatusCheck] Could not get session status: ${e}`);
-      }
-
-      if (sessionIsBusy) {
-        await statusIndicator.setQueued("Session is busy processing another request", 1);
-      } else if (sessionIsRetrying) {
-        await statusIndicator.setRetrying(
-          retryInfo.attempt || 1,
-          retryInfo.maxAttempts || 3,
-          "Session is retrying a previous operation",
-          5000
-        );
-      } else {
-        await statusIndicator.setConnecting(targetSessionId, shortId);
-      }
-
-      let inboundFileParts: Array<{ type: "file"; mime: string; filename: string; url: string }> = [];
-      if (route.fileIds && route.fileIds.length > 0) {
-        const { fileParts, textFilePaths } = await fileHandler.processInboundAttachmentsAsFileParts(route.fileIds);
-        inboundFileParts = fileParts;
-        if (textFilePaths.length > 0) {
-          promptText += `\n\n[Attached files: ${textFilePaths.join(", ")}]`;
-        }
-        if (fileParts.length > 0) {
-          log.info(`[FileHandler] Sending ${fileParts.length} file(s) as FilePartInput to OpenCode`);
-        }
-      }
-
-      log.info(`Using OpenCode session: ${targetSessionId}`);
-
-      if (threadMappingStore) {
-        const mapping = threadMappingStore.getBySessionId(targetSessionId);
-        if (mapping) {
-          mapping.lastActivityAt = new Date().toISOString();
-          threadMappingStore.update(mapping);
-        }
-      }
-
-      let sessionTotalCost = 0;
-      try {
-        const messagesResult = await client.session.messages({ path: { id: targetSessionId } });
-        const messages = messagesResult.data || [];
-        for (const message of messages) {
-          if (message.info.role === "assistant") {
-            sessionTotalCost += (message.info as any).cost || 0;
-          }
-        }
-        log.debug(`[CostTracker] Session ${shortId} prior cost: $${sessionTotalCost.toFixed(4)}`);
-      } catch (e) {
-        log.debug(`[CostTracker] Could not fetch session messages: ${e}`);
-      }
-
-      const responseContext = createEmptyResponseContext(
-        targetSessionId,
-        userSession,
-        streamCtx,
-        threadRootPostId,
-        sessionTotalCost
-      );
-      
-      PluginState.activeResponseContexts.set(targetSessionId, responseContext);
-      startResponseTimer(targetSessionId);
-      
-      if (todoManager && threadRootPostId) {
-        todoManager.setThreadRoot(targetSessionId, threadRootPostId, targetChannelId);
-      }
-
-      const replyContext = threadRootPostId 
-        ? `[Reply-To: thread=${threadRootPostId} post=${post.id} channel=${targetChannelId}]`
-        : `[Reply-To: post=${post.id} channel=${targetChannelId}]`;
-      
-      let contextPrefix = "";
-      let contextFileParts: Array<{ type: "file"; mime: string; filename: string; url: string }> = [];
-      if (isGroupDm && threadRootPostId && botUser) {
-        try {
-          log.info(`[GroupDM] Building thread context for thread ${threadRootPostId}`);
-          let threadContext = await buildThreadContext(mmClient, threadRootPostId, post.id, botUser.id, 5);
-          
-          if (threadContext.messages.length > 0) {
-            threadContext = await summarizeContextWithHaiku(client, targetSessionId, threadContext);
-            contextPrefix = formatContextForPrompt(threadContext, userSession.mattermostUsername || "user");
-            log.info(`[GroupDM] Injecting ${threadContext.wasSummarized ? "summarized" : "full"} context (${threadContext.messages.length} messages)`);
-            
-            if (threadContext.allFileIds.length > 0 && fileHandler) {
-              log.info(`[GroupDM] Processing ${threadContext.allFileIds.length} file attachment(s) from thread context`);
-              const { fileParts: ctxFileParts, textFilePaths: ctxTextPaths } = await fileHandler.processInboundAttachmentsAsFileParts(threadContext.allFileIds);
-              contextFileParts = ctxFileParts;
-              if (ctxTextPaths.length > 0) {
-                contextPrefix += `\n[Context attachments downloaded: ${ctxTextPaths.join(", ")}]`;
-              }
-              if (ctxFileParts.length > 0) {
-                log.info(`[GroupDM] Processed ${ctxFileParts.length} context file(s) as FileParts`);
-              }
-            }
-          }
-        } catch (e) {
-          log.error(`[GroupDM] Failed to build context: ${e}`);
-        }
-      }
-      
-      const promptMessage = `[Mattermost DM from @${userSession.mattermostUsername}]\n${replyContext}\n${contextPrefix}${promptText}`;
-      
-      log.debug(`Injecting prompt into session ${targetSessionId}: "${promptMessage.slice(0, 150)}..."`);
-      
-      await statusIndicator.setProcessing();
-      
-      const mapping = threadMappingStore?.getBySessionId(targetSessionId);
-      const selectedModel = mapping?.model;
-      
-      if (selectedModel) {
-        log.debug(`[ModelSelection] Using model ${selectedModel.providerID}/${selectedModel.modelID} for session ${shortId}`);
-      }
-      
-      const allFileParts = [...contextFileParts, ...inboundFileParts];
-      const promptParts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; filename: string; url: string }> = [
-        { type: "text", text: promptMessage },
-        ...allFileParts,
-      ];
-
-      await client.session.promptAsync({
-        path: { id: targetSessionId },
-        body: {
-          parts: promptParts,
-          ...(selectedModel && {
-            model: {
-              providerID: selectedModel.providerID,
-              modelID: selectedModel.modelID,
-            },
-          }),
-        },
-      });
-
-      log.info(`Prompt injected into session ${targetSessionId} from @${userSession.mattermostUsername}`);
-
-    } catch (error) {
-      log.error("Error processing message:", error);
-      
-      stopResponseTimer(route.sessionId);
-      stopActiveToolTimer(route.sessionId);
-      
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      await statusIndicator.setError(errorMsg, true);
-      
-      if (notifications && userSession) {
-        await notifications.notifyError(userSession, error as Error);
-      }
-      userSession.isProcessing = false;
-      PluginState.activeResponseContexts.delete(route.sessionId);
+    } catch (e) {
+      log("session.wait unavailable/failed, falling back to status polling:", (e as any)?.message || e);
     }
   }
-
-  async function handleThreadPromptWithFiles(
-    route: { sessionId: string; threadRootPostId: string; promptText: string; fileIds?: string[] },
-    userSession: UserSession,
-    post: Post,
-    resolvedFilePaths: string[]
-  ): Promise<void> {
-    const { fileCompletionHandler, mmClient } = PluginState;
-    
-    if (!fileCompletionHandler || !mmClient || resolvedFilePaths.length === 0) {
-      return handleThreadPrompt(route, userSession, post);
-    }
-    
-    let fileContentSuffix = "";
-    const attachedFiles: string[] = [];
-    
-    for (const filePath of resolvedFilePaths) {
-      const content = await fileCompletionHandler.readFileContent(filePath);
-      if (content !== null) {
-        fileContentSuffix += fileCompletionHandler.formatFileContentForPrompt(filePath, content);
-        attachedFiles.push(filePath);
-        log.info(`[FileCompletion] Attached file content: ${filePath} (${content.length} chars)`);
-      } else {
-        log.warn(`[FileCompletion] Could not read file: ${filePath}`);
-      }
-    }
-    
-    if (attachedFiles.length > 0) {
-      const updatedRoute = {
-        ...route,
-        promptText: route.promptText + fileContentSuffix,
-      };
-      
-      log.info(`[FileCompletion] Processing prompt with ${attachedFiles.length} attached file(s)`);
-      return handleThreadPrompt(updatedRoute, userSession, post);
-    }
-    
-    return handleThreadPrompt(route, userSession, post);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const st = statusMap.get(sessionID);
+    if (!st || (st.type !== "busy" && st.type !== "retry")) return;
+    await new Promise((r) => setTimeout(r, 1000));
   }
+}
 
-  const mattermostConnectTool = createConnectTool(connectionContext);
-  const mattermostDisconnectTool = createDisconnectTool();
-  const mattermostStatusTool = createStatusTool(projectName);
-  const mattermostListSessionsTool = createListSessionsTool();
-  const mattermostSelectSessionTool = createSelectSessionTool();
-  const mattermostCurrentSessionTool = createCurrentSessionTool();
-  const mattermostMonitorTool = createMonitorTool({ client, directory, projectName });
-  const mattermostUnmonitorTool = createUnmonitorTool(client);
-  const mattermostSendFileTool = createSendFileTool();
-
-  const scheduleContext = { client, directory, projectName };
-  const mattermostScheduleAddTool = createScheduleAddTool(scheduleContext);
-  const mattermostScheduleListTool = createScheduleListTool();
-  const mattermostScheduleRemoveTool = createScheduleRemoveTool();
-  const mattermostScheduleEnableTool = createScheduleEnableTool();
-  const mattermostScheduleDisableTool = createScheduleDisableTool();
-  const mattermostScheduleRunTool = createScheduleRunTool();
+function buildClientShim(ctx: any, directory: string, statusMap: Map<string, any>) {
+  const filesFromParts = (parts: any[]) =>
+    (parts || [])
+      .filter((p) => p?.type === "file")
+      .map((p) => ({ uri: p.url, name: p.filename }));
+  const textFromParts = (parts: any[]) =>
+    (parts || []).filter((p) => p?.type === "text").map((p) => p?.text ?? "").join("");
 
   return {
-    tool: {
-      mattermost_connect: mattermostConnectTool,
-      mattermost_disconnect: mattermostDisconnectTool,
-      mattermost_status: mattermostStatusTool,
-      mattermost_list_sessions: mattermostListSessionsTool,
-      mattermost_select_session: mattermostSelectSessionTool,
-      mattermost_current_session: mattermostCurrentSessionTool,
-      mattermost_monitor: mattermostMonitorTool,
-      mattermost_unmonitor: mattermostUnmonitorTool,
-      mattermost_send_file: mattermostSendFileTool,
-      mattermost_schedule_add: mattermostScheduleAddTool,
-      mattermost_schedule_list: mattermostScheduleListTool,
-      mattermost_schedule_remove: mattermostScheduleRemoveTool,
-      mattermost_schedule_enable: mattermostScheduleEnableTool,
-      mattermost_schedule_disable: mattermostScheduleDisableTool,
-      mattermost_schedule_run: mattermostScheduleRunTool,
-    },
+    session: {
+      // V1: client.session.list() -> { data: OpenCodeSession[] }
+      // (OpenCodeSessionRegistry consumes .directory, .slug || id, .time.updated, skips .parentID)
+      async list() {
+        const res = await apiJson<any>("get", "/api/session", { directory });
+        return {
+          data: ((res?.data || []) as any[]).map((s) => ({
+            id: s.id,
+            projectID: s.projectID,
+            directory: s.location?.directory ?? directory,
+            parentID: s.parentID,
+            title: s.title,
+            time: s.time,
+          })),
+        };
+      },
 
-    async event({ event }) {
-      const eventType = event.type as string;
-      
-      if (eventType === "permission.asked") {
-        await handlePermissionAsked(event);
-      } else if (eventType === "question.asked") {
-        await handleQuestionAsked(event);
-      } else if (eventType === "session.idle") {
-        await handleSessionIdle(event);
-      } else if (eventType === "session.status") {
-        await handleSessionStatus(event);
-      } else if (eventType === "session.compacted") {
-        await handleSessionCompacted(event);
-      } else if (eventType === "message.updated") {
-        await handleMessageUpdated(event);
-      } else if (eventType === "message.part.updated") {
-        await handleMessagePartUpdated(event);
-      } else if (eventType === "file.edited") {
-        await handleFileEdited(event);
-      } else if (eventType === "todo.updated") {
-        await handleTodoUpdated(event);
-      }
-    },
-
-    "tool.execute.before": async (input) => {
-      await handleToolExecuteBefore(input);
-    },
-
-    "tool.execute.after": async (input) => {
-      await handleToolExecuteAfter(input);
-    },
-
-    "chat.message": async (input, output) => {
-      const { threadMappingStore, mmClient, threadManager, openCodeSessionRegistry, botUser, schedulerService } = PluginState;
-      
-      if (!mmClient || !threadMappingStore) {
-        return;
-      }
-
-      // Suppress TUI sync for scheduled task sessions to prevent posting to wrong threads
-      if (schedulerService?.isRunningScheduledTask(input.sessionID)) {
-        log.debug(`[TUISync] Suppressing TUI sync for scheduled task session ${input.sessionID.substring(0, 8)}`);
-        return;
-      }
-
-      const textParts = output.parts.filter((p: any) => p.type === "text");
-      if (textParts.length === 0) {
-        return;
-      }
-
-      const messageText = textParts.map((p: any) => p.text).join("\n");
-      
-      const isFromMattermost = messageText.includes("[Mattermost DM from @") || messageText.includes("[Reply-To:");
-      if (isFromMattermost) {
-        log.debug(`[TUISync] Skipping message that originated from Mattermost`);
-        return;
-      }
-
-      const trimmedText = messageText.trim();
-      if (!trimmedText) {
-        return;
-      }
-
-      let mapping = threadMappingStore.getBySessionId(input.sessionID);
-      
-      if (!mapping?.threadRootPostId) {
-        const defaultChannelId = process.env.OPENCODE_MM_DEFAULT_CHANNEL_ID;
-        if (!defaultChannelId) {
-          log.debug(`[TUISync] No thread mapping and no default channel configured for session ${input.sessionID}`);
-          return;
-        }
-        
-        if (!threadManager || !openCodeSessionRegistry) {
-          log.debug(`[TUISync] ThreadManager or registry not available`);
-          return;
-        }
-        
-        const sessions = openCodeSessionRegistry.listAvailable();
-        const sessionInfo = sessions.find((s: OpenCodeSessionInfo) => s.id === input.sessionID);
-        if (!sessionInfo) {
-          log.debug(`[TUISync] Session ${input.sessionID} not found in registry`);
-          return;
-        }
-        
-        const ownerUserId = process.env.MATTERMOST_OWNER_USER_ID || botUser?.id || "";
-        
+      // V1: client.session.status() -> { data: Record<sessionID, { type: "busy"|"retry", ... }> }
+      async status() {
+        const data: Record<string, any> = {};
+        for (const [sid, st] of statusMap) data[sid] = st;
         try {
-          log.info(`[TUISync] Creating thread for TUI session ${sessionInfo.shortId} in channel ${defaultChannelId}`);
-          mapping = await threadManager.createThread(
-            sessionInfo,
-            ownerUserId,
-            defaultChannelId,
-            undefined,
-            defaultChannelId,
-            undefined
-          );
-          log.info(`[TUISync] Created thread ${mapping.threadRootPostId.substring(0, 8)} for TUI session`);
+          const res = await apiJson<any>("get", "/api/session/active", { directory });
+          for (const [sid, st] of Object.entries((res?.data || {}) as Record<string, any>)) {
+            if (!data[sid]) data[sid] = { type: "busy" };
+          }
         } catch (e) {
-          log.error(`[TUISync] Failed to create thread for TUI session:`, e);
-          return;
+          log("session/active lookup failed:", (e as any)?.message || e);
         }
-      }
+        return { data };
+      },
 
-      const targetChannelId = mapping.channelId || mapping.dmChannelId;
-      try {
-        log.info(`[TUISync] Posting TUI message to thread ${mapping.threadRootPostId.substring(0, 8)}...`);
-        
-        const formattedMessage = `:keyboard: **[TUI]** ${trimmedText}`;
-        
-        await mmClient.createPost(
-          targetChannelId,
-          formattedMessage,
-          mapping.threadRootPostId
-        );
-        
-        log.info(`[TUISync] Posted TUI message to Mattermost thread`);
-        
-        // Set up response context so assistant responses stream to Mattermost
-        const { streamer } = PluginState;
-        if (streamer && !PluginState.activeResponseContexts.has(input.sessionID)) {
-          const tuiSession = {
-            id: `tui-${input.sessionID}`,
-            mattermostUserId: mapping.mattermostUserId,
-            mattermostUsername: "TUI",
-            dmChannelId: mapping.dmChannelId,
-            createdAt: new Date(),
-            lastActivityAt: new Date(),
-            isProcessing: true,
-            currentPromptPostId: null,
-            currentResponsePostId: null,
-            pendingPermission: null,
-            lastPrompt: null,
-            targetOpenCodeSessionId: input.sessionID,
-          };
-          
-          const { streamCtx } = await streamer.startStreamWithStatus(
-            tuiSession as any,
-            mapping.threadRootPostId,
-            "Processing...",
-            targetChannelId
-          );
-          
-          const responseContext = createEmptyResponseContext(
-            input.sessionID,
-            tuiSession,
-            streamCtx,
-            mapping.threadRootPostId,
-            0
-          );
-          
-          PluginState.activeResponseContexts.set(input.sessionID, responseContext);
-          startResponseTimer(input.sessionID);
-          
-          log.info(`[TUISync] Set up response context for assistant streaming`);
+      // V1: client.session.create({ body, query }) -> { data: { id, title } }
+      async create(args: any) {
+        const info: any = await ctx.session.create({
+          location: { directory: args?.query?.directory ?? directory },
+          ...(args?.body && typeof args.body === "object" ? args.body : {}),
+        });
+        return { data: { id: info.id, title: info.title } };
+      },
+
+      // V1: client.session.get({ path: { id } }) -> { data: Session }
+      async get(args: any) {
+        const info = await ctx.session.get({ sessionID: args?.path?.id });
+        return { data: info };
+      },
+
+      // V1: client.session.messages({ path: { id } }) -> { data: Message[] }
+      // (index.ts sums assistant message.info.cost)
+      async messages(args: any) {
+        const sessionID = args?.path?.id;
+        const msgs = (await ctx.session.context({ sessionID })) as any[];
+        return {
+          data: (msgs || []).map((m) => ({
+            info:
+              m?.type === "assistant"
+                ? {
+                    id: m.id,
+                    role: "assistant",
+                    sessionID,
+                    agent: m.agent,
+                    modelID: m.model?.id,
+                    cost: m.cost,
+                    tokens: m.tokens,
+                    time: m.time,
+                  }
+                : { id: m.id, role: m?.type === "user" ? "user" : "system", sessionID, time: m.time },
+          })),
+        };
+      },
+
+      // V1: client.session.promptAsync({ path: { id }, body: { parts, model? } })
+      // (the main DM prompt injection path)
+      async promptAsync(args: any) {
+        const sessionID = args?.path?.id;
+        const parts: any[] = args?.body?.parts ?? [];
+        const model = args?.body?.model;
+        if (model?.providerID && model?.modelID) {
+          try {
+            await ctx.session.switchModel({ sessionID, model: { id: model.modelID, providerID: model.providerID } });
+          } catch (e) {
+            log("switchModel failed:", (e as any)?.message || e);
+          }
         }
-      } catch (e) {
-        log.error(`[TUISync] Failed to post TUI message to Mattermost:`, e);
-      }
+        const files = filesFromParts(parts);
+        await ctx.session.prompt({
+          sessionID,
+          text: textFromParts(parts),
+          files: files.length ? files : undefined,
+          delivery: "queue",
+        });
+        return { data: {} };
+      },
+
+      // V1: client.session.prompt(...) — two call shapes in the legacy code:
+      //  (a) { path: { id }, body: { parts } }  — synchronous prompt (scheduler executor)
+      //  (b) { sessionId, prompt, model }       — Haiku context summarization (context-builder)
+      async prompt(args: any) {
+        if (args && typeof args?.prompt === "string" && args.sessionId) {
+          if (args.model?.providerID && args.model?.modelID) {
+            try {
+              const r: any = await ctx.experimental.generate.text({
+                model: { providerID: args.model.providerID, id: args.model.modelID },
+                prompt: args.prompt,
+              });
+              return { text: r?.text ?? "" };
+            } catch (e) {
+              log("experimental.generate.text failed:", (e as any)?.message || e);
+            }
+          }
+          const r: any = await ctx.session.generate({ sessionID: args.sessionId, prompt: args.prompt });
+          return { text: r?.text ?? "" };
+        }
+        const sessionID = args?.path?.id;
+        const parts: any[] = args?.body?.parts ?? [];
+        const files = filesFromParts(parts);
+        await ctx.session.prompt({
+          sessionID,
+          text: textFromParts(parts),
+          files: files.length ? files : undefined,
+          delivery: "queue",
+        });
+        await waitForCompletion(ctx, sessionID, statusMap);
+        const msgs = (await ctx.session.context({ sessionID })) as any[];
+        const last = [...(msgs || [])].reverse().find((m) => m?.type === "assistant");
+        const text = last
+          ? ((last.content || []) as any[]).filter((c) => c?.type === "text").map((c) => c?.text ?? "").join("")
+          : "";
+        return { data: { text } };
+      },
+
+      // V1: client.session.abort({ path: { id } })
+      async abort(args: any) {
+        await ctx.session.interrupt({ sessionID: args?.path?.id, resume: false });
+        return { data: true };
+      },
     },
   };
-};
+}
 
-export default MattermostControlPlugin;
+// ---------------------------------------------------------------------------
+// V2 -> V1 event translator
+// ---------------------------------------------------------------------------
+
+/** V2 tool events carry no tool name; classify from the input shape. */
+function classifyToolName(input: any): string {
+  if (!input || typeof input !== "object") return "";
+  if (input.command) return "bash";
+  if (input.filePath || input.file_path) return "edit";
+  if (Array.isArray(input.todos)) return "todo";
+  if (Array.isArray(input.questions)) return "question";
+  if (input.description && (input.agent || input.subagent_type)) return "task";
+  return "";
+}
+
+function startEventBridge(ctx: any, legacyEvent: any, statusMap: Map<string, any>): () => void {
+  const toolNames = new Map<string, string>(); // tool call id -> classified name
+  const toolInputs = new Map<string, any>(); // tool call id -> input (for todo synthesis)
+  const ac = new AbortController();
+
+  const emit = (v1Type: string, properties: any) => {
+    if (typeof legacyEvent !== "function") return;
+    Promise.resolve(legacyEvent({ event: { type: v1Type, properties } })).catch((e) =>
+      log(`legacy event handler failed for ${v1Type}:`, (e as any)?.message || e)
+    );
+  };
+
+  // V1 file.edited needs a sessionID; V2 filesystem events have none.
+  const singleResponseSession = (): string | null => {
+    const contexts = PluginState.activeResponseContexts;
+    if (contexts.size === 1) return contexts.values().next().value?.opencodeSessionId ?? null;
+    return null;
+  };
+
+  (async () => {
+    try {
+      for await (const ev of ctx.event.subscribe({ signal: ac.signal })) {
+        const d = (ev as any)?.data ?? {};
+        switch (ev.type) {
+          case "permission.asked":
+            emit("permission.asked", { sessionID: d.sessionID, description: d.message || "Permission requested" });
+            break;
+
+          case "form.created": {
+            const form = d.form ?? {};
+            emit("question.asked", {
+              id: form.id,
+              sessionID: form.sessionID,
+              questions: (form.fields || []).map((f: any) => ({
+                question: f.description || f.title || "",
+                header: f.title || "",
+                options: (f.options || []).map((o: any) => ({ label: o.label, description: o.description || "" })),
+                multiple: f.type === "multiselect",
+                custom: f.custom ?? true,
+              })),
+            });
+            break;
+          }
+
+          case "session.idle":
+            statusMap.delete(d.sessionID);
+            emit("session.idle", { sessionID: d.sessionID });
+            break;
+
+          case "session.status": {
+            const st = d.status;
+            if (st?.type === "busy" || st?.type === "retry") statusMap.set(d.sessionID, st);
+            else statusMap.delete(d.sessionID);
+            emit("session.status", { sessionID: d.sessionID, status: st });
+            break;
+          }
+
+          case "session.step.ended":
+            emit("message.updated", {
+              info: {
+                role: "assistant",
+                sessionID: d.sessionID,
+                assistantMessageID: d.assistantMessageID,
+                cost: d.cost,
+                tokens: d.tokens,
+              },
+            });
+            break;
+
+          case "session.text.delta":
+            emit("message.part.updated", { part: { sessionID: d.sessionID, type: "text" }, delta: d.delta });
+            break;
+
+          case "session.reasoning.delta":
+            emit("message.part.updated", { part: { sessionID: d.sessionID, type: "reasoning" }, delta: d.delta });
+            break;
+
+          case "session.tool.called": {
+            const name = classifyToolName(d.input);
+            if (d.id) {
+              toolNames.set(d.id, name);
+              toolInputs.set(d.id, d.input);
+            }
+            emit("message.part.updated", {
+              part: {
+                sessionID: d.sessionID,
+                type: "tool",
+                id: d.id,
+                tool: name || undefined,
+                state: { status: "running", input: d.input, metadata: {} },
+              },
+            });
+            break;
+          }
+
+          case "session.tool.progress":
+            emit("message.part.updated", {
+              part: {
+                sessionID: d.sessionID,
+                type: "tool",
+                id: d.id,
+                tool: d.id ? toolNames.get(d.id) || undefined : undefined,
+                state: { status: "running", metadata: d.metadata ?? {} },
+              },
+            });
+            break;
+
+          case "session.tool.success": {
+            const name = d.id ? toolNames.get(d.id) || "" : "";
+            const contentText = ((d.content || []) as any[])
+              .filter((c) => c?.type === "text")
+              .map((c) => c?.text ?? "")
+              .join("\n");
+            const metadata = { ...(d.metadata ?? {}) };
+            if (name === "task" && !metadata.sessionId) {
+              const m = contentText.match(/ses_[A-Za-z0-9]+/);
+              if (m) metadata.sessionId = m[0];
+            }
+            emit("message.part.updated", {
+              part: {
+                sessionID: d.sessionID,
+                type: "tool",
+                id: d.id,
+                tool: name || undefined,
+                state: { status: "completed", metadata, output: contentText },
+              },
+            });
+            if (name === "todo") {
+              const todos = d.id ? toolInputs.get(d.id)?.todos : undefined;
+              if (Array.isArray(todos)) emit("todo.updated", { sessionID: d.sessionID, todos });
+            }
+            if (d.id) {
+              toolNames.delete(d.id);
+              toolInputs.delete(d.id);
+            }
+            break;
+          }
+
+          case "session.tool.failed":
+            emit("message.part.updated", {
+              part: {
+                sessionID: d.sessionID,
+                type: "tool",
+                id: d.id,
+                tool: d.id ? toolNames.get(d.id) || undefined : undefined,
+                state: {
+                  status: "error",
+                  metadata: d.metadata ?? {},
+                  error: typeof d.error === "string" ? d.error : d.error?.message,
+                },
+              },
+            });
+            if (d.id) {
+              toolNames.delete(d.id);
+              toolInputs.delete(d.id);
+            }
+            break;
+
+          case "session.compaction.ended":
+            emit("session.compacted", { sessionID: d.sessionID });
+            break;
+
+          case "file.edited":
+          case "filesystem.changed": {
+            const sid = singleResponseSession();
+            if (sid) emit("file.edited", { sessionID: sid, path: d.file });
+            break;
+          }
+
+          default:
+            break;
+        }
+      }
+    } catch (e) {
+      log("event subscription ended:", (e as any)?.message || e);
+    }
+  })();
+
+  return () => {
+    try {
+      ac.abort();
+    } catch {}
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool result mapping (V1 ToolResult -> V2 Tool.Result)
+// ---------------------------------------------------------------------------
+
+function mapToolResult(out: any): { content: any; metadata?: any } {
+  if (typeof out === "string") return { content: out };
+  if (out && typeof out === "object") {
+    const content: any[] = [{ type: "text", text: typeof out.output === "string" ? out.output : JSON.stringify(out) }];
+    for (const a of out.attachments ?? []) {
+      content.push({ type: "file", uri: a.url, mime: a.mime, name: a.filename });
+    }
+    return { content, metadata: out.metadata };
+  }
+  return { content: JSON.stringify(out) };
+}
+
+// ---------------------------------------------------------------------------
+// Plugin entry
+// ---------------------------------------------------------------------------
+
+export default Plugin.define({
+  id: "mattermost-control",
+  async setup(ctx: any) {
+    const directory = ctx.location.directory;
+    log(`setup: directory=${directory}`);
+
+    // 0) Mattermost credentials.
+    // The unmodified legacy entry reads MATTERMOST_* from process.env via
+    // src/config.ts#loadConfig(), which runs when we invoke it below — so
+    // populating env here is safe. Values come from the plugin's options
+    // block (opencode.json plugins entry), which take precedence over the
+    // service environment:
+    //
+    //   { "package": "...", "options": { "mattermost": {
+    //       "url": "https://mm.example.com/",
+    //       "token": "<bot access token>"
+    //   } } }
+    //
+    // Flat MATTERMOST_* keys directly under options are passed through as
+    // well. MATTERMOST_WS_URL is derived from url when not given.
+    const opts: Record<string, unknown> = (ctx.options ?? {}) as Record<string, unknown>;
+    const mm = (opts.mattermost ?? {}) as Record<string, unknown>;
+    const envInject: Record<string, string> = {};
+    const put = (key: string, val: unknown) => {
+      if (typeof val === "string" && val) envInject[key] = val;
+    };
+    put("MATTERMOST_URL", mm.url);
+    put("MATTERMOST_TOKEN", mm.token);
+    put("MATTERMOST_WS_URL", mm.wsUrl);
+    put("MATTERMOST_TEAM", mm.team);
+    put("MATTERMOST_BOT_USERNAME", mm.botUsername);
+    put("MATTERMOST_OWNER_USER_ID", mm.ownerUserId);
+    for (const [k, v] of Object.entries(opts)) {
+      if (k.startsWith("MATTERMOST_") && typeof v === "string" && v) envInject[k] = v;
+    }
+    if (envInject.MATTERMOST_URL && !envInject.MATTERMOST_WS_URL) {
+      const base = envInject.MATTERMOST_URL.replace(/\/+$/, "");
+      envInject.MATTERMOST_WS_URL = base.replace(/^http/, "ws") + "/api/v4/websocket";
+    }
+    for (const [k, v] of Object.entries(envInject)) {
+      process.env[k] = v;
+      log(`mattermost env from options: ${k} set`);
+    }
+
+    // Live map of busy/retry sessions (fed by session.status events).
+    const statusMap = new Map<string, any>();
+
+    // 1) V1-compat HTTP server for the legacy fetches.
+    const compat = await startCompatServer(directory);
+    log(`V1-compat HTTP server listening on ${compat.url.origin}`);
+
+    // 2) V1-style client shim.
+    const client = buildClientShim(ctx, directory, statusMap);
+
+    // 3) Run the unmodified V1 entry.
+    const legacy = await (MattermostControlPlugin as any)({
+      client,
+      project: ctx.location.project,
+      directory,
+      serverUrl: compat.url,
+      $: undefined,
+    });
+    log(`legacy entry loaded: ${Object.keys(legacy || {}).join(", ")}`);
+
+    // 4) Event bridge.
+    const stopEvents = startEventBridge(ctx, legacy?.event, statusMap);
+
+    // 5) Tool execute hooks.
+    const beforeReg = legacy?.["tool.execute.before"]
+      ? ctx.tool.hook("execute.before", (ev: any) =>
+          (legacy["tool.execute.before"] as any)({
+            tool: ev.tool,
+            sessionID: ev.sessionID,
+            messageID: ev.messageID,
+            agent: ev.agent,
+            args: ev.input,
+          })
+        )
+      : null;
+    const afterReg = legacy?.["tool.execute.after"]
+      ? ctx.tool.hook("execute.after", (ev: any) => {
+          const resultText =
+            ev.status === "completed"
+              ? typeof ev.result?.content === "string"
+                ? ev.result.content
+                : ((ev.result?.content ?? []) as any[])
+                    .filter((c) => c?.type === "text")
+                    .map((c) => c?.text ?? "")
+                    .join("\n")
+              : undefined;
+          return (legacy["tool.execute.after"] as any)({
+            tool: ev.tool,
+            sessionID: ev.sessionID,
+            messageID: ev.messageID,
+            agent: ev.agent,
+            args: ev.input,
+            result: resultText,
+            metadata: ev.status === "completed" ? { output: resultText, ...(ev.result?.metadata ?? {}) } : undefined,
+            error: ev.status === "error" ? ev.error?.message : undefined,
+          });
+        })
+      : null;
+
+    // 6) chat.message hook -> V2 "prompt" session hook (mirrors user prompts
+    //    typed in the TUI into the Mattermost thread; the legacy handler
+    //    itself skips injected "[Mattermost DM from @...]" prompts).
+    const promptReg =
+      typeof legacy?.["chat.message"] === "function"
+        ? ctx.session.hook("prompt", (ev: any) => {
+            try {
+              return (legacy["chat.message"] as any)({ sessionID: ev.sessionID }, { parts: [{ type: "text", text: ev.prompt?.text ?? "" }] });
+            } catch (e) {
+              log("chat.message hook failed:", (e as any)?.message || e);
+            }
+          })
+        : null;
+
+    // 7) Register the plugin's tools.
+    const toolReg = ctx.tool.transform((editor: any) => {
+      for (const [name, def] of Object.entries<any>(legacy?.tool ?? {})) {
+        let input: any = { type: "object" };
+        const args = def?.args;
+        if (args && typeof args === "object" && Object.keys(args).length > 0) {
+          try {
+            input = z.toJSONSchema(args);
+          } catch (e) {
+            log(`could not convert zod args for tool ${name}:`, (e as any)?.message || e);
+          }
+        }
+        editor.add({
+          name,
+          description: def?.description || name,
+          input,
+          execute: async (inp: any, v2ctx: any) => {
+            const out = await def.execute(inp ?? {}, {
+              sessionID: v2ctx.sessionID,
+              messageID: v2ctx.messageID,
+              agent: v2ctx.agent,
+              directory,
+              worktree: undefined,
+              abort: v2ctx.signal,
+              metadata: () => ({}),
+              ask: async () => ({}),
+            });
+            return mapToolResult(out);
+          },
+        });
+      }
+    });
+    log(`registered ${Object.keys(legacy?.tool ?? {}).length} tools`);
+
+    // 8) Cleanup.
+    return async () => {
+      log("cleanup");
+      stopEvents();
+      try {
+        beforeReg?.dispose?.();
+        afterReg?.dispose?.();
+        promptReg?.dispose?.();
+        toolReg?.dispose?.();
+      } catch {}
+      try {
+        PluginState.disconnect();
+      } catch (e) {
+        log("PluginState.disconnect failed:", (e as any)?.message || e);
+      }
+      await compat.close();
+    };
+  },
+});

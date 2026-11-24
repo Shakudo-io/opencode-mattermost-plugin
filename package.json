@@ -52,6 +52,7 @@
   "license": "MIT",
   "dependencies": {
     "@opencode-ai/plugin": "^1.1.25",
+    "@opencode/plugin": "^2.4.1",
     "@supabase/supabase-js": "^2.93.3",
     "cron-parser": "^5.5.0",
     "node-cron": "^4.2.1",
